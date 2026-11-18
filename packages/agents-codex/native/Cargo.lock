@@ -1744,6 +1744,7 @@ dependencies = [
  "strum",
  "strum_macros 0.28.0",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -2204,7 +2205,6 @@ dependencies = [
  "codex-terminal-detection",
  "codex-thread-store",
  "codex-tools",
- "codex-turn-control",
  "codex-utils-absolute-path",
  "codex-utils-audio",
  "codex-utils-cache",
@@ -3509,14 +3509,6 @@ dependencies = [
  "tokio-util",
  "uds_windows",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "codex-turn-control"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

@@ -21,6 +21,7 @@ mod config;
 mod console_diagnostics;
 mod context;
 mod custom_storage;
+mod decision_schema;
 mod decisions;
 mod engine;
 mod environment;

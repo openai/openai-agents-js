@@ -1,8 +1,8 @@
 diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
-index 7147ba9ccddb59afb65f41633b0d2c03d2b712fd..aa8a0e63e4265c8a7812943ffe2b1ae86d5d7623 100644
+index a7fc7707fbc33613d160b38357a17b05b8c53ef7..223114ba275dec62c1dba0c738c57091d840c472 100644
 --- a/codex-rs/core/src/session/inject.rs
 +++ b/codex-rs/core/src/session/inject.rs
-@@ -509,7 +509,7 @@ impl Session {
+@@ -506,7 +506,7 @@ impl Session {
          edit: SdkHistoryEdit,
      ) -> codex_protocol::error::Result<(String, Option<String>, bool)> {
          use crate::context_manager::HistoryReplacement;
@@ -11,7 +11,7 @@ index 7147ba9ccddb59afb65f41633b0d2c03d2b712fd..aa8a0e63e4265c8a7812943ffe2b1ae8
          use codex_protocol::error::CodexErr;
          let invalid = |message: &str| CodexErr::InvalidRequest(message.into());
          let active = self.active_turn.lock().await;
-@@ -542,26 +542,26 @@ impl Session {
+@@ -539,26 +539,26 @@ impl Session {
                      return Err(invalid("history keep exceeds snapshot length"));
                  }
                  let mut originals = current.prefix(keep);

@@ -1,6 +1,6 @@
 //! Pure schema adaptation for the standalone Decisions provider.
 
-use codex_api::decisions::{DecisionError, DecisionSchema};
+use crate::decision_schema::{DecisionError, DecisionSchema};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use serde_json::{Value, json};

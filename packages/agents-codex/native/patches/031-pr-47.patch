@@ -1,0 +1,2040 @@
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index e8444181c92a8d46eb6a4270b4e346b244f73ff9..87d14cc7f7dcf4604e96f0be61923137cd3ef012 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -5837,6 +5837,7 @@ async fn tree_shutdown_preserves_sibling_completion_activity_with_full_parent_qu
+             op: Op::ReloadUserConfig,
+             trace: None,
+             turn_extension_init: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
+index 6caab5ea785bb91a73c2d92ae7082721107261ae..28b5147d4938ad7f1bffb15c720b4cb2f078d8c2 100644
+--- a/codex-rs/core/src/codex_delegate.rs
++++ b/codex-rs/core/src/codex_delegate.rs
+@@ -287,6 +287,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+                         op: Op::Shutdown {},
+                         turn_extension_init: None,
+                         trace: None,
++                        trace_policy: None,
+                         parent_turn_id: None,
+                         root_turn_id: None,
+                         residency_guard: None,
+diff --git a/codex-rs/core/src/codex_delegate_tests.rs b/codex-rs/core/src/codex_delegate_tests.rs
+index 0ca83da485e6d2c2cc068bf203291b9d1c400982..78fb32314f8f397c1df0e849cf6e02900cf0f7d4 100644
+--- a/codex-rs/core/src/codex_delegate_tests.rs
++++ b/codex-rs/core/src/codex_delegate_tests.rs
+@@ -155,6 +155,7 @@ async fn forward_ops_preserves_submission_trace_context() {
+             ),
+             tracestate: Some("vendor=state".to_string()),
+         }),
++        trace_policy: None,
+         parent_turn_id: Some("parent-turn".to_string()),
+         root_turn_id: Some("root-turn".to_string()),
+         residency_guard: None,
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 903c46a74a48d495702a7dc100fc288f1b8eb4e4..5565d4a6a2dfc125b017adf3663328ac4f1fdf65 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -578,6 +578,7 @@ impl CodexThread {
+                 op: Op::SuspendTurnAndShutdown { reply },
+                 turn_extension_init: None,
+                 trace: current_span_w3c_trace_context(),
++                trace_policy: None,
+                 parent_turn_id: None,
+                 root_turn_id: None,
+                 residency_guard: None,
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index 20164dd17d0c859e01d6689a1ca3f99562b0d7e6..3ec6d182f12a9d05daeee9f74535893104f33a08 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -6,7 +6,8 @@ use crate::realtime_conversation::handle_speech as handle_realtime_conversation_
+ use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
+ use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
+ use async_channel::Receiver;
+-use codex_otel::set_parent_from_w3c_trace_context;
++use codex_otel::context_from_w3c_trace_context;
++use codex_otel::set_parent_from_context;
+ use tracing::Instrument;
+ use tracing::debug_span;
+ use tracing::info_span;
+@@ -893,13 +894,18 @@ pub(super) fn submission_dispatch_span(sub: &Submission) -> tracing::Span {
+             codex.op = op_name
+         ),
+     };
+-    if let Some(trace) = sub.trace.as_ref()
+-        && !set_parent_from_w3c_trace_context(&dispatch_span, trace)
+-    {
+-        warn!(
+-            submission.id = sub.id.as_str(),
+-            "ignoring invalid submission trace carrier"
+-        );
++    if let Some(trace) = sub.trace.as_ref() {
++        if let Some(mut parent) = context_from_w3c_trace_context(trace) {
++            if let Some(policy) = &sub.trace_policy {
++                parent = parent.with_value(policy.clone());
++            }
++            set_parent_from_context(&dispatch_span, parent);
++        } else {
++            warn!(
++                submission.id = sub.id.as_str(),
++                "ignoring invalid submission trace carrier"
++            );
++        }
+     }
+     dispatch_span
+ }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index ecf32bde25604cb9ac421b468a4279d3fe9c6709..97ee1864596c2dfecb3d6d2f043922ab8d77d400 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -97,7 +97,7 @@ use codex_network_proxy::NetworkProxyAuditMetadata;
+ use codex_network_proxy::normalize_host;
+ use codex_otel::auth_storage::AuthStorageOriginator;
+ use codex_otel::current_span_trace_id;
+-use codex_otel::current_span_w3c_trace_context;
++#[cfg(test)]
+ use codex_otel::set_parent_from_w3c_trace_context;
+ use codex_prompts::render_model_instructions;
+ use codex_protocol::ResponseUsageMetadata;
+@@ -521,22 +521,20 @@ impl Session {
+         args: SessionSpawnArgs,
+     ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
+         let tree_shutdown = args.agent_control.runtime().shutdown.clone();
++        let caller_policy = codex_otel::sdk_trace::current_scope_policy();
+         Box::pin(async move {
+-            let parent_trace = match args.parent_trace {
+-                Some(trace) => {
+-                    if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
+-                        Some(trace)
+-                    } else {
+-                        warn!("ignoring invalid thread spawn trace carrier");
+-                        None
+-                    }
+-                }
+-                None => None,
+-            };
+             let thread_spawn_span = info_span!("thread_spawn", otel.name = "thread_spawn");
+-            if let Some(trace) = parent_trace.as_ref() {
+-                let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
+-            }
++            let parent_trace = args.parent_trace.filter(|trace| {
++                let Some(mut parent) = codex_otel::context_from_w3c_trace_context(trace) else {
++                    warn!("ignoring invalid thread spawn trace carrier");
++                    return false;
++                };
++                if let Some(policy) = &caller_policy {
++                    parent = parent.with_value(policy.clone());
++                }
++                codex_otel::set_parent_from_context(&thread_spawn_span, parent);
++                true
++            });
+             let spawn = Self::spawn_internal(SessionSpawnArgs {
+                 parent_trace,
+                 ..args
+@@ -1024,6 +1022,7 @@ impl SessionIo {
+             op,
+             turn_extension_init,
+             trace,
++            trace_policy: None,
+             parent_turn_id,
+             root_turn_id,
+             residency_guard,
+@@ -1035,7 +1034,9 @@ impl SessionIo {
+     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
+     pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+         if sub.trace.is_none() {
+-            sub.trace = current_span_w3c_trace_context();
++            (sub.trace, sub.trace_policy) = codex_otel::sdk_trace::submission_trace();
++        } else if sub.trace_policy.is_none() {
++            sub.trace_policy = codex_otel::sdk_trace::current_scope_policy();
+         }
+         self.tx_sub
+             .send(sub)
+@@ -1069,6 +1070,7 @@ impl SessionIo {
+             },
+             trace,
+             turn_extension_init,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -1095,6 +1097,7 @@ impl SessionIo {
+             },
+             trace,
+             turn_extension_init,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
+index 68e2cf78f21f8ec42a8636967ecb5089bd05832e..5ad38f4eceb50e3754b3d6bdc20fc0557acccaee 100644
+--- a/codex-rs/core/src/session/step_activation_tests.rs
++++ b/codex-rs/core/src/session/step_activation_tests.rs
+@@ -497,6 +497,7 @@ fn settings_submission(
+                 reply,
+             },
+             trace: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/session/submission.rs b/codex-rs/core/src/session/submission.rs
+index 413e1874b1de51b440798f89e8fc81c4492164be..a4a34bd379bc686d7f8ec85f33c12f5f4fa3a34b 100644
+--- a/codex-rs/core/src/session/submission.rs
++++ b/codex-rs/core/src/session/submission.rs
+@@ -14,6 +14,8 @@ pub(crate) struct Submission {
+     pub turn_extension_init: Option<ExtensionDataInit>,
+     /// Optional W3C trace carrier propagated across async submission handoffs.
+     pub trace: Option<W3cTraceContext>,
++    /// Local workflow policy owned by this queued submission until dispatch.
++    pub trace_policy: Option<std::sync::Arc<codex_otel::sdk_trace::ScopePolicy>>,
+     pub parent_turn_id: Option<String>,
+     pub root_turn_id: Option<String>,
+     /// Keeps a V2 recipient resident until this submission is handled or dropped.
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index a8627b1d244616a8846c3bb3192b733c03e46209..416ca462fed2d8d06bbe9dcbf904c303dc8b6756 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -6293,6 +6293,7 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
+                 reply: Some(reply),
+             },
+             trace: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -8378,6 +8379,7 @@ fn submission_dispatch_span_prefers_submission_trace_context() {
+             turn_extension_init: None,
+             id: "sub-1".into(),
+             op: Op::Interrupt,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -8408,6 +8410,7 @@ fn submission_dispatch_span_uses_debug_for_realtime_audio() {
+                 item_id: None,
+             },
+         }),
++        trace_policy: None,
+         parent_turn_id: None,
+         root_turn_id: None,
+         residency_guard: None,
+@@ -8767,6 +8770,7 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
+         turn_extension_init: None,
+         id: "sub-1".into(),
+         op: Op::Interrupt,
++        trace_policy: None,
+         parent_turn_id: None,
+         root_turn_id: None,
+         residency_guard: None,
+diff --git a/codex-rs/otel/Cargo.toml b/codex-rs/otel/Cargo.toml
+index 3197eaa846bc1e072f34ce60066383114570a451..f484cf87f3a28ef136ca4081a8b640237bf3033f 100644
+--- a/codex-rs/otel/Cargo.toml
++++ b/codex-rs/otel/Cargo.toml
+@@ -52,7 +52,7 @@ http = { workspace = true }
+ os_info = { workspace = true }
+ reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+ serde = { workspace = true, features = ["derive"] }
+-serde_json = { workspace = true }
++serde_json = { workspace = true, features = ["raw_value"] }
+ strum_macros = { workspace = true }
+ thiserror = { workspace = true }
+ tokio = { workspace = true }
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 6d56fba67f2e0fc01d7ebcb66f86ee5304baf30b..4f05d66e79118ae80a3eea71ea3cab681ede4a3b 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -19,8 +19,63 @@ use serde_json::{Value, json};
+ pub struct ScopePolicy {
+     pub disabled: bool,
+     pub include_sensitive_data: bool,
+-    pub credential: Option<Arc<crate::sdk_trace_routes::TraceCredentials>>,
++    pub(crate) credential: Option<crate::sdk_trace_routes::TraceCredentialLease>,
++    pub(crate) root_descriptor: Arc<RootDescriptor>,
+     pub workflow_span_id: Option<SpanId>,
++    // The SDK uses this process-local key only to select JavaScript storage.
++    callback_storage_key: Option<CallbackStorageKey>,
++    callback_release: Option<CallbackRelease>,
++}
++
++impl ScopePolicy {
++    fn without_callback_release(&self) -> Self {
++        Self {
++            disabled: self.disabled,
++            include_sensitive_data: self.include_sensitive_data,
++            credential: self.credential.clone(),
++            root_descriptor: self.root_descriptor.clone(),
++            workflow_span_id: self.workflow_span_id,
++            callback_storage_key: self.callback_storage_key.clone(),
++            callback_release: None,
++        }
++    }
++}
++
++struct CallbackRelease(Option<Box<dyn FnOnce() + Send + Sync>>);
++
++impl std::fmt::Debug for CallbackRelease {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("CallbackRelease")
++    }
++}
++
++impl Drop for CallbackRelease {
++    fn drop(&mut self) {
++        if let Some(release) = self.0.take() {
++            release();
++        }
++    }
++}
++
++#[derive(Clone)]
++struct CallbackStorageKey(String);
++
++impl std::fmt::Debug for CallbackStorageKey {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("CallbackStorageKey")
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct RootDescriptor {
++    pub snapshot: OnceLock<Value>,
++    pub metadata: OnceLock<String>,
++    pub ended: AtomicBool,
++}
++impl std::fmt::Debug for RootDescriptor {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("RootDescriptor")
++    }
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -81,6 +136,10 @@ fn policies() -> &'static Mutex<HashMap<Identity, Weak<PolicyRegistration>>> {
+     POLICIES.get_or_init(Default::default)
+ }
+ fn policy_registration(span: &SpanContext) -> Option<Arc<PolicyRegistration>> {
++    // Wire IDs identify ancestry. Only a locally created span can own a registry entry.
++    if span.is_remote() {
++        return None;
++    }
+     // Release the registry lock before upgrading: dropping the final upgraded
+     // owner removes its entry and must never run while this lock is held.
+     let registration = policies()
+@@ -109,12 +168,6 @@ pub fn policy_for_context(context: &Context) -> Option<Arc<ScopePolicy>> {
+         .cloned()
+         .or_else(|| policy_for_span(context.span().span_context()))
+ }
+-pub fn restore_policy(context: Context) -> Context {
+-    match policy_for_context(&context) {
+-        Some(policy) => context.with_value(policy),
+-        None => context,
+-    }
+-}
+ pub fn scoped_capture_allowed() -> bool {
+     policy_for_context(&Context::current())
+         .is_none_or(|policy| !policy.disabled && policy.include_sensitive_data)
+@@ -131,7 +184,8 @@ pub struct ScopedSpan {
+ }
+ pub fn wrap_span(span: global::BoxedSpan, parent: &Context) -> ScopedSpan {
+     let span_context = span.span_context().clone();
+-    let registration = policy_for_context(parent).map(|policy| retain_policy(&span_context, policy));
++    let registration =
++        policy_for_context(parent).map(|policy| retain_policy(&span_context, policy));
+     ScopedSpan {
+         span: Some(span),
+         span_context,
+@@ -206,7 +260,11 @@ pub fn build_span(
+     }
+     let policy = policy_for_context(parent);
+     if policy.is_none() {
+-        return ScopedSpan { span: None, span_context: SpanContext::NONE, _registration: None };
++        return ScopedSpan {
++            span: None,
++            span_context: SpanContext::NONE,
++            _registration: None,
++        };
+     }
+     use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator};
+     let generator = RandomIdGenerator::default();
+@@ -267,13 +325,13 @@ struct Options {
+     detached: bool,
+     trace_id: Option<String>,
+     group_id: Option<String>,
+-    metadata: Option<Value>,
++    metadata: Option<Box<serde_json::value::RawValue>>,
+     disabled: Option<bool>,
+     include_sensitive_data: Option<bool>,
+     credential_ref: Option<String>,
+ }
+ #[derive(Serialize)]
+-struct Readback {
++struct Readback<'a> {
+     handle: String,
+     trace_id: String,
+     span_id: String,
+@@ -281,8 +339,15 @@ struct Readback {
+     workflow_span_id: Option<String>,
+     disabled: bool,
+     include_sensitive_data: bool,
++    root_metadata: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    callback_storage_key: Option<&'a str>,
+ }
+-fn readback(key: &str, handle: &Handle) -> Result<String, String> {
++fn readback(
++    key: &str,
++    handle: &Handle,
++    callback_storage_key: Option<&CallbackStorageKey>,
++) -> Result<String, String> {
+     let span = handle.context.span();
+     let span = span.span_context();
+     let policy = policy_for_context(&handle.context).ok_or("Native tracing policy unavailable")?;
+@@ -294,6 +359,8 @@ fn readback(key: &str, handle: &Handle) -> Result<String, String> {
+         workflow_span_id: policy.workflow_span_id.map(|id| id.to_string()),
+         disabled: policy.disabled,
+         include_sensitive_data: policy.include_sensitive_data,
++        root_metadata: policy.root_descriptor.metadata.get().map(String::as_str),
++        callback_storage_key: callback_storage_key.map(|key| key.0.as_str()),
+     })
+     .map_err(|_| "Native tracing context could not serialize".into())
+ }
+@@ -338,9 +405,63 @@ fn bounded_value(value: &Value, depth: usize) -> Result<(), String> {
+         _ => Ok(()),
+     }
+ }
+-fn metadata_attribute_value(value: &Value) -> Result<String, String> {
+-    let encoded = match value { Value::String(value) => value.clone(), _ => value.to_string() };
+-    if encoded.len() > 4096 { return Err("Encoded tracing metadata value exceeds 4096 UTF-8 bytes".into()); }
++// Validate opaque metadata with typed serde containers, without Value's private-map visitor.
++// Return canonical JSON so escaped strings keep the existing encoded-attribute byte limit.
++fn bounded_metadata_json(
++    encoded: &str,
++    depth: usize,
++) -> Result<Box<serde_json::value::RawValue>, String> {
++    if depth > 8 {
++        return Err("Tracing metadata exceeds maximum depth of 8".into());
++    }
++    let encoded = encoded.trim_start();
++    let serialized = if encoded.starts_with('"') {
++        let value: String =
++            serde_json::from_str(encoded).map_err(|_| "Invalid tracing metadata")?;
++        if value.len() > 4096 {
++            return Err("Tracing string exceeds 4096 UTF-8 bytes".into());
++        }
++        serde_json::value::to_raw_value(&value)
++    } else if encoded.starts_with('[') {
++        let values: Vec<&serde_json::value::RawValue> =
++            serde_json::from_str(encoded).map_err(|_| "Invalid tracing metadata")?;
++        if values.len() > 64 {
++            return Err("Tracing arrays may contain at most 64 entries".into());
++        }
++        let values = values
++            .iter()
++            .map(|value| bounded_metadata_json(value.get(), depth + 1))
++            .collect::<Result<Vec<_>, _>>()?;
++        serde_json::value::to_raw_value(&values)
++    } else if encoded.starts_with('{') {
++        let values: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
++            serde_json::from_str(encoded).map_err(|_| "Invalid tracing metadata")?;
++        if values.len() > 64 {
++            return Err("Tracing objects may contain at most 64 fields".into());
++        }
++        let mut bounded = std::collections::BTreeMap::new();
++        for (key, value) in values {
++            if key.len() > 256 {
++                return Err("Tracing key exceeds 256 UTF-8 bytes".into());
++            }
++            bounded.insert(key, bounded_metadata_json(value.get(), depth + 1)?);
++        }
++        serde_json::value::to_raw_value(&bounded)
++    } else {
++        return serde_json::value::RawValue::from_string(encoded.to_owned())
++            .map_err(|_| "Invalid tracing metadata".into());
++    };
++    serialized.map_err(|_| "Invalid tracing metadata".into())
++}
++fn metadata_attribute_value(value: &serde_json::value::RawValue) -> Result<String, String> {
++    let encoded = if value.get().starts_with('"') {
++        serde_json::from_str::<String>(value.get()).map_err(|_| "Invalid tracing metadata")?
++    } else {
++        value.get().to_owned()
++    };
++    if encoded.len() > 4096 {
++        return Err("Encoded tracing metadata value exceeds 4096 UTF-8 bytes".into());
++    }
+     Ok(encoded)
+ }
+ 
+@@ -397,19 +518,46 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     } else if options.detached {
+         None
+     } else {
+-        inherited.as_ref().and_then(|policy| policy.workflow_span_id)
++        inherited
++            .as_ref()
++            .and_then(|policy| policy.workflow_span_id)
+     };
++    // Host span handles and their public aliases carry ancestry and privacy only.
++    let callback_storage_key = inherited
++        .as_ref()
++        .filter(|_| options.kind == "callback" && !options.detached)
++        .and_then(|policy| policy.callback_storage_key.as_ref());
+     let policy = Arc::new(ScopePolicy {
++        callback_storage_key: None,
++        callback_release: None,
+         workflow_span_id,
+         disabled,
+         include_sensitive_data: capture,
+         credential,
++        root_descriptor: if options.detached {
++            Default::default()
++        } else {
++            inherited
++                .as_ref()
++                .map(|policy| Arc::clone(&policy.root_descriptor))
++                .unwrap_or_default()
++        },
+     });
+-    let metadata = options.metadata.unwrap_or_else(|| json!({}));
+-    bounded_value(&metadata, 0)?;
+-    let metadata = metadata
+-        .as_object()
+-        .ok_or("Tracing metadata must be an object")?;
++    let metadata_json = options
++        .metadata
++        .as_deref()
++        .map_or("{}", serde_json::value::RawValue::get);
++    let bounded_metadata = bounded_metadata_json(metadata_json, 0)?;
++    let metadata: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
++        serde_json::from_str(bounded_metadata.get())
++            .map_err(|_| "Tracing metadata must be an object")?;
++    if options.detached || inherited.is_none() {
++        // Original JSON on the existing root owner, without lossy attribute conversion.
++        let _ = policy
++            .root_descriptor
++            .metadata
++            .set(metadata_json.to_owned());
++    }
+     let mut attributes = Vec::new();
+     attributes.push(KeyValue::new("sdk.span.kind", options.kind));
+     if let Some(group) = options.group_id {
+@@ -442,8 +590,8 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+         return Err("trace_id does not match the selected parent".into());
+     }
+     let context = parent_context.with_value(policy);
+-    let mut builder = opentelemetry::trace::SpanBuilder::from_name(options.name)
+-        .with_attributes(attributes);
++    let mut builder =
++        opentelemetry::trace::SpanBuilder::from_name(options.name).with_attributes(attributes);
+     builder.trace_id = trace_id;
+     builder.span_id = Some(span_id);
+     let span = build_span("codex_agents_sdk", builder, &context);
+@@ -457,7 +605,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+         ended: Mutex::new(false),
+     });
+     let key = token("s");
+-    let result = readback(&key, &handle)?;
++    let result = readback(&key, &handle, callback_storage_key)?;
+     handles()
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+@@ -465,8 +613,34 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     Ok(result)
+ }
+ pub fn trace_span_context(key: &str) -> Result<String, String> {
+-    readback(key, resolve(key)?.as_ref())
++    readback(key, resolve(key)?.as_ref(), None)
+ }
++/// The private dispatch context owns callback storage independently of the public span.
++pub fn retain_callback_dispatch_context(
++    key: &str,
++    callback_storage_key: String,
++    release: impl FnOnce() + Send + Sync + 'static,
++) -> Result<String, String> {
++    let handle = resolve(key)?;
++    let policy = policy_for_context(&handle.context).ok_or("Native tracing policy unavailable")?;
++    let policy = Arc::new(ScopePolicy {
++        callback_storage_key: Some(CallbackStorageKey(callback_storage_key)),
++        callback_release: Some(CallbackRelease(Some(Box::new(release)))),
++        ..policy.without_callback_release()
++    });
++    let key = token("c");
++    handles().lock().unwrap_or_else(|e| e.into_inner()).insert(
++        key.clone(),
++        Arc::new(Handle {
++            context: handle.context.with_value(policy),
++            _registration: None,
++            parent_span_id: handle.parent_span_id.clone(),
++            ended: Mutex::new(true),
++        }),
++    );
++    Ok(key)
++}
++
+ pub fn retain_trace_context(key: &str) -> Result<String, String> {
+     let handle = resolve(key)?;
+     let key = token("c");
+@@ -508,7 +682,9 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+     }
+     if let Some(data) = &outcome.data {
+         bounded_value(data, 0)?;
+-        if data.to_string().len() > 4096 { return Err("Encoded tracing outcome data exceeds 4096 UTF-8 bytes".into()); }
++        if data.to_string().len() > 4096 {
++            return Err("Encoded tracing outcome data exceeds 4096 UTF-8 bytes".into());
++        }
+     }
+     let handle = resolve(key)?;
+     let mut ended = handle.ended.lock().unwrap_or_else(|e| e.into_inner());
+@@ -542,18 +718,52 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+ pub fn context(key: &str) -> Result<Context, String> {
+     Ok(resolve(key)?.context.clone())
+ }
++struct ExplicitSubmissionContext;
++
++/// Mark the context selected by an SDK admission, including an explicit empty owner.
++pub fn explicit_submission_context(context: Context) -> Context {
++    context.with_value(ExplicitSubmissionContext)
++}
++
++fn current_submission_context() -> Context {
++    let context = Context::current();
++    if context.get::<ExplicitSubmissionContext>().is_some() {
++        context
++    } else {
++        crate::trace_context::current_span_context()
++    }
++}
++
++pub fn current_scope_policy() -> Option<Arc<ScopePolicy>> {
++    policy_for_context(&current_submission_context())
++}
++
++pub fn submission_trace() -> (
++    Option<codex_protocol::protocol::W3cTraceContext>,
++    Option<Arc<ScopePolicy>>,
++) {
++    let active = current_submission_context();
++    (
++        crate::trace_context::context_w3c_trace_context(&active),
++        policy_for_context(&active),
++    )
++}
++
+ pub fn current_context_token() -> Option<String> {
+-    // Native lifecycle hooks may run in an instrumented tracing span without
+-    // an attached OpenTelemetry Context. Prefer that exact span's carrier.
+-    let context = crate::trace_context::current_span_w3c_trace_context()
+-        .and_then(|trace| crate::trace_context::context_from_w3c_trace_context(&trace))
+-        .filter(|context| policy_for_context(context).is_some())
+-        .unwrap_or_else(|| restore_policy(Context::current()));
++    // Native lifecycle hooks can inherit private values on the instrumented
++    // span. A W3C round trip would discard those values before policy lookup.
++    let context = crate::trace_context::current_span_context();
+     let policy = policy_for_context(&context)?;
+-    let registration = retain_policy(context.span().span_context(), policy);
++    let registration = {
++        let span = context.span();
++        let identity = span.span_context();
++        // A remote parent may carry an independently captured caller policy.
++        // Keep that value on the handle without claiming the parent's IDs.
++        (!identity.is_remote()).then(|| retain_policy(identity, policy))
++    };
+     let handle = Arc::new(Handle {
+         context,
+-        _registration: Some(registration),
++        _registration: registration,
+         parent_span_id: None,
+         ended: Mutex::new(true),
+     });
+@@ -584,11 +794,56 @@ mod tests {
+         assert!(bounded_value(&json!({"x":"a".repeat(4097)}), 0).is_err());
+         assert!(bounded_value(&json!({"x":[1,2,3]}), 0).is_ok());
+     }
++    #[test]
++    fn preserves_opaque_metadata_and_existing_bounds() {
++        for marker in ["Number", "RawValue"] {
++            let encoded =
++                format!(r#"{{"nested":{{"$serde_json::private::{marker}":"ordinary text"}}}}"#);
++            assert_eq!(bounded_metadata_json(&encoded, 0).unwrap().get(), encoded);
++        }
++        let escaped = format!(r#"{{"text":"{}"}}"#, "\\u00e9".repeat(1000));
++        let canonical = bounded_metadata_json(&escaped, 0).unwrap();
++        assert_eq!(metadata_attribute_value(&canonical).unwrap().len(), 2011);
++        let string = serde_json::to_string(&"x".repeat(4096)).unwrap();
++        assert!(bounded_metadata_json(&string, 0).is_ok());
++        let string = serde_json::to_string(&"x".repeat(4097)).unwrap();
++        assert!(bounded_metadata_json(&string, 0).is_err());
++        for (count, allowed) in [(64, true), (65, false)] {
++            let array = serde_json::to_string(&vec![0; count]).unwrap();
++            assert_eq!(bounded_metadata_json(&array, 0).is_ok(), allowed);
++            let object = (0..count)
++                .map(|key| (key.to_string(), 0))
++                .collect::<std::collections::BTreeMap<_, _>>();
++            assert_eq!(
++                bounded_metadata_json(&serde_json::to_string(&object).unwrap(), 0).is_ok(),
++                allowed
++            );
++        }
++        for (length, allowed) in [(256, true), (257, false)] {
++            let object = std::collections::BTreeMap::from([("x".repeat(length), 0)]);
++            assert_eq!(
++                bounded_metadata_json(&serde_json::to_string(&object).unwrap(), 0).is_ok(),
++                allowed
++            );
++        }
++        for (depth, allowed) in [(8, true), (9, false)] {
++            let value = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
++            assert_eq!(bounded_metadata_json(&value, 0).is_ok(), allowed);
++        }
++        let large = format!(r#"{{"integer":1{}}}"#, "0".repeat(80));
++        assert_eq!(bounded_metadata_json(&large, 0).unwrap().get(), large);
++    }
++
+     #[test]
+     fn bounds_actual_metadata_attribute_encoding() {
+-        assert_eq!(metadata_attribute_value(&json!("x".repeat(4096))).unwrap().len(),4096);
+-        assert!(metadata_attribute_value(&json!(["x".repeat(3000),"y".repeat(3000)])).is_err());
+-        assert!(metadata_attribute_value(&json!({"key":[1,2]})).is_ok());
++        assert_eq!(
++            metadata_attribute_value(&serde_json::value::to_raw_value(&json!("x".repeat(4096))).unwrap())
++                .unwrap()
++                .len(),
++            4096
++        );
++        assert!(metadata_attribute_value(&serde_json::value::to_raw_value(&json!(["x".repeat(3000), "y".repeat(3000)])).unwrap()).is_err());
++        assert!(metadata_attribute_value(&serde_json::value::to_raw_value(&json!({"key":[1,2]})).unwrap()).is_ok());
+     }
+     #[test]
+     fn workflow_identity_uses_selected_parent_and_survives_closed_nonrecording_scopes() {
+@@ -627,7 +882,9 @@ mod tests {
+             release_trace_span(key);
+         }
+         let carrier = trace_carrier(&lease).unwrap();
+-        let parent = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert!(policy_for_context(&remote).is_none());
++        let parent = context(&lease).unwrap();
+         assert_eq!(
+             policy_for_context(&parent)
+                 .unwrap()
+@@ -651,7 +908,10 @@ mod tests {
+             disabled: true,
+             include_sensitive_data: false,
+             credential: None,
++            root_descriptor: Default::default(),
+             workflow_span_id: None,
++            callback_storage_key: None,
++            callback_release: None,
+         });
+         let context = Context::new().with_value(policy);
+         let sample = ScopeSampler::default().should_sample(
+@@ -690,6 +950,44 @@ impl ContextLease {
+     pub fn token(&self) -> &str {
+         &self.token
+     }
++
++    /// Give an active callback or a new turn an independently retirable handle.
++    pub fn retain(&self) -> Self {
++        Self {
++            token: retain_trace_context(&self.token).expect("live native tracing lease"),
++        }
++    }
++
++    /// Receipts keep their exact ancestry after losing callback ownership.
++    pub fn release_callback_ownership(&self) {
++        let previous = {
++            let mut handles = handles().lock().unwrap_or_else(|e| e.into_inner());
++            let Some(handle) = handles.get_mut(&self.token) else {
++                return;
++            };
++            let Some(policy) = policy_for_context(&handle.context) else {
++                return;
++            };
++            if policy.callback_release.is_none() {
++                return;
++            }
++            let span = handle.context.span().span_context().clone();
++            // Drop the owning OTel span and registry registration as well as
++            // the typed policy. Keep the original SpanContext, including flags.
++            let context = handle
++                .context
++                .with_remote_span_context(span)
++                .with_value(Arc::new(policy.without_callback_release()));
++            let replacement = Arc::new(Handle {
++                context,
++                _registration: None,
++                parent_span_id: handle.parent_span_id.clone(),
++                ended: Mutex::new(true),
++            });
++            std::mem::replace(handle, replacement)
++        };
++        drop(previous);
++    }
+ }
+ impl Drop for ContextLease {
+     fn drop(&mut self) {
+@@ -750,7 +1048,9 @@ mod lifecycle_tests {
+         end_trace_span(root_key, r#"{"status":"error"}"#).unwrap();
+         release_trace_span(root_key);
+         let carrier = trace_carrier(&lease).unwrap();
+-        let parent = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert!(policy_for_context(&remote).is_none());
++        let parent = context(&lease).unwrap();
+         assert!(!policy_for_context(&parent).unwrap().include_sensitive_data);
+         let child = global::tracer("native-fixture").start_with_context("native-child", &parent);
+         let mut child = wrap_span(child, &parent);
+@@ -979,6 +1279,256 @@ mod context_lease_tests {
+     use super::*;
+     use opentelemetry_sdk::trace::{InMemorySpanExporter, Sampler, SdkTracerProvider};
+ 
++    #[test]
++    fn explicitly_admitted_context_wins_over_an_unrelated_native_span() {
++        use opentelemetry::trace::TracerProvider as _;
++        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
++        use tracing_subscriber::prelude::*;
++
++        const CHILD: &str = "CODEX_SDK_EXPLICIT_ADMISSION_OWNER_TEST";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::context_lease_tests::explicitly_admitted_context_wins_over_an_unrelated_native_span", "--nocapture"])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        let subscriber = tracing_subscriber::registry()
++            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("admission-test")));
++        let _subscriber = tracing::subscriber::set_default(subscriber);
++        configure_pipeline(true);
++        let start = |name: &str| {
++            let value: Value = serde_json::from_str(
++                &start_trace_span(&json!({"name":name,"kind":"workflow"}).to_string()).unwrap(),
++            )
++            .unwrap();
++            value["handle"].as_str().unwrap().to_owned()
++        };
++        let caller = start("admitted caller");
++        let other = start("unrelated native workflow");
++        let caller_context = context(&caller).unwrap();
++        let caller_policy = policy_for_context(&caller_context).unwrap();
++        let other_context = context(&other).unwrap();
++        let other_policy = policy_for_context(&other_context).unwrap();
++        let native = tracing::info_span!(parent: None, "active native span");
++        let _ = native.set_parent(other_context);
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .build()
++            .unwrap();
++        {
++            let _entered = native.enter();
++            assert!(Arc::ptr_eq(&current_scope_policy().unwrap(), &other_policy));
++            let inspect = |selected: Context| {
++                runtime.block_on(
++                    async { (current_scope_policy(), submission_trace()) }
++                        .with_context(explicit_submission_context(selected)),
++                )
++            };
++            let (policy, (carrier, queued_policy)) = inspect(caller_context);
++            assert!(
++                policy.is_some_and(|policy| Arc::ptr_eq(&policy, &caller_policy)),
++                "explicit admission borrowed the unrelated native workflow",
++            );
++            assert!(Arc::ptr_eq(&queued_policy.unwrap(), &caller_policy));
++            assert_eq!(carrier, Some(trace_carrier(&caller).unwrap()));
++            let (policy, (carrier, queued_policy)) = inspect(Context::new());
++            assert!(policy.is_none() && queued_policy.is_none() && carrier.is_none());
++        }
++        drop(native);
++        for handle in [&caller, &other] {
++            end_trace_span(handle, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(handle);
++        }
++        provider.shutdown().unwrap();
++    }
++
++    #[test]
++    fn remote_trace_identity_cannot_authorize_an_sdk_export_route() {
++        const CHILD: &str = "CODEX_SDK_REMOTE_POLICY_ROUTE_TEST";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::context_lease_tests::remote_trace_identity_cannot_authorize_an_sdk_export_route"])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        configure_pipeline(true);
++        crate::sdk_trace_routes::configure_default(true);
++        let start = |name: &str| {
++            let reference = crate::sdk_trace_routes::register_trace_credentials(
++                &json!({"x-test-route": name}).to_string(),
++            )
++            .unwrap();
++            let value: Value = serde_json::from_str(
++                &start_trace_span(
++                    &json!({"name":name,"kind":"workflow","credential_ref":reference}).to_string(),
++                )
++                .unwrap(),
++            )
++            .unwrap();
++            (value["handle"].as_str().unwrap().to_owned(), reference)
++        };
++        let (victim, victim_reference) = start("victim");
++        let (caller, caller_reference) = start("caller");
++        let carrier = trace_carrier(&victim).unwrap();
++        let remote = crate::trace_context::context_from_trace_headers(
++            carrier.traceparent.as_deref(),
++            carrier.tracestate.as_deref(),
++        )
++        .unwrap();
++        assert!(remote.span().span_context().is_remote());
++        assert!(
++            policy_for_context(&context(&victim).unwrap())
++                .unwrap()
++                .credential
++                .is_some()
++        );
++
++        let unscoped = build_span(
++            "sdk-route-test",
++            opentelemetry::trace::SpanBuilder::from_name("unscoped request"),
++            &remote,
++        );
++        assert_eq!(
++            unscoped.span_context().trace_id(),
++            remote.span().span_context().trace_id()
++        );
++        let recovered =
++            policy_for_span(unscoped.span_context()).and_then(|policy| policy.credential.clone());
++        assert!(
++            recovered.is_none(),
++            "an external trace ID restored a private export route"
++        );
++
++        let caller_policy = policy_for_context(&context(&caller).unwrap()).unwrap();
++        let scoped = build_span(
++            "sdk-route-test",
++            opentelemetry::trace::SpanBuilder::from_name("scoped request"),
++            &remote.with_value(caller_policy.clone()),
++        );
++        assert_eq!(
++            scoped.span_context().trace_id(),
++            unscoped.span_context().trace_id()
++        );
++        assert!(Arc::ptr_eq(
++            &policy_for_span(scoped.span_context()).unwrap(),
++            &caller_policy
++        ));
++        drop(scoped);
++        drop(unscoped);
++        for (handle, reference) in [(victim, victim_reference), (caller, caller_reference)] {
++            end_trace_span(&handle, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(&handle);
++            crate::sdk_trace_routes::release_trace_credentials(&reference).unwrap();
++        }
++        provider.shutdown().unwrap();
++    }
++
++    #[test]
++    fn unowned_instrumented_span_never_borrows_ambient_workflow_policy() {
++        use opentelemetry::trace::TracerProvider as _;
++        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
++        use tracing_subscriber::prelude::*;
++
++        const CHILD: &str = "CODEX_SDK_UNOWNED_INSTRUMENTED_CONTEXT_CHILD";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args([
++                    "--exact",
++                    "sdk_trace::context_lease_tests::unowned_instrumented_span_never_borrows_ambient_workflow_policy",
++                    "--nocapture",
++                ])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        let subscriber = tracing_subscriber::registry().with(
++            tracing_opentelemetry::layer().with_tracer(provider.tracer("unowned-context-fixture")),
++        );
++        let _subscriber = tracing::subscriber::set_default(subscriber);
++        configure_pipeline(true);
++
++        let workflow: Value = serde_json::from_str(
++            &start_trace_span(
++                r#"{"name":"unrelated-B","kind":"workflow","trace_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","disabled":false,"include_sensitive_data":true}"#,
++            )
++            .unwrap(),
++        )
++        .unwrap();
++        let workflow_key = workflow["handle"].as_str().unwrap();
++        let unrelated = context(workflow_key).unwrap();
++        let unrelated_policy = policy_for_context(&unrelated).unwrap();
++        assert!(unrelated_policy.include_sensitive_data);
++        assert!(!unrelated_policy.disabled);
++
++        // A is a valid instrumented native span with an explicit, unowned parent.
++        // B stays attached on this thread, but must not supply A's workflow policy.
++        let carrier = codex_protocol::protocol::W3cTraceContext {
++            traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1111111111111111-01".to_owned()),
++            tracestate: None,
++        };
++        let explicit = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert!(policy_for_context(&explicit).is_none());
++        let native = tracing::info_span!(parent: None, "unowned-native-A");
++        let _ = native.set_parent(explicit);
++        let captured = {
++            let _entered = native.enter();
++            let _attached_unrelated = unrelated.attach();
++            let active = crate::trace_context::current_span_context();
++            assert!(active.span().span_context().is_valid());
++            assert_eq!(
++                active.span().span_context().trace_id().to_string(),
++                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
++            );
++            assert!(policy_for_context(&active).is_none());
++            assert_eq!(
++                Context::current()
++                    .span()
++                    .span_context()
++                    .trace_id()
++                    .to_string(),
++                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
++            );
++            ContextLease::capture()
++        };
++
++        // Save only public tracing flags for the failure message, then release any
++        // wrongly captured lease before asserting. No credential or payload is used.
++        let borrowed = captured.as_ref().map(|lease| {
++            serde_json::from_str::<Value>(&trace_span_context(lease.token()).unwrap()).unwrap()
++        });
++        drop(captured);
++        drop(native);
++        end_trace_span(workflow_key, r#"{"status":"ok"}"#).unwrap();
++        release_trace_span(workflow_key);
++        provider.shutdown().unwrap();
++
++        assert!(
++            borrowed.is_none(),
++            "unowned instrumented A borrowed unrelated B's SDK context: {borrowed:?}"
++        );
++    }
++
+     #[test]
+     fn captured_leases_retain_intermediate_identity_until_last_owner_releases() {
+         const CHILD: &str = "CODEX_SDK_CONTEXT_LEASE_IDENTITY_CHILD";
+@@ -1040,8 +1590,10 @@ mod context_lease_tests {
+                     let carrier = trace_carrier(first.token()).unwrap();
+                     drop(active);
+                     let assert_policy = || {
+-                        let restored = crate::context_from_w3c_trace_context(&carrier).unwrap();
+-                        let restored = policy_for_context(&restored)
++                        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++                        assert!(policy_for_context(&remote).is_none());
++                        let retained = context(second.token()).unwrap();
++                        let restored = policy_for_context(&retained)
+                             .expect("live lease must retain intermediate identity policy");
+                         assert!(Arc::ptr_eq(&restored, &policy));
+                         assert_eq!(restored.disabled, disabled);
+diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
+index 37c576f1149e3babc5fca680558522ea4ac8c20f..645550c9dba3ee53dc3899411e559ba9984c8565 100644
+--- a/codex-rs/otel/src/sdk_trace_routes.rs
++++ b/codex-rs/otel/src/sdk_trace_routes.rs
+@@ -13,7 +13,52 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
+ const MAX_EVENTS: usize = 2048;
+ const MAX_BYTES: usize = 4 * 1024 * 1024;
+ 
++/// Process-wide settings for the existing native-to-host lifecycle queue.
++#[derive(Clone, Debug, Deserialize)]
++#[serde(default, deny_unknown_fields)]
++pub struct HostTraceDeliverySettings {
++    max_queue_size: u32,
++    max_queue_bytes: u32,
++    max_batch_size: u32,
++    schedule_delay_ms: u32,
++    export_trigger_ratio: f64,
++}
++
++impl Default for HostTraceDeliverySettings {
++    fn default() -> Self {
++        Self {
++            max_queue_size: MAX_EVENTS as u32,
++            max_queue_bytes: MAX_BYTES as u32,
++            max_batch_size: 512,
++            schedule_delay_ms: 0,
++            export_trigger_ratio: 0.7,
++        }
++    }
++}
++
++impl HostTraceDeliverySettings {
++    pub fn parse(value: Value) -> Result<Self, String> {
++        let settings: Self =
++            serde_json::from_value(value).map_err(|_| "invalid host trace delivery options")?;
++        if settings.max_queue_size == 0
++            || settings.max_queue_bytes == 0
++            || settings.max_batch_size == 0
++            || !settings.export_trigger_ratio.is_finite()
++            || !(0.0..=1.0).contains(&settings.export_trigger_ratio)
++        {
++            return Err("invalid host trace delivery options".into());
++        }
++        Ok(settings)
++    }
++}
++
++/// Install validated settings before enabling the process trace provider.
++pub fn configure_host_trace_delivery(settings: HostTraceDeliverySettings) {
++    lock().delivery = settings;
++}
++
+ pub struct TraceCredentials {
++    identity: String,
+     headers: HashMap<String, String>,
+ }
+ impl std::fmt::Debug for TraceCredentials {
+@@ -36,10 +81,15 @@ struct Routes {
+     processors: Vec<String>,
+     replaced: bool,
+     default_available: bool,
++    accepting_credentials: bool,
++    credentials_closed: bool,
+     sequence: u64,
+     acknowledged: u64,
+     delivered: u64,
+-    queue: VecDeque<(u64, Value, usize)>,
++    queue: VecDeque<(u64, Value, usize, Option<Arc<HostTraceCredential>>)>,
++    delivery: HostTraceDeliverySettings,
++    queued_since: Option<Instant>,
++    draining: bool,
+     pending: BTreeSet<u64>,
+     bytes: usize,
+     dropped: u64,
+@@ -90,24 +140,79 @@ pub fn register_trace_credentials(input: &str) -> Result<String, String> {
+     }
+     s.next_credential += 1;
+     let key = format!("credential_{}", s.next_credential);
+-    s.credentials
+-        .insert(key.clone(), Arc::new(TraceCredentials { headers }));
++    s.credentials.insert(
++        key.clone(),
++        Arc::new(TraceCredentials {
++            identity: key.clone(),
++            headers,
++        }),
++    );
+     Ok(key)
+ }
+ pub(crate) fn configure_default(available: bool) {
+-    lock().default_available = available;
++    let mut routes = lock();
++    routes.default_available = available;
++    // Provider cleanup also configures an unavailable default. Never reopen a terminal owner.
++    routes.accepting_credentials = !routes.credentials_closed;
++}
++/// A span and its descendants retain the credential destination chosen at admission.
++#[derive(Clone, Debug)]
++pub(crate) enum TraceCredentialLease {
++    Otlp(Arc<TraceCredentials>),
++    Host(Arc<HostTraceCredential>),
++}
++
++#[derive(Debug)]
++pub(crate) struct HostTraceCredential {
++    credential: Arc<TraceCredentials>,
++    processor_ids: Vec<String>,
++}
++
++impl TraceCredentialLease {
++    fn otlp(&self) -> Option<Arc<TraceCredentials>> {
++        match self {
++            Self::Otlp(credential) => Some(Arc::clone(credential)),
++            Self::Host(_) => None,
++        }
++    }
++
++    fn host(&self) -> Option<Arc<HostTraceCredential>> {
++        match self {
++            Self::Host(credential) => Some(Arc::clone(credential)),
++            Self::Otlp(_) => None,
++        }
++    }
+ }
+-pub fn credential(reference: &str) -> Result<Arc<TraceCredentials>, String> {
++
++pub(crate) fn credential(reference: &str) -> Result<TraceCredentialLease, String> {
+     let s = lock();
+-    if !s.default_available || s.replaced {
+-        return Err(
+-            "trace credential overrides require an active built-in OTLP trace route".into(),
+-        );
++    let otlp_active = s.default_available && !s.replaced;
++    if !s.accepting_credentials || (!otlp_active && s.processors.is_empty()) {
++        return Err("trace credential overrides require an active native trace route".into());
+     }
+-    s.credentials
++    let credential = s
++        .credentials
+         .get(reference)
+         .cloned()
+-        .ok_or_else(|| "unknown trace credential reference".into())
++        .ok_or_else(|| "unknown trace credential reference".to_string())?;
++    Ok(if otlp_active {
++        TraceCredentialLease::Otlp(credential)
++    } else {
++        TraceCredentialLease::Host(Arc::new(HostTraceCredential {
++            credential,
++            processor_ids: s.processors.clone(),
++        }))
++    })
++}
++
++/// Retire undrained private host credentials on every terminal shutdown exit.
++pub struct HostTraceDeliveryShutdown;
++impl Drop for HostTraceDeliveryShutdown {
++    fn drop(&mut self) {
++        for (_, _, _, credential) in &mut lock().queue {
++            *credential = None;
++        }
++    }
+ }
+ 
+ pub fn release_trace_credentials(reference: &str) -> Result<(), String> {
+@@ -153,13 +258,7 @@ pub fn set_trace_routes(input: &str) -> Result<u64, String> {
+     s.replaced |= options.replace;
+     Ok(s.sequence)
+ }
+-fn event(s: &mut Routes, span: &SpanData, lifecycle: &str) {
+-    s.sequence += 1;
+-    let sequence = s.sequence;
+-    if s.processors.is_empty() {
+-        return;
+-    }
+-    // Native fields are copied into an immutable, bounded JSON snapshot. Never copy policy.
++fn attributes(span: &SpanData) -> BTreeMap<String, Value> {
+     let mut attrs = BTreeMap::new();
+     // User metadata has 64 fields; reserve the native SDK's full 128-attribute
+     // capacity for SDK kind/group fields and configured span attributes too.
+@@ -174,15 +273,82 @@ fn event(s: &mut Routes, span: &SpanData, lifecycle: &str) {
+         };
+         attrs.insert(key, val);
+     }
+-    let value = json!({"sequence":sequence,"processor_ids":s.processors,"lifecycle":lifecycle,"trace_id":span.span_context.trace_id().to_string(),"span_id":span.span_context.span_id().to_string(),"parent_span_id":if span.parent_span_id==opentelemetry::trace::SpanId::INVALID {None}else{Some(span.parent_span_id.to_string())},"name":truncate(&span.name,4096),"kind":format!("{:?}",span.span_kind).to_ascii_lowercase(),"start_time_unix_nanos":span.start_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().to_string(),"end_time_unix_nanos":if lifecycle=="end" {Some(span.end_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().to_string())}else{None},"attributes":attrs,"dropped_attributes_count":span.dropped_attributes_count,"outcome":match span.status { opentelemetry::trace::Status::Error{..}=>"error",opentelemetry::trace::Status::Ok=>"ok",_=>"unset" }});
+-    let bytes = serde_json::to_vec(&value).map_or(MAX_BYTES + 1, |v| v.len());
+-    if bytes > 65536 || s.pending.len() >= MAX_EVENTS || s.bytes + bytes > MAX_BYTES {
++    attrs
++}
++fn retained_root_descriptor(
++    span: &SpanData,
++    lifecycle: &str,
++    policy: Option<&crate::sdk_trace::ScopePolicy>,
++    start_sequence: u64,
++) -> Option<Value> {
++    let owner = &policy?.root_descriptor;
++    if span.parent_span_id == opentelemetry::trace::SpanId::INVALID {
++        owner.snapshot.get_or_init(|| {
++            let mut attrs = attributes(span);
++            attrs.retain(|key, _| key.starts_with("sdk.metadata.") || key == "sdk.group_id");
++            json!({"name":truncate(&span.name,4096),"attributes":attrs,"start_sequence":start_sequence})
++        });
++        if lifecycle == "end" {
++            owner
++                .ended
++                .store(true, std::sync::atomic::Ordering::Release);
++        }
++        return None;
++    }
++    if !owner.ended.load(std::sync::atomic::Ordering::Acquire) {
++        return None;
++    }
++    owner.snapshot.get().cloned()
++}
++fn event(
++    s: &mut Routes,
++    span: &SpanData,
++    lifecycle: &str,
++    root_descriptor: Option<Value>,
++    credential: Option<Arc<HostTraceCredential>>,
++) {
++    s.sequence += 1;
++    let sequence = s.sequence;
++    if s.processors.is_empty() {
++        return;
++    }
++    let credential_required = credential.is_some();
++    // A timed-out provider shutdown may still receive a previously opened span end.
++    let credential = credential.filter(|_| !s.credentials_closed);
++    // Native fields are copied into an immutable, bounded JSON snapshot. Never copy policy.
++    let attrs = attributes(span);
++    let mut value = json!({"sequence":sequence,"processor_ids":s.processors,"lifecycle":lifecycle,"trace_id":span.span_context.trace_id().to_string(),"span_id":span.span_context.span_id().to_string(),"parent_span_id":if span.parent_span_id==opentelemetry::trace::SpanId::INVALID {None}else{Some(span.parent_span_id.to_string())},"name":truncate(&span.name,4096),"kind":format!("{:?}",span.span_kind).to_ascii_lowercase(),"start_time_unix_nanos":span.start_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().to_string(),"end_time_unix_nanos":if lifecycle=="end" {Some(span.end_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().to_string())}else{None},"attributes":attrs,"dropped_attributes_count":span.dropped_attributes_count,"outcome":match span.status { opentelemetry::trace::Status::Error{..}=>"error",opentelemetry::trace::Status::Ok=>"ok",_=>"unset" }});
++    if credential_required {
++        value["credential_required"] = json!(true);
++    }
++    if serde_json::to_vec(&value).map_or(MAX_BYTES + 1, |v| v.len()) > 65536 {
++        dropped(s, sequence);
++        return;
++    }
++    if let Some(descriptor) = root_descriptor {
++        if serde_json::to_vec(&descriptor).map_or(MAX_BYTES + 1, |v| v.len()) > 65536 {
++            dropped(s, sequence);
++            return;
++        }
++        value["__root_descriptor"] = descriptor;
++    }
++    let Ok(encoded) = serde_json::to_vec(&value) else {
++        dropped(s, sequence);
++        return;
++    };
++    let bytes = encoded.len();
++    if s.pending.len() >= s.delivery.max_queue_size as usize
++        || bytes > (s.delivery.max_queue_bytes as usize).saturating_sub(s.bytes)
++    {
+         dropped(s, sequence);
+         return;
+     }
++    if s.queue.is_empty() {
++        s.queued_since = Some(Instant::now());
++    }
+     s.bytes += bytes;
+     s.pending.insert(sequence);
+-    s.queue.push_back((sequence, value, bytes));
++    s.queue.push_back((sequence, value, bytes, credential));
+ }
+ fn truncate(s: &str, max: usize) -> String {
+     let mut end = s.len().min(max);
+@@ -194,29 +360,65 @@ fn truncate(s: &str, max: usize) -> String {
+ pub fn drain_trace_events(max_count: usize) -> Result<String, String> {
+     let mut s = lock();
+     let mut events = Vec::new();
++    let mut root_descriptors = BTreeMap::new();
++    let mut credential_routes = BTreeMap::new();
+     let cutoff = s
+         .flush_snapshot
+         .map(|(barrier, _, _)| barrier)
+         .filter(|barrier| s.pending.range(..=*barrier).next().is_some());
+-    for _ in 0..max_count.min(512) {
++    let trigger =
++        ((s.delivery.max_queue_size as f64 * s.delivery.export_trigger_ratio) as usize).max(1);
++    let ready = cutoff.is_some()
++        || s.delivery.schedule_delay_ms == 0
++        || s.queue.len() >= trigger
++        || s.queued_since.is_some_and(|since| {
++            since.elapsed() >= Duration::from_millis(s.delivery.schedule_delay_ms as u64)
++        });
++    s.draining |= ready;
++    let count = if s.draining {
++        max_count.min(s.delivery.max_batch_size as usize)
++    } else {
++        0
++    };
++    for _ in 0..count {
+         if s.queue
+             .front()
+-            .is_some_and(|(seq, _, _)| cutoff.is_some_and(|cutoff| *seq > cutoff))
++            .is_some_and(|(seq, _, _, _)| cutoff.is_some_and(|cutoff| *seq > cutoff))
+         {
+             break;
+         }
+-        let Some((seq, value, bytes)) = s.queue.pop_front() else {
++        let Some((seq, mut value, bytes, credential)) = s.queue.pop_front() else {
+             break;
+         };
+         s.bytes -= bytes;
+         s.delivered = seq;
++        if let Some(descriptor) = value
++            .as_object_mut()
++            .and_then(|event| event.remove("__root_descriptor"))
++        {
++            root_descriptors.insert(seq.to_string(), descriptor);
++        }
++        if let Some(host) = credential {
++            credential_routes.insert(
++                seq.to_string(),
++                json!({
++                    "identity": host.credential.identity,
++                    "headers": host.credential.overlay(&HashMap::new()),
++                    "processor_ids": host.processor_ids,
++                }),
++            );
++        }
+         events.push(value);
+     }
++    if s.queue.is_empty() {
++        s.queued_since = None;
++        s.draining = false;
++    }
+     let through = cutoff.unwrap_or(s.sequence);
+-    if s.queue.front().is_none_or(|(seq, _, _)| *seq > through) {
++    if s.queue.front().is_none_or(|(seq, _, _, _)| *seq > through) {
+         s.delivered = s.delivered.max(through);
+     }
+-    serde_json::to_string(&json!({"events":events,"dropped_records":s.dropped,"failed_deliveries":s.failed,"through_sequence":s.delivered})).map_err(|_| "trace event serialization failed".into())
++    serde_json::to_string(&json!({"events":events,"root_descriptors":root_descriptors,"credential_routes":credential_routes,"dropped_records":s.dropped,"failed_deliveries":s.failed,"through_sequence":s.delivered})).map_err(|_| "trace event serialization failed".into())
+ }
+ pub fn ack_trace_events(sequence: u64, failed: u64) -> Result<(), String> {
+     let mut s = lock();
+@@ -326,6 +528,8 @@ pub fn begin_shutdown(deadline: Instant) {
+     let (batch, logs) = {
+         let mut routes = lock();
+         routes.default_available = false;
++        routes.accepting_credentials = false;
++        routes.credentials_closed = true;
+         (
+             routes.batch.as_ref().and_then(std::sync::Weak::upgrade),
+             routes
+@@ -802,14 +1006,26 @@ pub(crate) struct RoutedSpanProcessor<P> {
+ }
+ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
+     fn on_start(&self, span: &mut Span, cx: &Context) {
+-        if crate::sdk_trace::policy_for_context(cx).is_some_and(|p| p.disabled) {
++        let policy = crate::sdk_trace::policy_for_context(cx);
++        if policy.as_ref().is_some_and(|p| p.disabled) {
+             return;
+         }
+         self.inner.on_start(span, cx);
+         let mut s = lock();
+-        if !s.processors.is_empty() {
+-            if let Some(data) = span.exported_data() {
+-                event(&mut s, &data, "start");
++        if let Some(data) = span.exported_data() {
++            let descriptor =
++                retained_root_descriptor(&data, "start", policy.as_deref(), s.sequence + 1);
++            if !s.processors.is_empty() {
++                event(
++                    &mut s,
++                    &data,
++                    "start",
++                    descriptor,
++                    policy
++                        .as_ref()
++                        .and_then(|p| p.credential.as_ref())
++                        .and_then(TraceCredentialLease::host),
++                );
+             }
+         }
+     }
+@@ -819,15 +1035,24 @@ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
+             return;
+         }
+         let mut s = lock();
+-        event(&mut s, &span, "end");
++        let descriptor = retained_root_descriptor(&span, "end", policy.as_deref(), s.sequence + 1);
++        let credential = policy.as_ref().and_then(|p| p.credential.as_ref());
++        event(
++            &mut s,
++            &span,
++            "end",
++            descriptor,
++            credential.and_then(TraceCredentialLease::host),
++        );
+         if s.replaced || !self.default_enabled {
+             return;
+         }
+         let sequence = s.sequence;
+-        if !self
+-            .inner
+-            .enqueue(span, policy.and_then(|p| p.credential.clone()), sequence)
+-        {
++        if !self.inner.enqueue(
++            span,
++            credential.and_then(TraceCredentialLease::otlp),
++            sequence,
++        ) {
+             dropped(&mut s, sequence);
+         }
+     }
+@@ -851,6 +1076,107 @@ mod tests {
+ 
+     static TEST_LOCK: Mutex<()> = Mutex::new(());
+ 
++    #[test]
++    fn host_delivery_options_reject_invalid_bounds_and_allow_small_queues() {
++        for value in [
++            json!(null),
++            json!({"unknown": 1}),
++            json!({"max_queue_size": 0}),
++            json!({"max_queue_bytes": 0}),
++            json!({"max_batch_size": 0}),
++            json!({"schedule_delay_ms": -1}),
++            json!({"schedule_delay_ms": 4294967296_u64}),
++            json!({"export_trigger_ratio": -0.1}),
++            json!({"export_trigger_ratio": 1.1}),
++        ] {
++            assert!(HostTraceDeliverySettings::parse(value).is_err());
++        }
++        assert!(
++            HostTraceDeliverySettings::parse(json!({
++                "max_queue_size": 1,
++                "max_batch_size": 128,
++                "export_trigger_ratio": 0,
++            }))
++            .is_ok()
++        );
++    }
++
++    #[test]
++    fn host_delivery_waits_for_trigger_timer_and_active_flush() {
++        let _test = TEST_LOCK.lock().unwrap();
++        *lock() = Routes::default();
++        configure_host_trace_delivery(
++            HostTraceDeliverySettings::parse(json!({
++                "max_queue_size": 8,
++                "max_batch_size": 3,
++                "schedule_delay_ms": 60000,
++                "export_trigger_ratio": 0.5,
++            }))
++            .unwrap(),
++        );
++        set_trace_routes(r#"{"processor_ids":["recorder"]}"#).unwrap();
++        let span = sample_span();
++        let enqueue = || event(&mut lock(), &span, "end", None, None);
++        let drain = || serde_json::from_str::<Value>(&drain_trace_events(100).unwrap()).unwrap();
++        for _ in 0..3 {
++            enqueue();
++        }
++        let waiting = drain();
++        assert_eq!(waiting["events"], json!([]));
++        assert_eq!(waiting["through_sequence"], 0);
++        enqueue();
++        let first = drain();
++        assert_eq!(first["events"].as_array().unwrap().len(), 3);
++        assert_eq!(first["through_sequence"], 3);
++        ack_trace_events(3, 0).unwrap();
++        let remainder = drain();
++        assert_eq!(remainder["events"].as_array().unwrap().len(), 1);
++        assert_eq!(remainder["events"][0]["sequence"], 4);
++        ack_trace_events(4, 0).unwrap();
++
++        enqueue();
++        assert_eq!(drain()["events"], json!([]));
++        assert_eq!(capture_barrier(), 5);
++        let flushed = drain();
++        assert_eq!(flushed["events"][0]["sequence"], 5);
++        ack_trace_events(5, 0).unwrap();
++        assert_eq!(result(5, "success").status, "success");
++
++        enqueue();
++        assert_eq!(drain()["events"], json!([]));
++        lock().queued_since = Some(Instant::now() - Duration::from_secs(61));
++        let expired = drain();
++        assert_eq!(expired["events"][0]["sequence"], 6);
++        ack_trace_events(6, 0).unwrap();
++        assert!(lock().pending.is_empty());
++    }
++
++    #[test]
++    fn host_delivery_accounts_for_configured_queue_and_byte_overflow() {
++        let _test = TEST_LOCK.lock().unwrap();
++        let span = sample_span();
++        for (settings, admitted, dropped) in [
++            (json!({"max_queue_size": 2}), 2, 1),
++            (json!({"max_queue_bytes": 1}), 0, 3),
++        ] {
++            *lock() = Routes::default();
++            configure_host_trace_delivery(HostTraceDeliverySettings::parse(settings).unwrap());
++            set_trace_routes(r#"{"processor_ids":["recorder"]}"#).unwrap();
++            for _ in 0..3 {
++                event(&mut lock(), &span, "end", None, None);
++            }
++            let barrier = capture_barrier();
++            let snapshot: Value = serde_json::from_str(&drain_trace_events(100).unwrap()).unwrap();
++            assert_eq!(snapshot["events"].as_array().unwrap().len(), admitted);
++            assert_eq!(snapshot["through_sequence"], 3);
++            ack_trace_events(3, 0).unwrap();
++            let report = result(barrier, "success");
++            assert_eq!(report.status, "partial");
++            assert_eq!(report.dropped_records, dropped);
++            assert!(lock().pending.is_empty());
++        }
++    }
++
+     #[derive(Debug, Default, Clone)]
+     struct Recorder(Arc<Mutex<Vec<String>>>);
+     impl SpanProcessor for Recorder {
+@@ -922,7 +1248,7 @@ mod tests {
+         let reference =
+             register_trace_credentials(r#"{"Authorization":"private-token","X-Route":"blue"}"#)
+                 .unwrap();
+-        let lease = credential(&reference).unwrap();
++        let lease = credential(&reference).unwrap().otlp().unwrap();
+         configure_default(false);
+         assert!(credential(&reference).is_err());
+         configure_default(true);
+@@ -943,6 +1269,94 @@ mod tests {
+         assert!(register_trace_credentials(r#"{"Authorization":"a\r\nb"}"#).is_err());
+         assert!(register_trace_credentials(r#"{"bad-bin":"plain"}"#).is_err());
+     }
++    #[test]
++    fn host_routes_transfer_private_credential_lease_without_exposing_public_snapshot() {
++        let _test = TEST_LOCK.lock().unwrap();
++        *lock() = Routes::default();
++        configure_default(false);
++        set_trace_routes(r#"{"processor_ids":["host"],"replace":true}"#).unwrap();
++        let reference =
++            register_trace_credentials(r#"{"Authorization":"private-host-token"}"#).unwrap();
++        let lease = credential(&reference).unwrap().host().unwrap();
++        let weak = Arc::downgrade(&lease.credential);
++        release_trace_credentials(&reference).unwrap();
++        let data = sample_span();
++        event(&mut lock(), &data, "end", None, Some(lease));
++        assert!(weak.upgrade().is_some());
++        let snapshot: Value = serde_json::from_str(&drain_trace_events(64).unwrap()).unwrap();
++        assert!(weak.upgrade().is_none());
++        let sequence = snapshot["events"][0]["sequence"].as_u64().unwrap();
++        let public = snapshot["events"].to_string();
++        assert_eq!(snapshot["events"][0]["credential_required"], true);
++        assert!(!public.contains("private-host-token"));
++        assert!(!public.contains(&reference));
++        assert_eq!(
++            snapshot["credential_routes"][sequence.to_string()]["headers"]["authorization"],
++            "private-host-token"
++        );
++        assert_eq!(
++            snapshot["credential_routes"][sequence.to_string()]["identity"],
++            reference
++        );
++        assert_eq!(
++            snapshot["credential_routes"][sequence.to_string()]["processor_ids"],
++            json!(["host"])
++        );
++        ack_trace_events(sequence, 0).unwrap();
++    }
++
++    #[test]
++    fn terminal_shutdown_retires_undrained_host_credentials_without_fallback_authority() {
++        let _test = TEST_LOCK.lock().unwrap();
++        *lock() = Routes::default();
++        configure_default(false);
++        set_trace_routes(r#"{"processor_ids":["host"],"replace":true}"#).unwrap();
++        let reference =
++            register_trace_credentials(r#"{"Authorization":"private-host-token"}"#).unwrap();
++        let lease = credential(&reference).unwrap().host().unwrap();
++        let weak = Arc::downgrade(&lease.credential);
++        release_trace_credentials(&reference).unwrap();
++        let data = sample_span();
++        event(&mut lock(), &data, "end", None, Some(lease));
++        let next = register_trace_credentials(r#"{"Authorization":"later"}"#).unwrap();
++        begin_shutdown(Instant::now());
++        assert!(credential(&next).is_err());
++        configure_default(false);
++        assert!(credential(&next).is_err());
++        drop(HostTraceDeliveryShutdown);
++        assert!(weak.upgrade().is_none());
++        let snapshot: Value = serde_json::from_str(&drain_trace_events(64).unwrap()).unwrap();
++        assert_eq!(snapshot["events"][0]["credential_required"], true);
++        assert_eq!(snapshot["credential_routes"], json!({}));
++    }
++
++    #[test]
++    fn terminal_owner_does_not_retain_credentials_from_a_late_span_end() {
++        let _test = TEST_LOCK.lock().unwrap();
++        *lock() = Routes::default();
++        configure_default(false);
++        set_trace_routes(r#"{"processor_ids":["host"],"replace":true}"#).unwrap();
++        let reference =
++            register_trace_credentials(r#"{"Authorization":"private-late-token"}"#).unwrap();
++        let lease = credential(&reference).unwrap().host().unwrap();
++        let weak = Arc::downgrade(&lease.credential);
++        release_trace_credentials(&reference).unwrap();
++        let data = sample_span();
++        begin_shutdown(Instant::now());
++        drop(HostTraceDeliveryShutdown);
++        // An already opened span can still finish after the STATE wait times out.
++        event(&mut lock(), &data, "end", None, Some(lease));
++        assert!(weak.upgrade().is_none());
++        let snapshot: Value = serde_json::from_str(&drain_trace_events(64).unwrap()).unwrap();
++        assert_eq!(snapshot["events"][0]["credential_required"], true);
++        assert_eq!(snapshot["credential_routes"], json!({}));
++        assert!(
++            !snapshot["events"]
++                .to_string()
++                .contains("private-late-token")
++        );
++    }
++
+     fn sample_span() -> SpanData {
+         let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+         let provider = SdkTracerProvider::builder()
+@@ -1005,6 +1419,7 @@ mod tests {
+         );
+         let data = sample_span();
+         let credential = Arc::new(TraceCredentials {
++            identity: "fixture".into(),
+             headers: HashMap::new(),
+         });
+         let weak = Arc::downgrade(&credential);
+@@ -1090,6 +1505,7 @@ mod tests {
+         let data = sample_span();
+         let original = data.clone();
+         let credential = Arc::new(TraceCredentials {
++            identity: "fixture".into(),
+             headers: HashMap::new(),
+         });
+         let weak = Arc::downgrade(&credential);
+@@ -1333,7 +1749,7 @@ mod tests {
+             processors: vec!["recording".into()],
+             ..Default::default()
+         };
+-        event(&mut routes, &data, "end");
++        event(&mut routes, &data, "end", None, None);
+         let snapshot = &routes.queue.front().unwrap().1;
+         let attributes = snapshot["attributes"].as_object().unwrap();
+         assert_eq!(attributes.len(), 66);
+@@ -1379,6 +1795,7 @@ mod tests {
+         );
+         let span = sample_span();
+         let credential = Arc::new(TraceCredentials {
++            identity: "fixture".into(),
+             headers: HashMap::new(),
+         });
+         let retained = Arc::downgrade(&credential);
+@@ -1451,6 +1868,7 @@ mod tests {
+         )
+         .unwrap();
+         let credential = Arc::new(TraceCredentials {
++            identity: "fixture".into(),
+             headers: HashMap::new(),
+         });
+         let retained = Arc::downgrade(&credential);
+diff --git a/codex-rs/otel/src/trace_context.rs b/codex-rs/otel/src/trace_context.rs
+index e1c62777f1c1bd33eaf6898a57b9157de0085e79..cd094a81f0c4cc5cfae1b9a8bf3bf04171723300 100644
+--- a/codex-rs/otel/src/trace_context.rs
++++ b/codex-rs/otel/src/trace_context.rs
+@@ -9,7 +9,10 @@ use std::sync::RwLock;
+ use codex_protocol::protocol::W3cTraceContext;
+ use opentelemetry::Context;
+ use opentelemetry::propagation::TextMapPropagator;
++use opentelemetry::trace::SpanContext;
+ use opentelemetry::trace::TraceContextExt;
++use opentelemetry::trace::TraceFlags;
++use opentelemetry::trace::TraceId;
+ use opentelemetry::trace::TraceState;
+ use opentelemetry_sdk::propagation::TraceContextPropagator;
+ use tracing::Span;
+@@ -17,6 +20,13 @@ use tracing::debug;
+ use tracing::warn;
+ use tracing_opentelemetry::OpenTelemetrySpanExt;
+ 
++// The pinned SDK clears flags on dropped spans. Bind the inherited random bit
++// to its trace identity so it cannot leak when a Context adopts another trace.
++struct RandomTraceId {
++    trace_id: TraceId,
++    random: bool,
++}
++
+ const TRACEPARENT_ENV_VAR: &str = "TRACEPARENT";
+ const TRACESTATE_ENV_VAR: &str = "TRACESTATE";
+ static TRACEPARENT_CONTEXT: OnceLock<Option<Context>> = OnceLock::new();
+@@ -27,8 +37,16 @@ static TRACESTATE_ENTRIES: OnceLock<RwLock<BTreeMap<String, BTreeMap<String, Str
+     OnceLock::new();
+ 
+ pub fn current_span_w3c_trace_context() -> Option<W3cTraceContext> {
+-    span_w3c_trace_context(&Span::current())
+-        .or_else(|| context_w3c_trace_context(&Context::current()))
++    context_w3c_trace_context(&current_span_context())
++}
++
++pub(crate) fn current_span_context() -> Context {
++    let active = Span::current().context();
++    if active.span().span_context().is_valid() {
++        active
++    } else {
++        Context::current()
++    }
+ }
+ 
+ pub fn span_w3c_trace_context(span: &Span) -> Option<W3cTraceContext> {
+@@ -42,6 +60,22 @@ pub(crate) fn context_w3c_trace_context(context: &Context) -> Option<W3cTraceCon
+ 
+     let mut headers = HashMap::new();
+     TraceContextPropagator::new().inject_context(context, &mut headers);
++    // The pinned propagator predates the W3C random-trace-id flag. Child
++    // spans retain it, so preserve it when writing their canonical header.
++    let mut flags = context.span().span_context().trace_flags().to_u8() & 0x03;
++    if let Some(random) = context
++        .get::<RandomTraceId>()
++        .filter(|random| random.trace_id == context.span().span_context().trace_id())
++    {
++        flags = (flags & !0x02) | if random.random { 0x02 } else { 0 };
++    }
++    if flags & 0x02 != 0 {
++        if let Some(parent) = headers.get_mut("traceparent") {
++            if let Some((prefix, _)) = parent.rsplit_once('-') {
++                *parent = format!("{prefix}-{flags:02x}");
++            }
++        }
++    }
+     let tracestate = headers.remove("tracestate");
+     let configured_tracestate_guard = tracestate_entries()
+         .read()
+@@ -109,7 +143,6 @@ pub fn current_span_trace_id() -> Option<String> {
+ 
+ pub fn context_from_w3c_trace_context(trace: &W3cTraceContext) -> Option<Context> {
+     context_from_trace_headers(trace.traceparent.as_deref(), trace.tracestate.as_deref())
+-        .map(crate::sdk_trace::restore_policy)
+ }
+ 
+ pub fn set_parent_from_w3c_trace_context(span: &Span, trace: &W3cTraceContext) -> bool {
+@@ -122,7 +155,23 @@ pub fn set_parent_from_w3c_trace_context(span: &Span, trace: &W3cTraceContext) -
+ }
+ 
+ pub fn set_parent_from_context(span: &Span, context: Context) {
+-    let _ = span.set_parent(context);
++    let _ = span.set_parent(with_inherited_random_flag(context));
++}
++
++fn with_inherited_random_flag(context: Context) -> Context {
++    let parent = context.span().span_context().clone();
++    let context =
++        if parent.is_valid() && (parent.is_remote() || parent.trace_flags().to_u8() & 0x02 != 0) {
++            // Remote adoption is authoritative, including an explicitly unset bit.
++            // Local dropped children retain the inherited value in their Context.
++            context.with_value(RandomTraceId {
++                trace_id: parent.trace_id(),
++                random: parent.trace_flags().to_u8() & 0x02 != 0,
++            })
++        } else {
++            context
++        };
++    context
+ }
+ 
+ pub fn traceparent_context_from_env() -> Option<Context> {
+@@ -135,9 +184,36 @@ pub(crate) fn context_from_trace_headers(
+     traceparent: Option<&str>,
+     tracestate: Option<&str>,
+ ) -> Option<Context> {
+-    let traceparent = traceparent?;
++    let traceparent = traceparent?.trim();
++    // The pinned propagator accepts short hexadecimal IDs. Require the W3C
++    // field widths, then delegate all remaining validation to the propagator.
++    let mut fields = traceparent.split('-');
++    let version = fields.next()?;
++    let trace_id = fields.next()?;
++    let parent_id = fields.next()?;
++    let raw_flags = fields.next()?;
++    if version.len() != 2 || trace_id.len() != 32 || parent_id.len() != 16 || raw_flags.len() != 2 {
++        return None;
++    }
++    // W3C Level 2 defines bit 0 as sampled and bit 1 as random trace ID.
++    // Let the pinned propagator validate all other header syntax using its
++    // supported sampling bit, then restore the complete defined flags.
++    let flags = match raw_flags {
++        "02" => Some(0x02),
++        "03" => Some(0x03),
++        _ => None,
++    };
++    let normalized = flags.and_then(|flags| {
++        traceparent.strip_prefix("00-")?;
++        traceparent
++            .strip_suffix(if flags == 2 { "02" } else { "03" })
++            .map(|prefix| format!("{prefix}{:02x}", flags & 1))
++    });
+     let mut headers = HashMap::new();
+-    headers.insert("traceparent".to_string(), traceparent.to_string());
++    headers.insert(
++        "traceparent".to_string(),
++        normalized.unwrap_or_else(|| traceparent.to_string()),
++    );
+     if let Some(tracestate) = tracestate {
+         headers.insert("tracestate".to_string(), tracestate.to_string());
+     }
+@@ -147,7 +223,20 @@ pub(crate) fn context_from_trace_headers(
+     if !context.span().span_context().is_valid() {
+         return None;
+     }
+-    Some(context)
++    if let Some(flags) = flags {
++        let span = context.span();
++        let parent = span.span_context();
++        return Some(with_inherited_random_flag(
++            context.with_remote_span_context(SpanContext::new(
++                parent.trace_id(),
++                parent.span_id(),
++                TraceFlags::new(flags),
++                true,
++                parent.trace_state().clone(),
++            )),
++        ));
++    }
++    Some(with_inherited_random_flag(context))
+ }
+ 
+ fn load_traceparent_context() -> Option<Context> {
+@@ -373,6 +462,155 @@ mod tests {
+         assert!(span_context.is_remote());
+     }
+ 
++    #[test]
++    fn defined_trace_flags_survive_child_header_propagation() {
++        use super::span_w3c_trace_context;
++        use tracing_opentelemetry::OpenTelemetrySpanExt;
++
++        for flags in ["00", "01", "02", "03"] {
++            let provider = SdkTracerProvider::builder().build();
++            let subscriber = tracing_subscriber::registry()
++                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("flags")));
++            tracing::subscriber::with_default(subscriber, || {
++                let parent =
++                    format!("00-11111111111111111111111111111111-2222222222222222-{flags}");
++                let context =
++                    context_from_trace_headers(Some(&parent), Some("vendor=value")).unwrap();
++                assert_eq!(
++                    context.span().span_context().trace_flags().to_u8(),
++                    u8::from_str_radix(flags, 16).unwrap()
++                );
++                let span = tracing::info_span!("child");
++                super::set_parent_from_context(&span, context);
++                let headers = span_w3c_trace_context(&span).unwrap();
++                let header = headers.traceparent.unwrap();
++                assert_eq!(&header[3..35], &parent[3..35]);
++                assert_eq!(&header[53..], flags);
++                assert_ne!(&header[36..52], &parent[36..52]);
++                let grandchild = tracing::info_span!("grandchild");
++                super::set_parent_from_context(&grandchild, span.context());
++                let grandchild_header = span_w3c_trace_context(&grandchild)
++                    .unwrap()
++                    .traceparent
++                    .unwrap();
++                assert_eq!(&grandchild_header[3..35], &parent[3..35]);
++                assert_eq!(&grandchild_header[53..], flags);
++                assert_ne!(&grandchild_header[36..52], &header[36..52]);
++                assert_eq!(headers.tracestate.as_deref(), Some("vendor=value"));
++            });
++        }
++        assert!(
++            context_from_trace_headers(
++                Some("00-00000000000000000000000000000000-2222222222222222-03"),
++                None
++            )
++            .is_none()
++        );
++        assert!(context_from_trace_headers(Some("00-bad-2222222222222222-03"), None).is_none());
++    }
++
++    #[test]
++    fn inherited_random_flag_preserves_local_sampling_decisions() {
++        for (sampler, incoming, outgoing) in [
++            (opentelemetry_sdk::trace::Sampler::AlwaysOff, "03", "02"),
++            (opentelemetry_sdk::trace::Sampler::AlwaysOn, "02", "03"),
++        ] {
++            let provider = SdkTracerProvider::builder().with_sampler(sampler).build();
++            let subscriber = tracing_subscriber::registry()
++                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("sampling")));
++            tracing::subscriber::with_default(subscriber, || {
++                let parent =
++                    format!("00-11111111111111111111111111111111-2222222222222222-{incoming}");
++                let context = context_from_trace_headers(Some(&parent), None).unwrap();
++                let span = tracing::info_span!("sampling");
++                super::set_parent_from_context(&span, context);
++                let header = super::span_w3c_trace_context(&span)
++                    .unwrap()
++                    .traceparent
++                    .unwrap();
++                assert_eq!(&header[53..], outgoing);
++                assert_eq!(&header[3..35], &parent[3..35]);
++                assert_ne!(&header[36..52], &parent[36..52]);
++            });
++        }
++    }
++
++    #[test]
++    fn inherited_random_flag_does_not_cross_trace_ids_or_fresh_roots() {
++        use tracing_opentelemetry::OpenTelemetrySpanExt;
++        let provider = SdkTracerProvider::builder().build();
++        let subscriber = tracing_subscriber::registry()
++            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("identity")));
++        tracing::subscriber::with_default(subscriber, || {
++            let parent = "00-11111111111111111111111111111111-2222222222222222-02";
++            let span = tracing::info_span!("original");
++            super::set_parent_from_context(
++                &span,
++                context_from_trace_headers(Some(parent), None).unwrap(),
++            );
++            for (trace_id, flags) in [
++                ("11111111111111111111111111111111", 0),
++                ("11111111111111111111111111111111", 1),
++                ("33333333333333333333333333333333", 1),
++            ] {
++                let replacement = span.context().with_remote_span_context(
++                    opentelemetry::trace::SpanContext::new(
++                        TraceId::from_hex(trace_id).unwrap(),
++                        SpanId::from_hex("4444444444444444").unwrap(),
++                        opentelemetry::trace::TraceFlags::new(flags),
++                        true,
++                        Default::default(),
++                    ),
++                );
++                let other = tracing::info_span!("other");
++                super::set_parent_from_context(&other, replacement);
++                let header = super::span_w3c_trace_context(&other)
++                    .unwrap()
++                    .traceparent
++                    .unwrap();
++                assert_eq!(&header[3..35], trace_id);
++                assert_eq!(&header[53..], format!("{flags:02x}"));
++                assert_ne!(&header[36..52], "4444444444444444");
++            }
++            let invalid = tracing::info_span!("invalid");
++            super::set_parent_from_context(
++                &invalid,
++                span.context()
++                    .with_remote_span_context(opentelemetry::trace::SpanContext::empty_context()),
++            );
++            assert!(super::span_w3c_trace_context(&invalid).is_none());
++            let fresh = tracing::info_span!("fresh");
++            super::set_parent_from_context(&fresh, opentelemetry::Context::new());
++            let header = super::span_w3c_trace_context(&fresh)
++                .unwrap()
++                .traceparent
++                .unwrap();
++            assert_ne!(&header[3..35], &parent[3..35]);
++            assert_eq!(&header[53..], "01");
++        });
++    }
++
++    #[test]
++    fn direct_native_context_keeps_unsampled_random_trace_flag() {
++        use opentelemetry::trace::Tracer as _;
++        let provider = SdkTracerProvider::builder().build();
++        let tracer = provider.tracer("direct");
++        let parent = context_from_trace_headers(
++            Some("00-11111111111111111111111111111111-2222222222222222-02"),
++            None,
++        )
++        .unwrap();
++        let child = tracer.start_with_context("direct-child", &parent);
++        let context = parent.with_span(child);
++        let header = super::context_w3c_trace_context(&context)
++            .unwrap()
++            .traceparent
++            .unwrap();
++        assert_eq!(&header[3..35], "11111111111111111111111111111111");
++        assert_ne!(&header[36..52], "2222222222222222");
++        assert_eq!(&header[53..], "02");
++    }
++
+     #[test]
+     fn invalid_traceparent_returns_none() {
+         let parent = context_from_trace_headers(

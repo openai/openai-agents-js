@@ -1,0 +1,1457 @@
+diff --git a/codex-rs/core/src/agent/api.rs b/codex-rs/core/src/agent/api.rs
+index 18213d1540eb39f49548cbd6e7e2da97ad1647eb..eb520594d75c20089d9751c92f2b2ba4920b1ea2 100644
+--- a/codex-rs/core/src/agent/api.rs
++++ b/codex-rs/core/src/agent/api.rs
+@@ -17,16 +17,22 @@ use crate::rollout_budget::RolloutBudgetReminder;
+ use codex_protocol::AgentPath;
+ use codex_protocol::SessionId;
+ use codex_protocol::ThreadId;
++use codex_protocol::error::CodexErr;
+ use codex_protocol::error::Result;
+ use codex_protocol::protocol::AgentStatus;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::MultiAgentVersion;
+ use codex_protocol::protocol::SessionSource;
+ use codex_protocol::protocol::TokenUsage;
++use codex_protocol::protocol::ToolTurnCompletion;
+ use codex_protocol::turn_input::TurnStartOptions;
+ use codex_protocol::user_input::UserInput;
+ use codex_rollout_trace::ThreadTraceContext;
+ use futures::future::BoxFuture;
++use std::sync::Mutex;
++use tokio::sync::oneshot;
++use tokio_util::sync::CancellationToken;
++use tokio_util::sync::DropGuard;
+ 
+ // Keep dynamic dispatch a compile-time property of the contract.
+ const _: Option<&dyn AgentControl> = None;
+@@ -58,6 +64,18 @@ pub trait AgentControl: Send + Sync {
+         request: SpawnRequest,
+     ) -> BoxFuture<'_, Result<(LiveAgent, ThreadConfigSnapshot)>>;
+ 
++    /// Admit a child for a tool call and retain its exact initial turn's outcome.
++    fn spawn_managed_tool(
++        &self,
++        _request: SpawnRequest,
++    ) -> BoxFuture<'_, Result<ManagedAgentTool>> {
++        Box::pin(async {
++            Err(CodexErr::UnsupportedOperation(
++                "this agent controller does not support managed tools".to_string(),
++            ))
++        })
++    }
++
+     /// Resolve, reload if needed and accept input. Agent messages retain their attribution
+     /// and wake mode: queue-only messages do not start work and follow-ups cannot target
+     /// the root. Legacy user input can address loaded threads outside the agent registry.
+@@ -230,7 +248,77 @@ pub struct DeliveryReceipt {
+     pub submission_id: String,
+ }
+ 
++pub struct ManagedAgentTool {
++    pub agent: LiveAgent,
++    pub turn_id: String,
++    pub(crate) completion: oneshot::Receiver<ManagedAgentToolResult>,
++    pub(crate) retire_on_drop: DropGuard,
++}
++
++impl ManagedAgentTool {
++    pub async fn wait(self) -> Result<ManagedAgentToolResult> {
++        let result = self.completion.await.map_err(|_| {
++            CodexErr::Fatal("managed child ended without its terminal outcome".to_string())
++        })?;
++        self.retire_on_drop.disarm();
++        Ok(result)
++    }
++}
++
++pub struct ManagedAgentToolResult {
++    pub thread_id: ThreadId,
++    pub turn_id: String,
++    pub status: AgentStatus,
++    pub output: Option<ToolTurnCompletion>,
++}
++
++/// Ephemeral destination for the first turn admitted by a managed tool. The
++/// initializer is inherited, so retain the first turn's ID after consuming the reply.
++pub(crate) struct ManagedToolCompletion {
++    state: Mutex<ManagedToolCompletionState>,
++    pub(crate) abandonment: CancellationToken,
++    pub(crate) finished: CancellationToken,
++}
++
++struct ManagedToolCompletionState {
++    reply: Option<oneshot::Sender<ManagedAgentToolResult>>,
++    turn_id: Option<String>,
++}
++
++pub(crate) enum ManagedToolTerminal {
++    Reply(oneshot::Sender<ManagedAgentToolResult>),
++    AlreadyRouted,
++    Ordinary,
++}
++
++impl ManagedToolCompletion {
++    pub(crate) fn new(reply: oneshot::Sender<ManagedAgentToolResult>) -> Self {
++        Self {
++            state: Mutex::new(ManagedToolCompletionState {
++                reply: Some(reply),
++                turn_id: None,
++            }),
++            abandonment: CancellationToken::new(),
++            finished: CancellationToken::new(),
++        }
++    }
++
++    pub(crate) fn claim(&self, turn_id: &str) -> ManagedToolTerminal {
++        let mut state = self.state.lock().expect("managed tool completion lock");
++        match state.turn_id.as_deref() {
++            Some(owned) if owned == turn_id => ManagedToolTerminal::AlreadyRouted,
++            Some(_) => ManagedToolTerminal::Ordinary,
++            None => {
++                state.turn_id = Some(turn_id.to_owned());
++                self.finished.cancel();
++                ManagedToolTerminal::Reply(state.reply.take().expect("initial managed tool reply"))
++            }
++        }
++    }
++}
++
+ pub struct AgentTurnOutcome {
++    pub(crate) managed_tool_reply: Option<oneshot::Sender<ManagedAgentToolResult>>,
+     /// Typed tool-origin value, retained separately from assistant-message status.
+     pub tool_completion: Option<codex_protocol::protocol::ToolTurnCompletion>,
+     pub thread_id: ThreadId,
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index 67dbd7c6278a51877a81e2776f140d8b08dd2f9f..11731635b62460d88629abddb1855e48cd48297d 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -2,6 +2,7 @@ use crate::TurnInputRequest;
+ use crate::TurnInputSubmission;
+ use crate::TurnStartOptions;
+ use crate::agent::AgentStatus;
++use crate::agent::api::ManagedToolCompletion;
+ use crate::agent::role::DEFAULT_ROLE_NAME;
+ use crate::agent::role::resolve_role_config;
+ use crate::agent::status::is_final;
+@@ -20,7 +21,10 @@ use crate::thread_manager::ThreadIdGenerator;
+ use crate::thread_manager::ThreadManagerState;
+ use crate::thread_manager::default_thread_id_generator;
+ use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
++use crate::turn_extension_data::WithTurnExtensionData;
+ use crate::turn_timing::now_unix_timestamp_ms;
++use codex_extension_api::ExtensionDataInit;
++use codex_extension_api::ThreadIdleCause;
+ use codex_history::InitialHistory;
+ use codex_history::ResumedHistory;
+ use codex_history::RolloutItem;
+@@ -47,6 +51,9 @@ use codex_protocol::protocol::SessionSource;
+ use codex_protocol::protocol::SubAgentSource;
+ use codex_protocol::protocol::ThreadHistoryMode;
+ use codex_protocol::protocol::ThreadSource;
++use codex_protocol::protocol::TurnAbortReason;
++use codex_protocol::turn_input::StartIfIdleSubmission;
++use codex_protocol::turn_input::TurnInput;
+ use codex_protocol::user_input::UserInput;
+ use codex_thread_store::LoadThreadHistoryParams;
+ use codex_thread_store::ReadThreadParams;
+@@ -183,6 +190,7 @@ impl LocalAgentControl {
+             communication,
+             agent_communication_context,
+             start_options,
++            /*managed_completion*/ None,
+         )
+         .await
+     }
+@@ -243,6 +251,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        managed_completion: Option<ManagedToolCompletion>,
+     ) -> CodexResult<String> {
+         self.submit_inter_agent_communication(
+             agent_id,
+@@ -250,6 +259,7 @@ impl LocalAgentControl {
+             communication,
+             context,
+             start_options,
++            managed_completion,
+         )
+         .await
+     }
+@@ -261,6 +271,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        managed_completion: Option<ManagedToolCompletion>,
+     ) -> CodexResult<String> {
+         let communication_for_log =
+             crate::agent_communication::logging_enabled().then(|| communication.clone());
+@@ -296,22 +307,73 @@ impl LocalAgentControl {
+         } else {
+             (None, None)
+         };
++        let result = if let Some(completion) = managed_completion {
++            let thread = state.get_thread(agent_id).await?;
++            let activity = self.runtime.admit_task().ok_or_else(|| {
++                CodexErr::UnsupportedOperation("agent tree is draining".to_string())
++            })?;
++            let abandoned = completion.abandonment.clone();
++            let finished = completion.finished.clone();
++            let mut data = ExtensionDataInit::new();
++            data.insert(completion);
++            let request = TurnInputRequest::new(TurnInput::InterAgentCommunication(communication))
++                .on_start(start_options);
++            match thread
++                .start_turn_if_idle(WithTurnExtensionData::new(request, data))
++                .await
++            {
++                Ok(StartIfIdleSubmission::Started { turn_id }) => {
++                    let child = Arc::clone(&thread);
++                    let expected_turn = turn_id.clone();
++                    let shutdown = self.runtime.shutdown.clone();
++                    // The agent tree owns retirement after parallel tool dispatch drops its
++                    // handler. Core compares the accepted turn ID before taking the task.
++                    tokio::spawn(async move {
++                        let _activity = activity;
++                        tokio::select! {
++                            biased;
++                            _ = finished.cancelled() => return,
++                            _ = child.wait_until_terminated() => return,
++                            _ = abandoned.cancelled() => {},
++                            _ = shutdown.cancelled() => {},
++                        }
++                        if child
++                            .session
++                            .abort_turn_if_active(
++                                &expected_turn,
++                                TurnAbortReason::Interrupted,
++                                /*error*/ None,
++                            )
++                            .await
++                        {
++                            child
++                                .session
++                                .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Interrupted)
++                                .await;
++                        }
++                    });
++                    Ok(turn_id)
++                }
++                Ok(StartIfIdleSubmission::NotSubmitted { reason }) => Err(
++                    CodexErr::InvalidRequest(format!("child turn was not submitted: {reason:?}")),
++                ),
++                Err(error) => Err(error),
++            }
++        } else {
++            state
++                .send_op(
++                    agent_id,
++                    Op::InterAgentCommunication {
++                        communication,
++                        start_options,
++                    },
++                    parent_turn_id,
++                    root_turn_id,
++                )
++                .await
++        };
+         let result = self
+-            .handle_thread_request_result(
+-                agent_id,
+-                state,
+-                state
+-                    .send_op(
+-                        agent_id,
+-                        Op::InterAgentCommunication {
+-                            communication,
+-                            start_options,
+-                        },
+-                        parent_turn_id,
+-                        root_turn_id,
+-                    )
+-                    .await,
+-            )
++            .handle_thread_request_result(agent_id, state, result)
+             .await;
+         if let (Some(communication), Ok(communication_id)) =
+             (communication_for_log, result.as_ref())
+diff --git a/codex-rs/core/src/agent/control/api.rs b/codex-rs/core/src/agent/control/api.rs
+index ef0a6994867fb212128e45493167fa4363cbfd2f..51be411f202d0f6759d6bc990c780e4a89b21b37 100644
+--- a/codex-rs/core/src/agent/control/api.rs
++++ b/codex-rs/core/src/agent/control/api.rs
+@@ -27,6 +27,7 @@ use codex_protocol::error::CodexErr;
+ use codex_protocol::error::Result;
+ use codex_protocol::protocol::MultiAgentVersion;
+ use codex_protocol::protocol::SessionSource;
++use codex_protocol::protocol::SubAgentSource;
+ use codex_protocol::protocol::TokenUsage;
+ use codex_rollout_trace::ThreadTraceContext;
+ use futures::future::BoxFuture;
+@@ -67,33 +68,51 @@ impl AgentControl for LocalAgentControl {
+                 source,
+                 options,
+             } = request;
+-            let input = match input {
+-                AgentInput::UserInput(input) => SpawnInitialInput::UserInput(input),
+-                AgentInput::Message { message, mode } => {
+-                    if mode != MessageDeliveryMode::TriggerTurn {
+-                        return Err(CodexErr::InvalidRequest(
+-                            "spawn input must start the child turn".to_string(),
+-                        ));
+-                    }
+-                    let recipient = source.get_agent_path().ok_or_else(|| {
+-                        CodexErr::InvalidRequest(
+-                            "spawned agent is missing a canonical task name".to_string(),
+-                        )
+-                    })?;
+-                    let author = recipient
+-                        .as_str()
+-                        .rsplit_once('/')
+-                        .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+-                        .ok_or_else(|| {
+-                            CodexErr::InvalidRequest("spawn input needs a child path".to_string())
+-                        })?;
+-                    SpawnInitialInput::InterAgentCommunication(
+-                        message.into_communication(author, recipient, mode),
+-                        AgentCommunicationContext::new(AgentCommunicationKind::Spawn, caller),
+-                    )
+-                }
+-            };
+-            Box::pin(self.spawn_agent_internal(config, input, Some(source), options)).await
++            let input = spawn_initial_input(caller, input, &source, None)?;
++            let (agent, config, _) =
++                Box::pin(self.spawn_agent_internal(config, input, Some(source), options)).await?;
++            Ok((agent, config))
++        })
++    }
++
++    fn spawn_managed_tool(
++        &self,
++        request: SpawnRequest,
++    ) -> BoxFuture<'_, Result<crate::ManagedAgentTool>> {
++        Box::pin(async move {
++            let SpawnRequest {
++                caller,
++                config,
++                input,
++                source,
++                options,
++            } = request;
++            if options.spawning_source.is_none()
++                || options.parent_thread_id != Some(caller)
++                || !matches!(
++                    &source,
++                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                        parent_thread_id, ..
++                    }) if *parent_thread_id == caller
++                )
++            {
++                return Err(CodexErr::InvalidRequest(
++                    "managed agent tools require their producing step and parent thread"
++                        .to_string(),
++                ));
++            }
++            let (reply, completion) = tokio::sync::oneshot::channel();
++            let destination = crate::agent::api::ManagedToolCompletion::new(reply);
++            let retire_on_drop = destination.abandonment.clone().drop_guard();
++            let input = spawn_initial_input(caller, input, &source, Some(destination))?;
++            let (agent, _, turn_id) =
++                Box::pin(self.spawn_agent_internal(config, input, Some(source), options)).await?;
++            Ok(crate::ManagedAgentTool {
++                agent,
++                turn_id,
++                completion,
++                retire_on_drop,
++            })
+         })
+     }
+ 
+@@ -325,3 +344,43 @@ impl AgentControl for LocalAgentControl {
+         })
+     }
+ }
++
++fn spawn_initial_input(
++    caller: ThreadId,
++    input: AgentInput,
++    source: &SessionSource,
++    completion: Option<crate::agent::api::ManagedToolCompletion>,
++) -> Result<SpawnInitialInput> {
++    match input {
++        AgentInput::UserInput(input) if completion.is_none() => {
++            Ok(SpawnInitialInput::UserInput(input))
++        }
++        AgentInput::UserInput(_) => Err(CodexErr::InvalidRequest(
++            "managed agent tools require an agent message".to_string(),
++        )),
++        AgentInput::Message { message, mode } => {
++            if mode != MessageDeliveryMode::TriggerTurn {
++                return Err(CodexErr::InvalidRequest(
++                    "spawn input must start the child turn".to_string(),
++                ));
++            }
++            let recipient = source.get_agent_path().ok_or_else(|| {
++                CodexErr::InvalidRequest(
++                    "spawned agent is missing a canonical task name".to_string(),
++                )
++            })?;
++            let author = recipient
++                .as_str()
++                .rsplit_once('/')
++                .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
++                .ok_or_else(|| {
++                    CodexErr::InvalidRequest("spawn input needs a child path".to_string())
++                })?;
++            Ok(SpawnInitialInput::InterAgentCommunication(
++                message.into_communication(author, recipient, mode),
++                AgentCommunicationContext::new(AgentCommunicationKind::Spawn, caller),
++                completion,
++            ))
++        }
++    }
++}
+diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
+index 9a5be514143a7a240bbf4d69590385564be70c57..cb52dcc00ad4ecdff90de411a0acd6ae0b8bd11e 100644
+--- a/codex-rs/core/src/agent/control/completion.rs
++++ b/codex-rs/core/src/agent/control/completion.rs
+@@ -6,6 +6,7 @@
+ use super::LocalAgentControl;
+ use crate::TurnStartOptions;
+ use crate::agent::api::AgentTurnOutcome;
++use crate::agent::api::ManagedAgentToolResult;
+ use crate::agent_communication::AgentCommunicationContext;
+ use crate::agent_communication::AgentCommunicationKind;
+ use crate::session_prefix::format_guardian_interruption_message;
+@@ -87,6 +88,16 @@ impl LocalAgentControl {
+             }
+         }
+ 
++        if let Some(reply) = outcome.managed_tool_reply {
++            let _ = reply.send(ManagedAgentToolResult {
++                thread_id: outcome.thread_id,
++                turn_id: outcome.turn_id,
++                status,
++                output: outcome.tool_completion,
++            });
++            return;
++        }
++
+         let message = if let Some(completion) = outcome.tool_completion.as_ref()
+             && matches!(status, AgentStatus::Completed(_))
+         {
+diff --git a/codex-rs/core/src/agent/control/residency_tests.rs b/codex-rs/core/src/agent/control/residency_tests.rs
+index e7ea531da6fb4ecca9d8f8dd37d52c2ec0c40cab..01afc39a5b59afc505962e742f4768eec6ec21d3 100644
+--- a/codex-rs/core/src/agent/control/residency_tests.rs
++++ b/codex-rs/core/src/agent/control/residency_tests.rs
+@@ -182,7 +182,6 @@ async fn spawn_v2_subagent(
+             /*inherited_environments*/ None,
+             /*inherited_exec_policy*/ None,
+             /*environments*/ None,
+-            /*application_apps*/ None,
+             codex_extension_api::ExtensionDataInit::new(),
+         )
+         .await
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index d9888e9968d4626b0a18d11d14b42724a5d3961d..4c856bcd59d644c20ef23299c13cfb61b354f416 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -3,6 +3,7 @@ use super::spawn_guard::PendingSpawn;
+ use super::spawn_telemetry::SpawnMeasurements;
+ use super::spawn_telemetry::record_spawn_success;
+ use super::*;
++use crate::agent::api::ManagedToolCompletion;
+ use crate::agent::child_config::build_agent_resume_config;
+ use crate::agent::role::apply_role_to_config;
+ use crate::agent::types::AgentMetadata;
+@@ -42,7 +43,7 @@ const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
+ struct SpawnAgentThreadInheritance {
+     environments: Option<TurnEnvironmentSnapshot>,
+     exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+-    application_apps: Option<codex_mcp::ApplicationApps>,
++    thread_extension_init: ExtensionDataInit,
+     mcp_source: Option<crate::mcp::InheritedMcpCatalog>,
+ }
+ 
+@@ -61,7 +62,11 @@ struct SpawnedThreadResult {
+ #[allow(clippy::large_enum_variant)]
+ pub(super) enum SpawnInitialInput {
+     UserInput(Vec<UserInput>),
+-    InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
++    InterAgentCommunication(
++        InterAgentCommunication,
++        AgentCommunicationContext,
++        Option<ManagedToolCompletion>,
++    ),
+ }
+ 
+ fn default_agent_nickname_list() -> Vec<&'static str> {
+@@ -205,39 +210,44 @@ async fn load_agent_model_context(
+ }
+ 
+ impl LocalAgentControl {
+-    // Capture only the explicit declaration from the actual live owner. Grants, proofs,
++    // Capture explicit declarations from the actual live owner. Grants, proofs,
+     // transport instances and mutable extension maps are not inherited here.
+-    async fn inherited_application_apps(
++    async fn inherited_thread_declarations(
+         &self,
+         state: &ThreadManagerState,
+         source: Option<&SessionSource>,
+         parent_thread_id: Option<ThreadId>,
+-    ) -> Option<codex_mcp::ApplicationApps> {
++    ) -> ExtensionDataInit {
++        let mut declarations = ExtensionDataInit::new();
+         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id: owner,
+             ..
+         })) = source
+         else {
+-            return None;
++            return declarations;
+         };
+         if Some(*owner) != parent_thread_id {
+-            return None;
++            return declarations;
+         }
+-        let parent = state.get_thread(*owner).await.ok()?;
++        let Ok(parent) = state.get_thread(*owner).await else {
++            return declarations;
++        };
+         if !parent.is_running()
+             || !Arc::ptr_eq(
+                 &self.runtime.registry,
+                 &parent.session.services.local_agent_runtime.registry,
+             )
+         {
+-            return None;
++            return declarations;
++        }
++        let thread_data = parent.thread_extension_data();
++        if let Some(applications) = thread_data.get::<codex_mcp::ApplicationApps>() {
++            declarations.insert((*applications).clone());
++        }
++        if let Some(tools) = thread_data.get::<crate::ManagedAgentToolCatalog>() {
++            declarations.insert((*tools).clone());
+         }
+-        parent
+-            .session
+-            .services
+-            .thread_extension_data
+-            .get::<codex_mcp::ApplicationApps>()
+-            .map(|application| (*application).clone())
++        declarations
+     }
+ 
+     /// Restore persisted V2 agent identities without reopening their runtimes.
+@@ -333,7 +343,7 @@ impl LocalAgentControl {
+         initial_input: Vec<UserInput>,
+         session_source: Option<SessionSource>,
+     ) -> CodexResult<ThreadId> {
+-        let (spawned_agent, _) = Box::pin(self.spawn_agent_internal(
++        let (spawned_agent, _, _) = Box::pin(self.spawn_agent_internal(
+             config,
+             SpawnInitialInput::UserInput(initial_input),
+             session_source,
+@@ -521,8 +531,8 @@ impl LocalAgentControl {
+         let parent_thread_id = owner_thread_id
+             .or_else(|| initial_history.get_resumed_parent_thread_id())
+             .or(stored_parent_thread_id);
+-        let application_apps = self
+-            .inherited_application_apps(&state, Some(&session_source), parent_thread_id)
++        let thread_extension_init = self
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
+             .await;
+         let (inherited_environments, inherited_exec_policy, client_mcp_extensions) = if let Some(
+             (parent, parent_environments),
+@@ -678,7 +688,7 @@ impl LocalAgentControl {
+                 inherited_instructions,
+                 inherited_exec_policy,
+                 client_mcp_extensions,
+-                application_apps,
++                thread_extension_init,
+             })
+             .await
+         {
+@@ -712,7 +722,7 @@ impl LocalAgentControl {
+         initial_input: SpawnInitialInput,
+         session_source: Option<SessionSource>,
+         options: SpawnAgentOptions,
+-    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
++    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot, String)> {
+         let mcp_source = options
+             .spawning_source
+             .as_ref()
+@@ -731,6 +741,16 @@ impl LocalAgentControl {
+                 &config,
+             )
+             .await;
++        if matches!(
++            &initial_input,
++            SpawnInitialInput::InterAgentCommunication(_, _, Some(_))
++        )
++            && multi_agent_version != MultiAgentVersion::V2
++        {
++            return Err(CodexErr::UnsupportedOperation(
++                "managed agent tools require native multi-agent V2".to_string(),
++            ));
++        }
+         let product_sku = config.apps_mcp_product_sku.clone();
+         if let Some(session_source) = session_source.as_ref() {
+             self.ensure_execution_capacity(multi_agent_version, session_source)?;
+@@ -740,8 +760,12 @@ impl LocalAgentControl {
+             && session_source
+                 .as_ref()
+                 .is_some_and(is_v2_resident_session_source);
+-        let application_apps = self
+-            .inherited_application_apps(&state, session_source.as_ref(), options.parent_thread_id)
++        let thread_extension_init = self
++            .inherited_thread_declarations(
++                &state,
++                session_source.as_ref(),
++                options.parent_thread_id,
++            )
+             .await;
+         let (residency_slot, residency_reservation) = if spawn_uses_v2_residency {
+             let residency_reservation_started_at = Instant::now();
+@@ -781,7 +805,7 @@ impl LocalAgentControl {
+             exec_policy: self
+                 .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
+                 .await,
+-            application_apps,
++            thread_extension_init,
+         };
+         let (session_source, mut agent_metadata) = match session_source {
+             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+@@ -849,7 +873,7 @@ impl LocalAgentControl {
+                     .as_ref()
+                     .map(TurnEnvironmentSnapshot::inheritable_selections);
+                 let child_create_started_at = Instant::now();
+-                let mut child_init = ExtensionDataInit::new();
++                let mut child_init = inheritance.thread_extension_init;
+                 if let Some(source) = &options.spawning_source {
+                     child_init.insert(source.clone());
+                 }
+@@ -869,7 +893,6 @@ impl LocalAgentControl {
+                     inheritance.environments,
+                     inheritance.exec_policy,
+                     environments,
+-                    inheritance.application_apps,
+                     child_init,
+                 ))
+                 .await?;
+@@ -970,22 +993,23 @@ impl LocalAgentControl {
+             ..Default::default()
+         };
+         let input_admission_started_at = Instant::now();
+-        match initial_input {
++        let submission_id = match initial_input {
+             SpawnInitialInput::UserInput(input) => {
+                 self.send_input(new_thread.thread_id, input, start_options)
+-                    .await?;
++                    .await?
+             }
+-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
++            SpawnInitialInput::InterAgentCommunication(communication, context, completion) => {
+                 self.send_inter_agent_communication_after_capacity_check(
+                     new_thread.thread_id,
+                     &state,
+                     communication,
+                     context,
+                     start_options,
++                    completion,
+                 )
+-                .await?;
++                .await?
+             }
+-        }
++        };
+         let input_admission = input_admission_started_at.elapsed();
+         reservation.commit(agent_metadata.clone());
+         if let Some(residency_slot) = residency_slot {
+@@ -1035,7 +1059,7 @@ impl LocalAgentControl {
+                 total: spawn_started_at.elapsed(),
+             },
+         );
+-        Ok((agent, config))
++        Ok((agent, config, submission_id))
+     }
+ 
+     async fn spawn_forked_thread(
+@@ -1050,7 +1074,7 @@ impl LocalAgentControl {
+         let SpawnAgentThreadInheritance {
+             environments: inherited_environments,
+             exec_policy: inherited_exec_policy,
+-            application_apps,
++            mut thread_extension_init,
+             mcp_source,
+         } = inheritance;
+         if options.fork_parent_spawn_call_id.is_none() {
+@@ -1349,7 +1373,6 @@ impl LocalAgentControl {
+                 subagent_usage_hint_message.into(),
+             ));
+         }
+-        let mut thread_extension_init = ExtensionDataInit::new();
+         if let Some(source) = &options.spawning_source {
+             thread_extension_init.insert(source.clone());
+         }
+@@ -1357,9 +1380,6 @@ impl LocalAgentControl {
+             thread_extension_init.insert(source);
+         }
+         thread_extension_init.insert(selected_capability_roots);
+-        if let Some(application) = application_apps {
+-            thread_extension_init.insert(application);
+-        }
+ 
+         let fork_context = fork_context_started_at.elapsed();
+         let child_create_started_at = Instant::now();
+@@ -1536,8 +1556,8 @@ impl LocalAgentControl {
+             .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+             .await;
+ 
+-        let application_apps = self
+-            .inherited_application_apps(&state, Some(&session_source), parent_thread_id)
++        let thread_extension_init = self
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
+             .await;
+         let resumed_thread = state
+             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+@@ -1551,7 +1571,7 @@ impl LocalAgentControl {
+                 inherited_instructions: None,
+                 inherited_exec_policy,
+                 client_mcp_extensions: None,
+-                application_apps,
++                thread_extension_init,
+             })
+             .await?;
+         let mut agent_metadata = agent_metadata;
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index 1ac7820543d6a5e3347334e13bac0e15b80a6ec5..de6dc8318666ef6eecf9fccb0613bdff587d8018 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -5880,6 +5880,7 @@ async fn tree_shutdown_preserves_sibling_completion_activity_with_full_parent_qu
+         .admit_task()
+         .expect("second child finalizer admitted");
+     let outcome = |turn: &str| crate::agent::api::AgentTurnOutcome {
++        managed_tool_reply: None,
+         tool_completion: None,
+         thread_id: ThreadId::new(),
+         turn_id: turn.to_owned(),
+@@ -5895,6 +5896,43 @@ async fn tree_shutdown_preserves_sibling_completion_activity_with_full_parent_qu
+         status: AgentStatus::Completed(Some("finished".to_owned())),
+         error_info: None,
+     };
++    let (reply, received) = tokio::sync::oneshot::channel();
++    let slot = crate::agent::api::ManagedToolCompletion::new(reply);
++    let mut managed = outcome("managed");
++    let child_id = managed.thread_id;
++    let typed = codex_protocol::protocol::ToolTurnCompletion {
++        call_id: "managed-output".to_owned(),
++        name: "complete_agent".to_owned(),
++        namespace: None,
++        final_output: serde_json::json!({"checked": true}),
++    };
++    managed.tool_completion = Some(typed.clone());
++    let crate::agent::api::ManagedToolTerminal::Reply(reply) = slot.claim("managed") else {
++        panic!("managed turn must claim its original result");
++    };
++    managed.managed_tool_reply = Some(reply);
++    assert!(matches!(
++        slot.claim("managed"),
++        crate::agent::api::ManagedToolTerminal::AlreadyRouted
++    ));
++    assert!(matches!(
++        slot.claim("later"),
++        crate::agent::api::ManagedToolTerminal::Ordinary
++    ));
++    timeout(
++        Duration::from_secs(5),
++        control.notify_parent_of_terminal_turn(
++            managed,
++            &codex_rollout_trace::ThreadTraceContext::disabled(),
++        ),
++    )
++    .await
++    .expect("managed completion cannot block on the full parent mailbox");
++    let received = received.await.expect("typed managed completion");
++    assert_eq!(received.thread_id, child_id);
++    assert_eq!(received.turn_id, "managed");
++    assert_eq!(received.output, Some(typed));
++
+     let first = outcome("first");
+     let first_control = control.clone();
+     let first_delivery = tokio::spawn(async move {
+@@ -5956,7 +5994,7 @@ async fn tree_shutdown_preserves_sibling_completion_activity_with_full_parent_qu
+     .await
+     .expect("read canonical history after writer close");
+     assert_eq!(parse_errors, 0, "canonical history parses cleanly");
+-    for turn in ["first", "second"] {
++    for turn in ["managed", "first", "second"] {
+         let id = format!("subagent-completed-{turn}");
+         assert_eq!(history.iter().filter(|item| matches!(item,
+             RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 97534ebac655545717709c0c3a65a8da84e09090..02e461740e08cdb8cae4d878c8faca7cea21b38e 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -81,6 +81,11 @@ pub use agent::api::AgentInput;
+ pub use agent::api::AgentTarget;
+ pub use agent::api::AgentTurnOutcome;
+ pub use agent::api::DeliveryReceipt;
++pub use agent::api::ManagedAgentTool;
++pub use agent::api::ManagedAgentToolResult;
++pub use tools::handlers::multi_agents_v2::managed_tool::{
++    ManagedAgentToolCatalog, ManagedAgentToolContributor, ManagedAgentToolSpec,
++};
+ pub use agent::api::SendRequest;
+ pub use agent::api::SpawnRequest;
+ pub use agent::types::AgentExecutionGuard;
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index e02bb3bceb6b45708535b8c5eef1b6413901a336..82e135253d0a1da49afdf9be5dfbb1cb696a425e 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2593,7 +2593,19 @@ impl Session {
+                 }
+             }
+         };
+-        if !is_final(&status) {
++        use crate::agent::api::ManagedToolCompletion;
++        use crate::agent::api::ManagedToolTerminal;
++
++        let managed_tool_reply = match turn_context
++            .extension_data
++            .get::<ManagedToolCompletion>()
++            .map(|completion| completion.claim(&turn_context.sub_id))
++        {
++            Some(ManagedToolTerminal::Reply(reply)) => Some(reply),
++            Some(ManagedToolTerminal::AlreadyRouted) => return,
++            Some(ManagedToolTerminal::Ordinary) | None => None,
++        };
++        if !is_final(&status) && managed_tool_reply.is_none() {
+             return;
+         }
+ 
+@@ -2601,6 +2613,7 @@ impl Session {
+             .agent_control
+             .turn_finished(
+                 AgentTurnOutcome {
++                    managed_tool_reply,
+                     tool_completion: match msg {
+                         EventMsg::TurnComplete(done) => done.tool_completion.clone(),
+                         _ => None,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index d8b4606f793dbabc51538557c33c3ece3009c063..a5421a44676a655cd40d187352635eb7ef8ac580 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -3848,7 +3848,7 @@ async fn handle_assistant_item_done_in_plan_mode(
+             step_context,
+             item,
+             finalized_facts.as_ref(),
+-            /*application_tool*/ None,
++            /*metadata*/ None,
+         )
+         .await;
+         if let Some(agent_message) = final_last_agent_message {
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index adcd277706ed47abe2f026becef815b183a75804..b817d2fd03eb1281074bf7affc7f0ff64bfc9c5b 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -83,14 +83,14 @@ pub(crate) async fn record_completed_response_item(
+     sess: &Session,
+     step_context: &StepContext,
+     item: &ResponseItem,
+-    application_tool: Option<&str>,
++    metadata: Option<CodexHarnessMetadata>,
+ ) {
+     record_completed_response_item_with_finalized_facts(
+         sess,
+         step_context,
+         item,
+         /*finalized_facts*/ None,
+-        application_tool,
++        metadata,
+     )
+     .await;
+ }
+@@ -100,19 +100,16 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
+     step_context: &StepContext,
+     item: &ResponseItem,
+     finalized_facts: Option<&FinalizedTurnItemFacts>,
+-    application_tool: Option<&str>,
++    metadata: Option<CodexHarnessMetadata>,
+ ) {
+     let turn_context = &step_context.turn;
+-    if let Some(tool) = application_tool {
++    if let Some(metadata) = metadata {
+         sess.record_annotated_conversation_items(
+             turn_context,
+             &step_context.settings.model_info,
+             vec![ResponseItemEnvelope {
+                 item: item.clone(),
+-                metadata: Some(CodexHarnessMetadata {
+-                    sdk_application_tool: Some(tool.to_owned()),
+-                    ..Default::default()
+-                }),
++                metadata: Some(metadata),
+             }],
+         )
+         .await;
+@@ -443,11 +440,22 @@ pub(crate) async fn handle_output_item_done(
+                 codex_tools::ToolPayload::ApplyPatch { .. } => Some("apply_patch"),
+                 _ => None,
+             };
++            let managed_agent_tool = ctx
++                .step_context
++                .tool_router
++                .tool_runtime(&call.tool_name)
++                .and_then(|tool| tool.managed_agent_tool_origin());
++            let metadata = (application_tool.is_some() || managed_agent_tool.is_some())
++                .then(|| CodexHarnessMetadata {
++                    sdk_application_tool: application_tool.map(str::to_owned),
++                    sdk_managed_agent_tool: managed_agent_tool,
++                    ..Default::default()
++                });
+             record_completed_response_item(
+                 ctx.sess.as_ref(),
+                 ctx.step_context.as_ref(),
+                 &item,
+-                application_tool,
++                metadata,
+             )
+             .await;
+             if application_tool.is_some() {
+@@ -499,7 +507,7 @@ pub(crate) async fn handle_output_item_done(
+                 ctx.step_context.as_ref(),
+                 &item,
+                 finalized_facts.as_ref(),
+-                /*application_tool*/ None,
++                /*metadata*/ None,
+             )
+             .await;
+ 
+@@ -522,7 +530,7 @@ pub(crate) async fn handle_output_item_done(
+                 ctx.sess.as_ref(),
+                 ctx.step_context.as_ref(),
+                 &item,
+-                /*application_tool*/ None,
++                /*metadata*/ None,
+             )
+             .await;
+             if let Some(response_item) = response_input_to_response_item(&response) {
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index b335afcf371e3d10f8a71e55d8742d9561e42462..11b8da6ece87709d7f6e14e2d894bf02282e5a11 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -406,7 +406,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
+     pub(crate) inherited_instructions: Option<SessionInstructions>,
+     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+     pub(crate) client_mcp_extensions: Option<ClientMcpExtensions>,
+-    pub(crate) application_apps: Option<codex_mcp::ApplicationApps>,
++    pub(crate) thread_extension_init: ExtensionDataInit,
+ }
+ 
+ /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
+@@ -1946,7 +1946,6 @@ impl ThreadManagerState {
+             /*inherited_environments*/ None,
+             /*inherited_exec_policy*/ None,
+             /*environments*/ None,
+-            /*application_apps*/ None,
+             ExtensionDataInit::new(),
+         ))
+         .await
+@@ -1967,13 +1966,9 @@ impl ThreadManagerState {
+         inherited_environments: Option<TurnEnvironmentSnapshot>,
+         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+         environments: Option<Vec<TurnEnvironmentSelection>>,
+-        application_apps: Option<codex_mcp::ApplicationApps>,
+-        mut thread_extension_init: ExtensionDataInit,
++        thread_extension_init: ExtensionDataInit,
+     ) -> CodexResult<NewThread> {
+         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
+-        if let Some(application) = application_apps {
+-            thread_extension_init.insert(application);
+-        }
+         let options = StartThreadOptions {
+             history_mode,
+             session_source: Some(session_source),
+@@ -2009,17 +2004,13 @@ impl ThreadManagerState {
+             inherited_instructions,
+             inherited_exec_policy,
+             client_mcp_extensions,
+-            application_apps,
++            thread_extension_init,
+         } = options;
+         let client_mcp_extensions = match client_mcp_extensions {
+             Some(client_mcp_extensions) => client_mcp_extensions,
+             None => self.client_mcp_extensions_for_child(parent_thread_id).await,
+         };
+         let thread_source = initial_history.get_resumed_thread_source();
+-        let mut thread_extension_init = ExtensionDataInit::new();
+-        if let Some(application) = application_apps {
+-            thread_extension_init.insert(application);
+-        }
+         let options = StartThreadOptions {
+             initial_history,
+             session_source: Some(session_source),
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index c878bfdd3f3f2be5cc96630b87228dfaa5da3453..f23b6a8864280cc31798e74fed9a33878b6bf362 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -55,6 +55,14 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         self.0.exposure()
+     }
+ 
++    fn managed_agent_role(&self) -> Option<&str> {
++        self.0.managed_agent_role()
++    }
++
++    fn configured_agent_tool_role(&self) -> Option<&str> {
++        self.0.configured_agent_tool_role()
++    }
++
+     fn client_search_source(&self) -> Option<ToolName> {
+         self.0.client_search_source()
+     }
+@@ -72,6 +80,9 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         ToolInvocation: 'a,
+     {
+         Box::pin(async move {
++            if let Some(role) = self.0.managed_agent_role() {
++                return super::multi_agents_v2::managed_tool::run(invocation, role).await;
++            }
+             let environment_accessors = invocation.step_context.environments();
+             let environments = environment_accessors
+                 .iter()
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
+index ea44c0a427837bad62969097cacc947d9b0ed069..2030b980a08580ef11c5f28921ba7568d9175835 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
+@@ -36,6 +36,7 @@ mod analytics;
+ mod followup_task;
+ mod interrupt_agent;
+ mod list_agents;
++pub(crate) mod managed_tool;
+ mod message_tool;
+ mod send_message;
+ mod spawn;
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/managed_tool.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/managed_tool.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe351b220d19e584689eb299087e8162fe3db12a
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/managed_tool.rs
+@@ -0,0 +1,278 @@
++use std::collections::HashSet;
++use std::sync::Arc;
++
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ToolContributor;
++use codex_protocol::AgentPath;
++use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
++use codex_protocol::items::SubAgentActivityItem;
++use codex_protocol::protocol::AgentStatus;
++use codex_protocol::protocol::MultiAgentVersion;
++use codex_protocol::protocol::SubAgentActivityKind;
++use codex_tools::ResponsesApiNamespace;
++use codex_tools::ResponsesApiNamespaceTool;
++use codex_tools::ToolCall;
++use codex_tools::ToolExecutor;
++use codex_tools::ToolExecutorFuture;
++use codex_tools::ToolName;
++use codex_tools::ToolSpec;
++use codex_tools::default_namespace_description;
++use codex_tools::dynamic_tool_to_responses_api_tool;
++use serde::Deserialize;
++
++use crate::AgentInput;
++use crate::AgentSpawnSource;
++use crate::SpawnAgentOptions;
++use crate::SpawnRequest;
++use crate::agent::child_config::SpawnConfigOptions;
++use crate::agent::child_config::SpawnConfigVersion;
++use crate::agent::child_config::prepare_agent_spawn_config;
++use crate::agent::next_thread_spawn_depth;
++use crate::agent::types::AgentMessage;
++use crate::agent::types::MessageDeliveryMode;
++use crate::function_tool::FunctionCallError;
++use crate::tools::context::FunctionToolOutput;
++use crate::tools::context::ToolInvocation;
++use crate::tools::context::ToolOutput;
++use crate::tools::handlers::multi_agents_common::collab_spawn_error;
++use crate::tools::handlers::multi_agents_common::function_arguments;
++use crate::tools::handlers::multi_agents_common::thread_spawn_source;
++use crate::tools::handlers::parse_arguments;
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ManagedAgentToolSpec {
++    pub name: String,
++    pub role: String,
++    pub description: String,
++}
++
++/// Declared SDK role tools for a thread and its verified native descendants.
++#[derive(Clone)]
++pub struct ManagedAgentToolCatalog(Vec<Arc<ManagedRoleTool>>);
++
++impl ManagedAgentToolCatalog {
++    pub fn new(declarations: Vec<ManagedAgentToolSpec>) -> Result<Self, String> {
++        let mut names = HashSet::new();
++        let mut tools = Vec::with_capacity(declarations.len());
++        for declaration in declarations {
++            AgentPath::root().join(&declaration.name)?;
++            AgentPath::root().join(&declaration.role)?;
++            if matches!(
++                declaration.name.as_str(),
++                "spawn_agent"
++                    | "wait_agent"
++                    | "send_message"
++                    | "followup_task"
++                    | "interrupt_agent"
++                    | "list_agents"
++                    | "close_agent"
++            ) || !names.insert(declaration.name.clone())
++            {
++                return Err(format!(
++                    "Duplicate or reserved managed agent tool {}",
++                    declaration.name
++                ));
++            }
++            if declaration.description.trim().is_empty() {
++                return Err(format!(
++                    "Managed agent tool {} needs a description",
++                    declaration.name
++                ));
++            }
++            let name = ToolName::new(Some("collaboration".to_owned()), declaration.name.clone());
++            let function = dynamic_tool_to_responses_api_tool(&DynamicToolFunctionSpec {
++                name: declaration.name,
++                description: declaration.description,
++                input_schema: serde_json::json!({
++                    "type": "object",
++                    "properties": { "input": { "type": "string" } },
++                    "required": ["input"],
++                    "additionalProperties": false,
++                }),
++                strict: true,
++                output_schema: None,
++                defer_loading: false,
++            })
++            .map_err(|error| error.to_string())?;
++            tools.push(Arc::new(ManagedRoleTool {
++                name,
++                role: declaration.role,
++                spec: ToolSpec::Namespace(ResponsesApiNamespace {
++                    name: "collaboration".to_owned(),
++                    description: default_namespace_description("collaboration"),
++                    tools: vec![ResponsesApiNamespaceTool::Function(function)],
++                }),
++            }));
++        }
++        Ok(Self(tools))
++    }
++}
++
++pub struct ManagedAgentToolContributor;
++
++impl ToolContributor for ManagedAgentToolContributor {
++    fn tools(
++        &self,
++        _: &ExtensionData,
++        thread_store: &ExtensionData,
++    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
++        let Some(catalog) = thread_store.get::<ManagedAgentToolCatalog>() else {
++            return Vec::new();
++        };
++        catalog
++            .0
++            .iter()
++            .cloned()
++            .map(|tool| tool as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>)
++            .collect()
++    }
++}
++
++struct ManagedRoleTool {
++    name: ToolName,
++    role: String,
++    spec: ToolSpec,
++}
++
++impl<'call> ToolExecutor<ToolCall<'call>> for ManagedRoleTool {
++    fn tool_name(&self) -> ToolName {
++        self.name.clone()
++    }
++
++    fn spec(&self) -> ToolSpec {
++        self.spec.clone()
++    }
++
++    fn managed_agent_role(&self) -> Option<&str> {
++        Some(&self.role)
++    }
++
++    fn supports_parallel_tool_calls(&self) -> bool {
++        true
++    }
++
++    fn handle<'a>(&'a self, _: ToolCall<'call>) -> ToolExecutorFuture<'a>
++    where
++        ToolCall<'call>: 'a,
++    {
++        Box::pin(async {
++            Err(FunctionCallError::Fatal(
++                "managed agent tool requires its native producing step".to_owned(),
++            ))
++        })
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ManagedToolInput {
++    input: String,
++}
++
++pub(crate) async fn run(
++    invocation: ToolInvocation,
++    role: &str,
++) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
++    let ToolInvocation {
++        session,
++        step_context,
++        payload,
++        call_id,
++        ..
++    } = invocation;
++    let turn = &step_context.turn;
++    if turn.multi_agent_version != MultiAgentVersion::V2 {
++        return Err(FunctionCallError::RespondToModel(
++            "Managed agent tools require native multi-agent V2".to_owned(),
++        ));
++    }
++    let args: ManagedToolInput = parse_arguments(&function_arguments(payload)?)?;
++    if args.input.trim().is_empty() {
++        return Err(FunctionCallError::RespondToModel(
++            "Managed agent tool input must contain a message".to_owned(),
++        ));
++    }
++    let prepared = prepare_agent_spawn_config(
++        &session,
++        step_context.as_ref(),
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(role),
++            model: None,
++            reasoning_effort: None,
++        },
++    )
++    .await
++    .map_err(FunctionCallError::RespondToModel)?;
++    let task_name = format!("tool_{}", uuid::Uuid::now_v7().simple());
++    let source = thread_spawn_source(
++        session.thread_id,
++        &turn.session_source,
++        next_thread_spawn_depth(&turn.session_source),
++        prepared.role_name.as_deref(),
++        Some(task_name),
++    )?;
++    let agent_path = source.get_agent_path().ok_or_else(|| {
++        FunctionCallError::Fatal("managed child is missing its canonical agent path".to_owned())
++    })?;
++    let managed = session
++        .services
++        .agent_control
++        .spawn_managed_tool(SpawnRequest {
++            caller: session.thread_id,
++            config: prepared.config,
++            input: AgentInput::Message {
++                message: AgentMessage::Plaintext(args.input),
++                mode: MessageDeliveryMode::TriggerTurn,
++            },
++            source,
++            options: SpawnAgentOptions {
++                spawning_source: Some(AgentSpawnSource::from_step_context(Arc::clone(
++                    &step_context,
++                ))),
++                parent_thread_id: Some(session.thread_id),
++                parent_turn_id: Some(turn.sub_id.clone()),
++                root_turn_id: turn.turn_metadata_state.root_turn_id(),
++                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
++                environments: Some(step_context.environments.clone()),
++                cyber_access_program: turn.cyber_access_program,
++                ..Default::default()
++            },
++        })
++        .await
++        .map_err(collab_spawn_error)?;
++    let thread_id = managed.agent.thread_id;
++    let turn_id = managed.turn_id.clone();
++    super::emit_sub_agent_activity(
++        &session,
++        turn,
++        SubAgentActivityItem {
++            id: call_id,
++            agent_thread_id: thread_id,
++            agent_path,
++            kind: SubAgentActivityKind::Started,
++        },
++    )
++    .await;
++    let result = managed.wait().await.map_err(|_| {
++        FunctionCallError::Fatal("managed child did not deliver its terminal outcome".to_owned())
++    })?;
++    if result.thread_id != thread_id || result.turn_id != turn_id {
++        return Err(FunctionCallError::Fatal(
++            "managed child delivered an unrelated terminal outcome".to_owned(),
++        ));
++    }
++    let AgentStatus::Completed(message) = result.status else {
++        return Err(FunctionCallError::RespondToModel(
++            "Managed agent did not complete its turn".to_owned(),
++        ));
++    };
++    let text = match result.output.map(|output| output.final_output) {
++        Some(serde_json::Value::String(text)) => text,
++        Some(value) => value.to_string(),
++        None => message.unwrap_or_default(),
++    };
++    Ok(Box::new(FunctionToolOutput::from_text(text, Some(true))))
++}
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 047bc56a7821672c7754f09a45575be692302fbd..62f1f652a49d87c3f92432ee3a8096ce08eb788c 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -319,11 +319,18 @@ impl ToolCallRuntime {
+                 {
+                     return Err(CodexErr::Fatal(other.to_string()));
+                 }
+-                Err(other) => (
+-                    ResponseItemEnvelope::new(Self::failure_response(error_call, other).into()),
+-                    None,
+-                    false,
+-                ),
++                Err(other) => {
++                    let metadata = retained_step_context
++                        .tool_router
++                        .tool_runtime(&error_call.tool_name)
++                        .and_then(|tool| tool.managed_agent_tool_origin())
++                        .map(|origin| CodexHarnessMetadata {
++                            sdk_managed_agent_tool: Some(origin),
++                            ..Default::default()
++                        });
++                    let item = Self::failure_response(error_call, other).into();
++                    (ResponseItemEnvelope { item, metadata }, None, false)
++                }
+             };
+             if let Some(text) = call_state.delivered_assistant_message.get() {
+                 response
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index ca8e891dc74b849bf5d091f6a5e870c1fba8fd4c..3c21393924458d1eee993d7b71e5f82edab343eb 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -31,6 +31,7 @@ use codex_analytics::ControlToolCallStatus;
+ use codex_extension_api::ToolCallOutcome;
+ use codex_extension_api::ToolPolicy;
+ use codex_history::CodexHarnessMetadata;
++use codex_history::ManagedAgentToolOrigin;
+ use codex_history::ResponseItemEnvelope;
+ use codex_protocol::models::FunctionCallOutputPayload;
+ use codex_protocol::models::ResponseInputItem;
+@@ -55,6 +56,16 @@ pub use codex_tools::ToolExposure;
+ /// Implementers provide the shared `ToolExecutor` behavior plus optional
+ /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
+ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> + std::any::Any {
++    fn managed_agent_tool_origin(&self) -> Option<ManagedAgentToolOrigin> {
++        let role = self
++            .managed_agent_role()
++            .or_else(|| self.configured_agent_tool_role())?;
++        Some(ManagedAgentToolOrigin {
++            name: self.tool_name().name,
++            role: role.to_owned(),
++        })
++    }
++
+     /// Whether this built-in control tool needs a structured tool-call event.
+     fn is_builtin_control_tool(&self) -> bool {
+         false
+@@ -1025,7 +1036,12 @@ async fn handle_any_tool(
+     let post_tool_use_payload =
+         CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
+     let result = AnyToolResult {
+-        harness_metadata: None,
++        harness_metadata: tool
++            .managed_agent_tool_origin()
++            .map(|origin| CodexHarnessMetadata {
++                sdk_managed_agent_tool: Some(origin),
++                ..Default::default()
++            }),
+         call_id,
+         payload,
+         result: output,
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 017ebe7cc3d90c75b804d168ba29a63ad515fd54..0b7d1c422009b517babf882a533b526cd714e478 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -844,7 +844,12 @@ fn apply_direct_model_only_namespace_overrides(
+         return;
+     }
+ 
++    let allow_declared_roles = turn_context.config.features.enabled(Feature::CodeMode);
+     for tool in registry.entries_mut() {
++        // Keep explicitly declared SDK roles callable from Code Mode.
++        if allow_declared_roles && tool.runtime.managed_agent_role().is_some() {
++            continue;
++        }
+         let configured = tool
+             .runtime
+             .tool_name()
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index 39ffca3b9dccfb6e569e1dee8adffbfc6d3cbc72..713f333657995d1409f67fb22153064920fef1d1 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -59,6 +59,13 @@ pub struct ResponseItemEnvelope {
+     pub metadata: Option<CodexHarnessMetadata>,
+ }
+ 
++/// The declaration selected by a native managed role tool call.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
++pub struct ManagedAgentToolOrigin {
++    pub name: String,
++    pub role: String,
++}
++
+ /// Metadata owned by the Codex harness and persisted with a response item.
+ ///
+ #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+@@ -75,6 +82,9 @@ pub struct CodexHarnessMetadata {
+     /// Accepted SDK handoff outcome; canonical provenance, never execution authority.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_handoff: Option<codex_protocol::agent_profile::AgentProfileHandoff>,
++    /// The native declaration for this tool occurrence, outside provider content.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub sdk_managed_agent_tool: Option<ManagedAgentToolOrigin>,
+     /// Host graph declaration fingerprint; never an authority or a serialized graph.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_graph: Option<String>,
+diff --git a/codex-rs/tools/src/tool_executor.rs b/codex-rs/tools/src/tool_executor.rs
+index 9980590e0fb491d4a241ac2c779870cca015946b..822689ce13d6691e0700bedbad910d12fe053835 100644
+--- a/codex-rs/tools/src/tool_executor.rs
++++ b/codex-rs/tools/src/tool_executor.rs
+@@ -149,6 +149,16 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
+         false
+     }
+ 
++    /// Native child role selected by a trusted SDK tool declaration.
++    fn managed_agent_role(&self) -> Option<&str> {
++        None
++    }
++
++    /// Observational identity for a callback-backed Agent; it grants no role routing.
++    fn configured_agent_tool_role(&self) -> Option<&str> {
++        None
++    }
++
+     /// Observes the final native result after all output policies accept it.
+     /// The host records this disposition outside model-visible tool content.
+     fn on_result_accepted(

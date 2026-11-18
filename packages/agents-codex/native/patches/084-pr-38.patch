@@ -1,0 +1,2769 @@
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 4c856bcd59d644c20ef23299c13cfb61b354f416..1df79ed93318c3eeb00dcfd3e3ffb11b435e8dd7 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -217,6 +217,7 @@ impl LocalAgentControl {
+         state: &ThreadManagerState,
+         source: Option<&SessionSource>,
+         parent_thread_id: Option<ThreadId>,
++        spawning_source: Option<&crate::AgentSpawnSource>,
+     ) -> ExtensionDataInit {
+         let mut declarations = ExtensionDataInit::new();
+         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+@@ -240,6 +241,18 @@ impl LocalAgentControl {
+         {
+             return declarations;
+         }
++        // Only an admitted executor-profile spawn carries the owner's fixed ceiling.
++        // Ordinary children and restored runtimes keep their existing startup policy.
++        if spawning_source.is_some_and(|source| {
++            source
++                .step
++                .extension_data
++                .get::<codex_extension_api::AgentProfileExecutorTools>()
++                .is_some()
++        }) && parent.session.tool_policy.allowed_tools.is_some()
++        {
++            declarations.insert((*parent.session.tool_policy).clone());
++        }
+         let thread_data = parent.thread_extension_data();
+         if let Some(applications) = thread_data.get::<codex_mcp::ApplicationApps>() {
+             declarations.insert((*applications).clone());
+@@ -532,7 +545,7 @@ impl LocalAgentControl {
+             .or_else(|| initial_history.get_resumed_parent_thread_id())
+             .or(stored_parent_thread_id);
+         let thread_extension_init = self
+-            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id, None)
+             .await;
+         let (inherited_environments, inherited_exec_policy, client_mcp_extensions) = if let Some(
+             (parent, parent_environments),
+@@ -765,6 +778,7 @@ impl LocalAgentControl {
+                 &state,
+                 session_source.as_ref(),
+                 options.parent_thread_id,
++                options.spawning_source.as_ref(),
+             )
+             .await;
+         let (residency_slot, residency_reservation) = if spawn_uses_v2_residency {
+@@ -1557,7 +1571,7 @@ impl LocalAgentControl {
+             .await;
+ 
+         let thread_extension_init = self
+-            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id, None)
+             .await;
+         let resumed_thread = state
+             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index ec9e5a9115c27855de696a1da7ba7542e5c66ecf..ef13a85624cf16bdd12772acfba2ce7f129dbaff 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -6241,3 +6241,97 @@ for line in sys.stdin:
+         harness.control.shutdown_agent_tree(root_id).await.unwrap();
+     }).await.expect("source B child MCP test completes");
+ }
++
++#[tokio::test]
++async fn executor_profile_spawn_keeps_the_immutable_empty_owner_ceiling() {
++    let (home, config) = test_config().await;
++    let harness = child_source_memory_harness(home, config);
++    let mut options = StartThreadOptions::new(harness.config.clone());
++    options
++        .thread_extension_init
++        .insert(codex_extension_api::ToolPolicy {
++            allowed_tools: Some(Vec::new()),
++            ..Default::default()
++        });
++    let parent = harness.manager.start_thread(options).await.unwrap();
++    let parent_id = parent.thread_id;
++    let parent = parent.thread;
++    // Mutable extension data cannot replace the Session's captured ceiling.
++    parent
++        .thread_extension_data()
++        .insert(codex_extension_api::ToolPolicy {
++            allowed_tools: Some(vec![codex_tools::ToolName::plain("unadmitted")]),
++            ..Default::default()
++        });
++    for (marked, source_present) in [(true, true), (false, true), (true, false)] {
++        let turn = parent.session.new_default_turn().await;
++        let step = parent
++            .session
++            .capture_step_context(turn, &CancellationToken::new())
++            .await
++            .unwrap();
++        if marked {
++            step.extension_data
++                .insert(codex_extension_api::AgentProfileExecutorTools {
++                    allowed: std::collections::HashSet::new(),
++                });
++        }
++        let child_id = harness
++            .spawn_anonymous_child(
++                parent_id,
++                SpawnAgentOptions {
++                    parent_thread_id: Some(parent_id),
++                    spawning_source: source_present
++                        .then(|| crate::AgentSpawnSource::from_step_context(Arc::clone(&step))),
++                    ..Default::default()
++                },
++            )
++            .await;
++        let child = harness.manager.get_thread(child_id).await.unwrap();
++        let expected = (marked && source_present).then(Vec::new);
++        assert_eq!(child.session.tool_policy.allowed_tools, expected);
++        if marked && source_present {
++            // SDK startup retains the actual spawning grant in child thread data.
++            child.thread_extension_data().insert(
++                (*step
++                    .extension_data
++                    .get::<codex_extension_api::AgentProfileExecutorTools>()
++                    .unwrap())
++                .clone(),
++            );
++            let child_step = child
++                .session
++                .capture_step_context(
++                    child.session.new_default_turn().await,
++                    &CancellationToken::new(),
++                )
++                .await
++                .unwrap();
++            assert!(
++                child_step
++                    .extension_data
++                    .get::<codex_extension_api::AgentProfileExecutorTools>()
++                    .is_some()
++            );
++            let nested_id = harness
++                .spawn_anonymous_child(
++                    child_id,
++                    SpawnAgentOptions {
++                        parent_thread_id: Some(child_id),
++                        spawning_source: Some(crate::AgentSpawnSource::from_step_context(
++                            child_step,
++                        )),
++                        ..Default::default()
++                    },
++                )
++                .await;
++            let nested = harness.manager.get_thread(nested_id).await.unwrap();
++            assert_eq!(nested.session.tool_policy.allowed_tools, Some(Vec::new()));
++        }
++    }
++    harness
++        .control
++        .shutdown_agent_tree(parent_id)
++        .await
++        .unwrap();
++}
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 5cab554301cc9dcf58bec90538e87c7505bf06f4..c3de04058c2fd377d6fba120651b2c3d39caa2da 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1401,6 +1401,20 @@ impl CodexThread {
+         self.session.prepare_agent_profile_mcp(servers).await
+     }
+ 
++    /// Prepare a profile's MCP catalog on the host-admitted destination executor.
++    pub async fn prepare_agent_profile_mcp_in_environment(
++        &self,
++        servers: std::collections::HashMap<String, codex_config::McpServerConfig>,
++        environment: &codex_extension_api::AgentProfileEnvironment,
++    ) -> CodexResult<(
++        Arc<codex_mcp::McpBinding>,
++        codex_extension_api::SelectedPluginSnapshot,
++    )> {
++        self.session
++            .prepare_agent_profile_mcp_in_environment(servers, Some(environment))
++            .await
++    }
++
+     /// The committed native receipt; observation buffers never provide this authority.
+     pub async fn agent_profile_receipt(
+         &self,
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index 0d523fbe824146987ee24d5c0a30bc24de170514..6a6bd9a29d8f2e876c058b297a40fd84c9d495e3 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -376,9 +376,13 @@ pub(crate) async fn run_custom_post_turn_compaction(
+     }
+     sess.ensure_rollout_durable().await?;
+     let history = sess.clone_history().await;
+-    let items = history
+-        .clone()
+-        .for_prompt(&step_context.settings.model_info.input_modalities);
++    let (items, filtered_handoff) = sess
++        .project_handoff_compaction_input(
++            history
++                .clone()
++                .for_prompt(&step_context.settings.model_info.input_modalities),
++        )
++        .await?;
+     let candidate_indexes = compaction_candidate_indexes(&items);
+     let input = codex_extension_api::CompactionInput {
+         step_store: Some(&step_context.extension_data),
+@@ -395,9 +399,12 @@ pub(crate) async fn run_custom_post_turn_compaction(
+         automatic: true,
+         optional: true,
+         candidate_indexes: &candidate_indexes,
+-        provider_response: sess
+-            .provider_response_for_window(&step_context, &history)
+-            .await,
++        provider_response: if filtered_handoff {
++            None
++        } else {
++            sess.provider_response_for_window(&step_context, &history)
++                .await
++        },
+         items: &items,
+     };
+     for contributor in contributors {
+@@ -480,9 +487,15 @@ async fn try_custom_compaction_with_history(
+     let input = match captured_input {
+         Some(input) => input,
+         None => {
+-            items = history
+-                .clone()
+-                .for_prompt(&source_step_context.settings.model_info.input_modalities);
++            let projected = sess
++                .project_handoff_compaction_input(
++                    history
++                        .clone()
++                        .for_prompt(&source_step_context.settings.model_info.input_modalities),
++                )
++                .await?;
++            items = projected.0;
++            let filtered_handoff = projected.1;
+             indexes = compaction_candidate_indexes(&items);
+             current_input = codex_extension_api::CompactionInput {
+                 step_store: Some(&source_step_context.extension_data),
+@@ -499,9 +512,12 @@ async fn try_custom_compaction_with_history(
+                 automatic: matches!(metadata.trigger(), CompactionTrigger::Auto),
+                 optional: matches!(metadata.phase(), CompactionPhase::PostTurn),
+                 candidate_indexes: &indexes,
+-                provider_response: sess
+-                    .provider_response_for_window(source_step_context, history)
+-                    .await,
++                provider_response: if filtered_handoff {
++                    None
++                } else {
++                    sess.provider_response_for_window(source_step_context, history)
++                        .await
++                },
+                 items: &items,
+             };
+             &current_input
+@@ -630,7 +646,21 @@ async fn publish_compaction_summary(
+         .as_ref()
+         .and_then(|_| turn_context.model_info().comp_hash.clone());
+     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+-    let user_messages = collect_annotated_user_messages(history_items);
++    let (_, filtered_handoff) = sess
++        .project_handoff_compaction_input(
++            history_items
++                .iter()
++                .map(|envelope| envelope.item.clone())
++                .collect(),
++        )
++        .await?;
++    // A custom summary of a filtered view is a detached replacement. Keeping
++    // canonical user records here would reintroduce data the callback never saw.
++    let user_messages = if filtered_handoff {
++        Vec::new()
++    } else {
++        collect_annotated_user_messages(history_items)
++    };
+ 
+     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+     if let Some(summary_item) = new_history.last_mut() {
+@@ -774,6 +804,7 @@ async fn run_compact_task_inner_impl(
+             "Admitted application compaction did not return a replacement".into(),
+         ));
+     }
++    sess.validate_native_compaction_view().await?;
+     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+ 
+     let mut history = history.clone();
+diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
+index c99b265f2967a321b2384fe7489f79e98b2825f6..91c869fb09df5b6f1ec3de70b33727b7be6c0a97 100644
+--- a/codex-rs/core/src/compact_remote_v2_attempt.rs
++++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
+@@ -39,6 +39,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
+     compaction_metadata: CompactionTurnMetadata,
+     analytics_details: &mut CompactionAnalyticsDetails,
+ ) -> CodexResult<RemoteCompactV2Attempt> {
++    sess.validate_native_compaction_view().await?;
+     let turn_context = &step_context.turn;
+     let mut history = sess.clone_history().await;
+     let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
+diff --git a/codex-rs/core/src/environment_selection.rs b/codex-rs/core/src/environment_selection.rs
+index 2fa0a6429f6477415d6cd095fb3a14dc73577982..999494829d7cd76f72763e15c2168ffe48850964 100644
+--- a/codex-rs/core/src/environment_selection.rs
++++ b/codex-rs/core/src/environment_selection.rs
+@@ -919,6 +919,47 @@ impl ThreadEnvironments {
+         self.resolve_snapshot(self.snapshot_now())
+     }
+ 
++    /// Prepare a profile's owner-configured attachment without publishing it to live work.
++    pub(crate) async fn snapshot_for_profile(
++        &self,
++        selection: &TurnEnvironmentSelection,
++    ) -> CodexResult<TurnEnvironmentSnapshot> {
++        let manager = self.environment_manager();
++        validate_environment_ids_and_cwds(&manager, std::slice::from_ref(selection))?;
++        if !matches!(selection.config, EnvironmentConfigState::Ready(_)) {
++            return Err(CodexErr::InvalidRequest(
++                "Agent environment requires a ready owner configuration".into(),
++            ));
++        }
++        let environment = manager
++            .get_environment(&selection.environment_id)
++            .ok_or_else(|| CodexErr::InvalidRequest("Agent executor is unavailable".into()))?;
++        let selected = Self::start_environment(
++            selection.clone(),
++            EnvironmentConfigOrigin::Owner,
++            environment,
++            None,
++            None,
++            &self.local_shell,
++            &self.shell_snapshot,
++        );
++        let starting = StartingTurnEnvironment {
++            selection: selected.selection,
++            config_origin: selected.config_origin,
++            resolution: selected.resolution,
++            environment: selected.environment,
++            owner_config_result: selected.owner_config_result,
++        };
++        let ready = starting.resolution.clone().await;
++        let snapshot = TurnEnvironmentSnapshot {
++            environments: vec![TurnEnvironmentState::from_resolution(starting, Some(ready))],
++        };
++        if snapshot.primary().is_none() {
++            return Err(CodexErr::InvalidRequest("Agent executor failed to start".into()));
++        }
++        Ok(snapshot)
++    }
++
+     /// Copies the current selection without waiting for any executor to connect.
+     pub(crate) fn snapshot_now(&self) -> TurnEnvironmentSnapshot {
+         // Keep the startup results, but not the senders that would keep removed Pending work alive.
+@@ -1607,6 +1648,31 @@ url = "ws://127.0.0.1:8765"
+         assert_eq!(resolved.snapshot().await.to_selections(), vec![first]);
+     }
+ 
++    #[tokio::test]
++    async fn preparing_an_agent_environment_keeps_the_live_selection() {
++        let cwd = AbsolutePathBuf::current_dir().expect("cwd");
++        let initial = TurnEnvironmentSelection {
++            environment_id: "local".to_string(),
++            cwd: PathUri::from_abs_path(&cwd),
++            workspace_roots: Vec::new(),
++            config: EnvironmentConfigState::FromThread,
++        };
++        let environments = resolve_turn_environments(
++            Arc::new(EnvironmentManager::default_for_tests()),
++            std::slice::from_ref(&initial),
++        )
++        .await;
++        let destination = TurnEnvironmentSelection {
++            cwd: PathUri::from_abs_path(&cwd.join("destination")),
++            config: EnvironmentConfigState::Ready(test_environment_config()),
++            ..initial.clone()
++        };
++        let prepared = environments.snapshot_for_profile(&destination).await.unwrap();
++        assert_eq!(prepared.primary().unwrap().selection, destination);
++        assert_eq!(environments.selections(), vec![initial.clone()]);
++        assert!(environments.snapshot_for_profile(&initial).await.is_err());
++    }
++
+     #[tokio::test]
+     async fn resolved_environment_selections_use_first_selection_as_primary() {
+         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
+diff --git a/codex-rs/core/src/prepared_request.rs b/codex-rs/core/src/prepared_request.rs
+index f5599c649cfeda5cc022792df16b352fc3aa5c95..601aa5902ec2f8b8c7af2c6892e930cd27d18590 100644
+--- a/codex-rs/core/src/prepared_request.rs
++++ b/codex-rs/core/src/prepared_request.rs
+@@ -167,11 +167,284 @@ pub(crate) fn apply(original: &Prompt, data: PreparedRequestData) -> Result<Prom
+     Ok(result)
+ }
+ 
++pub(crate) fn check_handoff_budget<'a, T: Serialize + 'a>(
++    values: impl IntoIterator<Item = &'a T>,
++) -> Result<(), String> {
++    use crate::session::sdk_produced_items::{MAX_BYTES, MAX_ITEMS};
++    struct Counter(usize);
++    impl std::io::Write for Counter {
++        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++            self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| {
++                std::io::Error::new(
++                    std::io::ErrorKind::FileTooLarge,
++                    "handoff presentation limit",
++                )
++            })?;
++            Ok(bytes.len())
++        }
++        fn flush(&mut self) -> std::io::Result<()> {
++            Ok(())
++        }
++    }
++    let mut bytes = Counter(MAX_BYTES);
++    for (index, value) in values.into_iter().enumerate() {
++        if index >= MAX_ITEMS {
++            return Err("Handoff presentation exceeds the native SDK aggregate item limit".into());
++        }
++        serde_json::to_writer(&mut bytes, value).map_err(|_| {
++            "Handoff presentation exceeds the native SDK aggregate byte limit".to_string()
++        })?;
++    }
++    Ok(())
++}
++
++fn protected_handoff_item(item: &ResponseItem) -> bool {
++    matches!(item, ResponseItem::Message { role, .. } if role != "user" && role != "assistant")
++}
++
++fn handoff_input(
++    presentation: &codex_protocol::agent_profile::AgentProfileHandoffPresentation,
++) -> Result<Vec<ResponseItem>, String> {
++    // Reuse the native original/provider-history aggregate admission ceiling.
++    // Count borrowed JSON before cloning or parsing any application item.
++    check_handoff_budget(
++        presentation
++            .input
++            .iter()
++            .chain(&presentation.previous)
++            .chain(&presentation.generated),
++    )?;
++    presentation
++        .input
++        .iter()
++        .chain(&presentation.previous)
++        .chain(&presentation.generated)
++        .map(|value| {
++            let item: ResponseItem = parse_preserving(value.clone())?;
++            // Portable presentation is data, never a live SDK approval decision.
++            if matches!(
++                item,
++                ResponseItem::McpApprovalResponse { approve: true, .. }
++            ) {
++                return Err(
++                    "Imported hosted MCP approvals require live SDK approval authority".into(),
++                );
++            }
++            if protected_handoff_item(&item) {
++                return Err("Handoff presentation cannot supply protected message roles".into());
++            }
++            Ok(item)
++        })
++        .collect()
++}
++
++pub(crate) fn validate_handoff_presentation(
++    presentation: &codex_protocol::agent_profile::AgentProfileHandoffPresentation,
++) -> Result<(), String> {
++    handoff_input(presentation).map(|_| ())
++}
++
++/// Build a sampling copy; canonical effect history and tool admission remain unchanged.
++pub(crate) fn apply_handoff_presentation(
++    original: &Prompt,
++    presentation: &codex_protocol::agent_profile::AgentProfileHandoffPresentation,
++    committed: &codex_extension_api::AgentProfileReceipt,
++    publication: &ResponseItem,
++) -> Result<Prompt, String> {
++    if !presentation.belongs_to(committed) {
++        return Err("Handoff presentation belongs to another committed destination".into());
++    }
++    if original.canonical_history_input.is_some() {
++        return Err("Handoff presentation does not support provider-owned opaque history".into());
++    }
++    let projected = handoff_input(presentation)?;
++    let publication_id = publication
++        .id()
++        .ok_or("Handoff destination publication lacks identity")?;
++    let anchors: Vec<_> = original
++        .input
++        .iter()
++        .enumerate()
++        .filter_map(|(index, item)| (item.id() == Some(publication_id)).then_some(index))
++        .collect();
++    if anchors.len() != 1 || original.input[anchors[0]] != *publication {
++        return Err("Handoff destination publication is missing, ambiguous or changed".into());
++    }
++    let mut input: Vec<_> = original
++        .input
++        .iter()
++        .filter(|item| protected_handoff_item(item))
++        .cloned()
++        .collect();
++    if projected.iter().any(|item| {
++        item.id()
++            .is_some_and(|id| input.iter().any(|protected| protected.id() == Some(id)))
++    }) {
++        return Err("Handoff presentation reuses protected publication identity".into());
++    }
++    input.extend(projected);
++    // New native effects and subsequent user input follow the actual committed
++    // destination publication. Keep this suffix through every sampling step.
++    input.extend(
++        original.input[anchors[0] + 1..]
++            .iter()
++            .filter(|item| !protected_handoff_item(item))
++            .cloned(),
++    );
++    check_handoff_budget(&input)?;
++    let mut result = original.clone();
++    result.input = input;
++    Ok(result)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
++    fn handoff_case() -> (
++        Prompt,
++        codex_protocol::agent_profile::AgentProfileHandoffPresentation,
++        codex_extension_api::AgentProfileReceipt,
++        ResponseItem,
++    ) {
++        use codex_protocol::agent_profile::{AgentProfileHandoff, AgentProfileHandoffPresentation};
++        let publication: ResponseItem = parse_preserving(json!({
++            "type":"message", "id":"msg_destination", "role":"developer",
++            "content":[{"type":"input_text","text":"actual destination instructions"}]
++        }))
++        .unwrap();
++        let receipt = codex_extension_api::AgentProfileReceipt {
++            profile_id: "b".into(),
++            epoch: 1,
++        };
++        let presentation = AgentProfileHandoffPresentation {
++            handoff: AgentProfileHandoff {
++                source: codex_extension_api::AgentProfileReceipt {
++                    profile_id: "a".into(),
++                    epoch: 0,
++                },
++                target_profile_id: "b".into(),
++                call_id: "accepted-transfer".into(),
++            },
++            destination: receipt.clone(),
++            input: vec![
++                json!({"type":"message","role":"user","content":[{"type":"input_text","text":"allowed input"}]}),
++            ],
++            previous: vec![
++                json!({"type":"message","role":"user","content":[{"type":"input_text","text":"allowed previous"}]}),
++            ],
++            generated: vec![
++                json!({"type":"message","role":"user","content":[{"type":"input_text","text":"allowed current"}]}),
++            ],
++        };
++        let original = Prompt {
++            input: vec![
++                parse_preserving(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"old source secret"}]})).unwrap(),
++                publication.clone(),
++                parse_preserving(json!({"type":"function_call","name":"effect","arguments":"{}","call_id":"settled-effect"})).unwrap(),
++                parse_preserving(json!({"type":"function_call_output","call_id":"settled-effect","output":"accepted once"})).unwrap(),
++            ],
++            tools:vec![ToolSpec::Function(function("effect"))].into(),
++            ..Default::default()
++        };
++        (original, presentation, receipt, publication)
++    }
++
++    #[test]
++    fn handoff_sampling_keeps_publication_and_settled_pair_across_steps() {
++        let (original, presentation, receipt, publication) = handoff_case();
++        let projected =
++            apply_handoff_presentation(&original, &presentation, &receipt, &publication).unwrap();
++        assert_eq!(projected.input[0], publication);
++        for (index, group) in [
++            &presentation.input,
++            &presentation.previous,
++            &presentation.generated,
++        ]
++        .iter()
++        .enumerate()
++        {
++            assert_eq!(
++                serde_json::to_value(&projected.input[index + 1]).unwrap(),
++                group[0]
++            );
++        }
++        assert_eq!(&projected.input[4..], &original.input[2..]);
++        assert!(
++            !serde_json::to_string(&projected.input)
++                .unwrap()
++                .contains("old source secret")
++        );
++        assert_eq!(projected.tools, original.tools);
++        assert_eq!(
++            projected.base_instructions.text,
++            original.base_instructions.text
++        );
++        let mut later = original.clone();
++        later.input.push(parse_preserving(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"later input"}]})).unwrap());
++        let second =
++            apply_handoff_presentation(&later, &presentation, &receipt, &publication).unwrap();
++        assert_eq!(&second.input[4..], &later.input[2..]);
++        assert!(
++            serde_json::to_string(&original.input)
++                .unwrap()
++                .contains("old source secret")
++        );
++    }
++
++    #[test]
++    fn handoff_rejects_positive_mcp_approval_in_every_group_before_sampling() {
++        let (original, presentation, receipt, publication) = handoff_case();
++        for group in 0..3 {
++            let mut rejected = presentation.clone();
++            let items = match group {
++                0 => &mut rejected.input,
++                1 => &mut rejected.previous,
++                _ => &mut rejected.generated,
++            };
++            items.extend([
++                json!({"type":"mcp_approval_request","id":"approval_1",
++                    "server_label":"docs","name":"search","arguments":"{}"}),
++                json!({"type":"mcp_approval_response","approval_request_id":"approval_1","approve":true}),
++            ]);
++            assert!(validate_handoff_presentation(&rejected).is_err());
++            assert!(
++                apply_handoff_presentation(&original, &rejected, &receipt, &publication).is_err()
++            );
++        }
++        assert!(validate_handoff_presentation(&presentation).is_ok());
++    }
++
++    #[test]
++    fn handoff_rejects_invalid_or_over_budget_snapshot_before_sampling() {
++        let (original, presentation, receipt, publication) = handoff_case();
++        let mut invalid = presentation.clone();
++        invalid.input[0] = json!({"type":"message","role":"developer","content":[]});
++        let mut discarded = presentation.clone();
++        discarded.input[0]["unknown"] = Value::Null;
++        let mut over_count = presentation.clone();
++        over_count.input = vec![presentation.input[0].clone(); 4097];
++        let mut over_bytes = presentation.clone();
++        over_bytes.input[0]["content"][0]["text"] = Value::String("é".repeat(4 * 1024 * 1024 + 1));
++        let mut stale = presentation.clone();
++        stale.destination.epoch = 2;
++        let mut provider_calls = 0;
++        for rejected in [invalid, discarded, over_count, over_bytes, stale] {
++            let result = apply_handoff_presentation(&original, &rejected, &receipt, &publication)
++                .map(|_| {
++                    provider_calls += 1;
++                });
++            assert!(result.is_err());
++        }
++        let mut missing = original.clone();
++        missing.input.remove(1);
++        assert!(
++            apply_handoff_presentation(&missing, &presentation, &receipt, &publication).is_err()
++        );
++        assert_eq!(provider_calls, 0);
++    }
++
+     #[test]
+     fn native_text_function_and_mcp_items_preserve_submitted_fields() {
+         for item in [
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 07768eb85c2aa029b9f2bc548b8c650095e2db7d..68ab27e3e481aabfa4ffb2a12650802546bafb56 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -1,19 +1,20 @@
+ //! Atomic, host-admitted Agent selection at actual sampling boundaries.
+ 
++use super::environment::{ensure_configs_stay_owner_provided, validate_environment_configs};
+ use super::session::Session;
+ use super::step_activation::check_legacy_turn_safety;
+ use super::step_settings::ResolvedStepSettings;
+ use super::turn_context::TurnContext;
+ use codex_async_utils::OrCancelExt;
+ use codex_extension_api::{
+-    AgentProfile, AgentProfileBoundaryInput, AgentProfileModelSettings, AgentProfileReceipt,
+-    CapturedAgentProfile,
++    AgentProfile, AgentProfileBoundaryInput, AgentProfileEnvironment, AgentProfileModelSettings,
++    AgentProfileReceipt, CapturedAgentProfile,
+ };
+ use codex_history::{ResponseItemEnvelope, RolloutItem};
+ use codex_protocol::error::{CodexErr, Result as CodexResult};
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::{
+-    AgentProfileChangedEvent, Event, EventMsg, ThreadSettingsAppliedEvent,
++    AgentProfileChangedEvent, EnvironmentConfigState, Event, EventMsg, ThreadSettingsAppliedEvent,
+ };
+ use serde::{Deserialize, Serialize};
+ use std::sync::Arc;
+@@ -26,6 +27,35 @@ struct PersistedProfile {
+     profile_id: String,
+     epoch: u64,
+     model: AgentProfileModelSettings,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    presentation: Option<codex_protocol::agent_profile::AgentProfileHandoffPresentation>,
++}
++
++/// The original native publication remains the projection boundary after idle updates.
++#[derive(Clone)]
++struct HandoffPresentationAnchor(ResponseItem, Arc<std::sync::atomic::AtomicBool>);
++
++impl HandoffPresentationAnchor {
++    fn new(item: ResponseItem) -> Self {
++        Self(item, Arc::new(std::sync::atomic::AtomicBool::new(true)))
++    }
++}
++
++pub(super) fn handoff_presentation_is_live(profile: &AgentProfile) -> bool {
++    profile
++        .data
++        .get::<HandoffPresentationAnchor>()
++        .is_none_or(|anchor| anchor.1.load(std::sync::atomic::Ordering::Acquire))
++}
++
++pub(super) fn handoff_presentation_anchor(profile: &AgentProfile) -> ResponseItem {
++    profile
++        .data
++        .get::<HandoffPresentationAnchor>()
++        .map_or_else(
++            || profile.application_instructions.item.clone(),
++            |anchor| anchor.0.clone(),
++        )
+ }
+ 
+ struct TaskFence {
+@@ -38,6 +68,17 @@ fn invalid(message: impl Into<String>) -> CodexErr {
+     CodexErr::InvalidRequest(message.into())
+ }
+ 
++fn restored_profile_identity(
++    settings: &codex_extension_api::AgentProfileModelSettings,
++) -> codex_extension_api::AgentProfileModelSettings {
++    let mut identity = settings.for_persistence();
++    // The host has rebound these settings from the current declaration.
++    identity.request_controls.retry = None;
++    identity.request_controls.attempt_timeout_ms = None;
++    identity.invocation_timeout_ms = None;
++    identity
++}
++
+ fn persistence_failure() -> CodexErr {
+     CodexErr::Fatal(
+         "Canonical Agent profile persistence failed; execution stopped pending recovery"
+@@ -61,14 +102,120 @@ fn validate_envelope(profile: &AgentProfile) -> CodexResult<()> {
+     }
+ }
+ 
+-fn persisted_profile(
+-    items: &[RolloutItem],
+-) -> CodexResult<Option<(&ResponseItemEnvelope, PersistedProfile)>> {
+-    let mut latest = None;
++// Source history retains its audit facts. Only its derived presentation archives
++// completed approval pairs, matching the SDK portable-import replay policy.
++fn handoff_source_values(
++    approved: &std::collections::HashSet<String>,
++    selected: &[&ResponseItem],
++) -> CodexResult<Vec<serde_json::Value>> {
++    selected
++        .iter()
++        .filter(|item| match item {
++            ResponseItem::Message { role, .. } => role == "user" || role == "assistant",
++            ResponseItem::McpApprovalRequest { id: Some(id), .. } => {
++                !approved.contains(id.as_str())
++            }
++            ResponseItem::McpApprovalResponse {
++                approval_request_id,
++                ..
++            } => !approved.contains(approval_request_id.as_str()),
++            _ => true,
++        })
++        .map(|item| serde_json::to_value(item).map_err(|error| invalid(error.to_string())))
++        .collect()
++}
++
++fn retains_publication(items: &[ResponseItemEnvelope], publication: &ResponseItem) -> bool {
++    let Some(id) = publication.id() else {
++        return false;
++    };
++    let mut matching = items.iter().filter(|item| item.item.id() == Some(id));
++    matching
++        .next()
++        .is_some_and(|item| item.item == *publication)
++        && matching.next().is_none()
++}
++
++/// Retire a derived view only after its native publication leaves canonical context.
++pub(super) fn profile_after_history_replacement(
++    captured: &Arc<CapturedAgentProfile>,
++    replacement: &[ResponseItemEnvelope],
++) -> Arc<CapturedAgentProfile> {
++    use codex_protocol::agent_profile::AgentProfileHandoffPresentation;
++    if captured
++        .profile
++        .data
++        .get::<AgentProfileHandoffPresentation>()
++        .is_none()
++        || retains_publication(replacement, &handoff_presentation_anchor(&captured.profile))
++    {
++        return Arc::clone(captured);
++    }
++    if let Some(anchor) = captured.profile.data.get::<HandoffPresentationAnchor>() {
++        // Already captured steps share this token; none may keep applying the retired view.
++        anchor.1.store(false, std::sync::atomic::Ordering::Release);
++    }
++    let mut profile = captured.profile.as_ref().clone();
++    profile.data.remove::<AgentProfileHandoffPresentation>();
++    profile.data.remove::<HandoffPresentationAnchor>();
++    Arc::new(CapturedAgentProfile {
++        receipt: captured.receipt.clone(),
++        profile: Arc::new(profile),
++    })
++}
++
++struct RestoredProfile<'a> {
++    envelope: &'a ResponseItemEnvelope,
++    record: PersistedProfile,
++    presentation_anchor: Option<&'a ResponseItem>,
++}
++
++fn persisted_profile(items: &[RolloutItem]) -> CodexResult<Option<RestoredProfile<'_>>> {
++    let mut latest: Option<RestoredProfile<'_>> = None;
++    let mut accepted_handoffs = Vec::new();
+     for item in items {
++        if let RolloutItem::Compacted(checkpoint) = item {
++            // An explicit canonical edit commits the originals and model projection together.
++            // Keep the original publication as an audit fact; replay only retires its view.
++            if matches!(
++                checkpoint.sdk_originals.as_ref(),
++                Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Replace(_))
++            ) || (matches!(
++                checkpoint.sdk_originals.as_ref(),
++                Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Preserve {
++                    preserve: true
++                })
++            ) && checkpoint.window_number.is_some()
++                && checkpoint.window_id.is_some())
++            {
++                if let Some(replacement) = checkpoint.replacement_history.as_ref()
++                && let Some(profile) = latest.as_mut()
++                && let Some(anchor) = profile.presentation_anchor
++                && !retains_publication(replacement, anchor)
++            {
++                profile.record.presentation = None;
++                profile.presentation_anchor = None;
++                }
++            }
++            continue;
++        }
+         let RolloutItem::ResponseItem(envelope) = item else {
+             continue;
+         };
++        if let Some(handoff) = envelope
++            .metadata
++            .as_ref()
++            .and_then(|metadata| metadata.sdk_agent_handoff.as_ref())
++        {
++            if !matches!(&envelope.item,
++                ResponseItem::FunctionCallOutput { call_id, .. } if call_id.as_deref() == Some(handoff.call_id.as_str()))
++            {
++                return Err(invalid(
++                    "Accepted presentation has no canonical handoff result",
++                ));
++            }
++            accepted_handoffs.push(handoff);
++        }
+         let Some(value) = envelope
+             .metadata
+             .as_ref()
+@@ -81,10 +228,35 @@ fn persisted_profile(
+         if record.profile_id.is_empty() || record.model.model.is_empty() {
+             return Err(invalid("Invalid persisted Agent profile identity"));
+         }
+-        if let Some((_, previous)) = &latest {
+-            let previous: &PersistedProfile = previous;
++        let mut presentation_anchor = None;
++        if let Some(presentation) = &record.presentation {
++            crate::prepared_request::validate_handoff_presentation(presentation)
++                .map_err(invalid)?;
++            let destination = AgentProfileReceipt {
++                profile_id: record.profile_id.clone(),
++                epoch: record.epoch,
++            };
++            if presentation.belongs_to(&destination)
++                && accepted_handoffs.contains(&&presentation.handoff)
++                && latest.as_ref().is_some_and(|previous| {
++                    presentation.handoff.source.profile_id == previous.record.profile_id
++                        && presentation.handoff.source.epoch == previous.record.epoch
++                })
++            {
++                presentation_anchor = Some(&envelope.item);
++            } else if let Some(previous) = &latest
++                && record.profile_id == previous.record.profile_id
++                && previous.record.presentation.as_ref() == Some(presentation)
++                && let Some(anchor) = previous.presentation_anchor
++            {
++                presentation_anchor = Some(anchor);
++            } else {
++                return Err(invalid("Persisted handoff presentation has another owner"));
++            }
++        }
++        if let Some(previous) = &latest {
+             if record.epoch
+-                != previous
++                != previous.record
+                     .epoch
+                     .checked_add(1)
+                     .ok_or_else(|| invalid("Agent profile epoch exhausted"))?
+@@ -94,12 +266,63 @@ fn persisted_profile(
+         } else if record.epoch != 0 {
+             return Err(invalid("Persisted Agent profile has no initial receipt"));
+         }
+-        latest = Some((envelope, record));
++        latest = Some(RestoredProfile { envelope, record, presentation_anchor });
+     }
+     Ok(latest)
+ }
+ 
+ impl Session {
++    pub(crate) async fn project_handoff_compaction_input(
++        &self,
++        input: Vec<ResponseItem>,
++    ) -> CodexResult<(Vec<ResponseItem>, bool)> {
++        let Some(captured) = self.captured_agent_profile().await? else {
++            return Ok((input, false));
++        };
++        let Some(presentation) = captured
++            .profile
++            .data
++            .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++            .filter(|_| handoff_presentation_is_live(&captured.profile))
++        else {
++            return Ok((input, false));
++        };
++        let original = crate::client_common::Prompt {
++            input,
++            ..Default::default()
++        };
++        let projected = crate::prepared_request::apply_handoff_presentation(
++            &original,
++            &presentation,
++            &presentation.destination,
++            &handoff_presentation_anchor(&captured.profile),
++        )
++        .map_err(invalid)?;
++        let changed = !original
++            .input
++            .iter()
++            .filter(|item| {
++                !matches!(item,
++            ResponseItem::Message { role, .. } if role != "user" && role != "assistant")
++            })
++            .eq(projected.input.iter().filter(|item| {
++                !matches!(item,
++                ResponseItem::Message { role, .. } if role != "user" && role != "assistant")
++            }));
++        Ok((projected.input, changed))
++    }
++
++    pub(crate) async fn validate_native_compaction_view(&self) -> CodexResult<()> {
++        let input = self.clone_history().await.raw_items().cloned().collect();
++        let (_, filtered) = self.project_handoff_compaction_input(input).await?;
++        if filtered {
++            return Err(invalid(
++                "Native compaction cannot combine with a filtered handoff presentation",
++            ));
++        }
++        Ok(())
++    }
++
+     pub(crate) fn validate_voice_agent_profile(&self, target: &AgentProfile) -> CodexResult<()> {
+         self.check_agent_profile_admission()?;
+         validate_envelope(target)
+@@ -192,6 +415,21 @@ impl Session {
+                 "Accepted handoff belongs to another native profile source",
+             ));
+         }
++        context.extension_data.remove::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>();
++        context.extension_data.remove::<codex_protocol::agent_profile::AgentProfileHandoffInputRequest>();
++        let preparation = self.services.thread_extension_data
++            .remove::<codex_protocol::agent_profile::AgentProfileHandoffInputRequest>()
++            .filter(|request| request.turn_id == context.sub_id
++                && Some(&request.handoff.source) == receipt);
++        if let Some(request) = &preparation {
++            if accepted_handoff.is_some_and(|accepted| accepted != &request.handoff)
++                || (accepted_handoff.is_none() && !request.restored) {
++                return Err(invalid("Handoff preparation belongs to another accepted call"));
++            }
++            let prepared = self.prepare_handoff_input(context, current.agent_profile.as_ref(), &request.handoff).await?;
++            context.extension_data.insert(prepared);
++            context.extension_data.insert(request.as_ref().clone());
++        }
+         let mut candidate = None;
+         for contributor in self.services.extensions.turn_lifecycle_contributors() {
+             let activation = contributor
+@@ -217,12 +455,31 @@ impl Session {
+         let Some(candidate) = candidate else {
+             return Ok(None);
+         };
++        if let Some(presentation) = candidate
++            .target
++            .data
++            .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>(
++        ) {
++            if accepted_handoff.or_else(|| preparation.as_ref().map(|request| &request.handoff)) != Some(&presentation.handoff) {
++                return Err(invalid(
++                    "Handoff presentation requires this accepted transfer",
++                ));
++            }
++        }
+         if let Some(scope) = current.agent_profile.as_ref().and_then(|profile| {
+             profile
+                 .profile
+                 .data
+                 .get::<crate::realtime_conversation::VoiceProfileScope>()
+         }) {
++            if candidate
++                .target
++                .data
++                .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                .is_some()
++            {
++                return Err(invalid("Handoff presentation does not support Realtime"));
++            }
+             if cancellation.is_cancelled() {
+                 return Err(CodexErr::TurnAborted);
+             }
+@@ -337,6 +594,23 @@ impl Session {
+             }
+             None => {}
+         }
++        let environment = target.data.get::<AgentProfileEnvironment>();
++        let selected_environments = environment
++            .as_ref()
++            .map(|environment| environment.0.as_slice());
++        if let Some(selections) = selected_environments {
++            if selections
++                .iter()
++                .any(|selection| !matches!(selection.config, EnvironmentConfigState::Ready(_)))
++            {
++                return Err(invalid("Agent environment requires a ready owner configuration"));
++            }
++            crate::environment_selection::validate_environment_ids_and_cwds(
++                &self.services.turn_environments.environment_manager(),
++                selections,
++            )?;
++            validate_environment_configs(selections).map_err(|error| invalid(error.to_string()))?;
++        }
+         let (mut configuration, restored) = {
+             let state = self.state.lock().await;
+             if !Arc::ptr_eq(
+@@ -353,11 +627,15 @@ impl Session {
+                     "Agent activation source changed during preparation",
+                 ));
+             }
++            let current_environments = self.services.turn_environments.selections();
++            let proposed = selected_environments.unwrap_or(&current_environments);
++            ensure_configs_stay_owner_provided(&current_environments, proposed)
++                .map_err(|error| invalid(error.to_string()))?;
+             self.validate_active_step_settings(
+                 &context,
+                 &destination,
+                 &state.session_configuration,
+-                &self.services.turn_environments.selections(),
++                proposed,
+             )
+             .map_err(|error| invalid(error.to_string()))?;
+             if task_fence.is_some() {
+@@ -371,6 +649,9 @@ impl Session {
+             }
+             (state.session_configuration.clone(), expected.is_none())
+         };
++        if let Some(selections) = selected_environments {
++            configuration.environments = selections.to_vec();
++        }
+         let live = self
+             .live_thread()
+             .ok_or_else(|| invalid("Agent profiles require retained native history"))?;
+@@ -380,9 +661,10 @@ impl Session {
+             .map_err(|_| persistence_failure())?;
+         let previous = persisted_profile(&saved.items)?;
+         if restored {
+-            if let Some((envelope, record)) = previous {
++            if let Some(RestoredProfile { envelope, record, presentation_anchor }) = previous {
+                 if record.profile_id != target.profile_id
+-                    || record.model.for_persistence() != target.model.for_persistence()
++                    || restored_profile_identity(&record.model)
++                        != restored_profile_identity(&target.model)
+                     || envelope.item != target.application_instructions.item
+                     || envelope
+                         .metadata
+@@ -402,10 +684,34 @@ impl Session {
+                     profile_id: record.profile_id,
+                     epoch: record.epoch,
+                 };
+-                let profile = Arc::new(CapturedAgentProfile {
+-                    receipt: receipt.clone(),
+-                    profile: target,
+-                });
++                let target = if let Some(presentation) = record.presentation {
++                    if target
++                        .data
++                        .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                        .is_some_and(|admitted| admitted.as_ref() != &presentation)
++                    {
++                        return Err(invalid(
++                            "Restored presentation differs from its admitted binding",
++                        ));
++                    }
++                    let mut restored_target = (*target).clone();
++                    restored_target.data.insert(presentation);
++                    if let Some(anchor) = presentation_anchor {
++                        restored_target
++                            .data
++                            .insert(HandoffPresentationAnchor::new(anchor.clone()));
++                    }
++                    Arc::new(restored_target)
++                } else {
++                    if target
++                        .data
++                        .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                        .is_some()
++                    {
++                        return Err(invalid("Restored Agent has no canonical presentation"));
++                    }
++                    target
++                };
+                 let latest = saved
+                     .items
+                     .iter()
+@@ -432,14 +738,32 @@ impl Session {
+                         "Restored Agent effective settings differ from canonical history",
+                     ));
+                 }
+-                // Core already restored the effective settings, including explicit idle overrides.
++                // Keep the published model for the admission check above. The live
++                // profile must use the controls already rebound during thread restore.
++                let mut target = target;
++                let model = &mut Arc::make_mut(&mut target).model;
++                model.invocation_timeout_ms = effective.invocation_timeout_ms;
++                model
++                    .request_controls
++                    .retry
++                    .clone_from(&effective.request_controls.retry);
++                model.request_controls.attempt_timeout_ms =
++                    effective.request_controls.attempt_timeout_ms;
++                let profile = Arc::new(CapturedAgentProfile {
++                    receipt: receipt.clone(),
++                    profile: target,
++                });
+                 let mut state = self.state.lock().await;
+                 state.session_configuration.agent_profile = Some(profile);
++                if let Some(selections) = selected_environments {
++                    state.session_configuration.environments = configuration.environments;
++                    self.services.turn_environments.update_selections(selections);
++                }
+                 return Ok(receipt);
+             }
+         } else if previous
+             .as_ref()
+-            .map(|(_, record)| (&record.profile_id, record.epoch))
++            .map(|profile| (&profile.record.profile_id, profile.record.epoch))
+             != expected
+                 .as_ref()
+                 .map(|receipt| (&receipt.profile_id, receipt.epoch))
+@@ -456,6 +780,38 @@ impl Session {
+             profile_id: target.profile_id.clone(),
+             epoch,
+         };
++        let presentation = target
++            .data
++            .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>();
++        let mut target = target;
++        if let Some(presentation) = &presentation {
++            let expected_transfer = task_fence.is_some()
++                && presentation.belongs_to(&receipt)
++                && expected.as_ref() == Some(&presentation.handoff.source);
++            let inherited = previous.as_ref().and_then(|previous| {
++                (task_fence.is_none()
++                    && previous.record.profile_id == receipt.profile_id
++                    && previous.record.presentation.as_ref() == Some(presentation.as_ref()))
++                .then_some(previous.presentation_anchor)
++                .flatten()
++            });
++            if let Some(anchor) = inherited {
++                Arc::make_mut(&mut target)
++                    .data
++                    .insert(HandoffPresentationAnchor::new(anchor.clone()));
++            } else if expected_transfer {
++                let anchor = target.application_instructions.item.clone();
++                Arc::make_mut(&mut target)
++                    .data
++                    .insert(HandoffPresentationAnchor::new(anchor));
++            } else {
++                return Err(invalid("Handoff presentation differs from committed destination"));
++            }
++        }
++        if let Some(presentation) = &presentation {
++            crate::prepared_request::validate_handoff_presentation(presentation)
++                .map_err(invalid)?;
++        }
+         let mut envelope = target.application_instructions.clone();
+         if saved.items.iter().any(|item| matches!(item, RolloutItem::ResponseItem(prior) if prior.item.id() == envelope.item.id())) {
+             return Err(invalid("Agent activation requires a fresh instruction publication identity"));
+@@ -465,6 +821,7 @@ impl Session {
+                 profile_id: receipt.profile_id.clone(),
+                 epoch,
+                 model: target.model.for_persistence(),
++                presentation: presentation.as_deref().cloned(),
+             })
+             .map_err(|error| invalid(error.to_string()))?,
+         );
+@@ -525,7 +882,7 @@ impl Session {
+                 &context,
+                 &destination,
+                 &state.session_configuration,
+-                &self.services.turn_environments.selections(),
++                selected_environments.unwrap_or(&self.services.turn_environments.selections()),
+             )
+             .is_err()
+         {
+@@ -538,6 +895,10 @@ impl Session {
+         );
+         state.session_configuration.agent_profile = configuration.agent_profile;
+         state.session_configuration.step_settings = configuration.step_settings;
++        if let Some(selections) = selected_environments {
++            state.session_configuration.environments = configuration.environments;
++            self.services.turn_environments.update_selections(selections);
++        }
+         if task_fence.is_some() {
+             context.next_step_settings.store(Arc::new(destination));
+         }
+@@ -567,6 +928,176 @@ impl Session {
+     }
+ }
+ 
++
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct HandoffInputFrontiers {
++    root_count: usize,
++    root_sha256: String,
++    sample_count: usize,
++    sample_sha256: String,
++}
++#[derive(Default)]
++struct HandoffInputFrontierOwner(std::sync::Mutex<Option<HandoffInputFrontiers>>);
++
++pub(crate) fn forget_handoff_sampling_frontier(store: &codex_extension_api::ExtensionData) {
++    store.remove::<HandoffInputFrontierOwner>();
++}
++
++pub(crate) fn handoff_sampling_frontier(store: &codex_extension_api::ExtensionData) -> Option<serde_json::Value> {
++    let owner = store.get::<HandoffInputFrontierOwner>()?;
++    let frontier = owner.0.lock().ok()?.clone()?;
++    serde_json::to_value(frontier).ok()
++}
++
++fn handoff_prefix_digest(items: &[&ResponseItem]) -> CodexResult<String> {
++    use sha2::{Digest, Sha256};
++    let bytes = serde_json::to_vec(items).map_err(|error| invalid(error.to_string()))?;
++    Ok(format!("{:x}", Sha256::digest(bytes)))
++}
++
++impl Session {
++    pub(crate) async fn record_handoff_input_frontier(&self, context: &Arc<TurnContext>) -> CodexResult<()> {
++        self.capture_handoff_input_frontier(context, false).await
++    }
++
++    pub(super) async fn rebase_handoff_input_frontier(&self, context: &Arc<TurnContext>) -> CodexResult<()> {
++        self.capture_handoff_input_frontier(context, true).await
++    }
++
++    async fn capture_handoff_input_frontier(
++        &self, context: &Arc<TurnContext>, rebased: bool,
++    ) -> CodexResult<()> {
++        if self.services.thread_extension_data.get::<
++            codex_protocol::agent_profile::AgentProfileHandoffInputCapture,
++        >().is_none() { return Ok(()); }
++        let history = self.clone_history().await;
++        crate::prepared_request::check_handoff_budget(history.raw_items()).map_err(invalid)?;
++        let items: Vec<_> = history.raw_items().collect();
++        let owner = context.extension_data.get_or_init(HandoffInputFrontierOwner::default);
++        let sample_sha256 = handoff_prefix_digest(&items)?;
++        let (root_count, root_sha256) = if rebased {
++            // The committed replacement is the only remaining input prefix.
++            (items.len(), sample_sha256.clone())
++        } else {
++            let prior = owner.0.lock().map_err(|_| invalid("Handoff frontier owner poisoned"))?.clone();
++            let prior = match prior {
++                Some(prior) => Some(prior),
++                None => self.restored_handoff_input_frontier(context).await?,
++            };
++            if let Some(prior) = prior {
++                if prior.root_count > items.len() || handoff_prefix_digest(&items[..prior.root_count])? != prior.root_sha256 {
++                    return Err(invalid("Handoff original input prefix changed"));
++                }
++                (prior.root_count, prior.root_sha256)
++            } else {
++                (items.len(), sample_sha256.clone())
++            }
++        };
++        let frontier = HandoffInputFrontiers { root_count, root_sha256,
++            sample_count:items.len(), sample_sha256 };
++        *owner.0.lock().map_err(|_| invalid("Handoff frontier owner poisoned"))? = Some(frontier);
++        Ok(())
++    }
++
++    async fn restored_handoff_input_frontier(
++        &self, context: &Arc<TurnContext>,
++    ) -> CodexResult<Option<HandoffInputFrontiers>> {
++        let saved = self.live_thread().ok_or_else(|| invalid("Handoff input requires retained history"))?
++            .load_history(true).await.map_err(|_| persistence_failure())?;
++        let receipt = saved.items.iter().rev().find_map(|row| match row {
++            RolloutItem::TurnContext(row) if row.turn_id.as_deref() == Some(context.sub_id.as_str()) => row.sdk_receipt.as_ref(),
++            _ => None,
++        });
++        receipt.map(|receipt| serde_json::from_value(receipt.get("handoff_input_frontiers")
++            .ok_or_else(|| invalid("Restored handoff input lacks original native frontiers"))?.clone())
++            .map_err(|_| invalid("Invalid restored handoff input frontiers"))).transpose()
++    }
++
++    async fn prepare_handoff_input(
++        &self, context: &Arc<TurnContext>,
++        source: Option<&Arc<codex_extension_api::CapturedAgentProfile>>,
++        handoff: &codex_protocol::agent_profile::AgentProfileHandoff,
++    ) -> CodexResult<codex_protocol::agent_profile::AgentProfileHandoffPresentation> {
++        use codex_protocol::agent_profile::AgentProfileHandoffPresentation;
++        if self.services.model_client.provider_history_selection().is_some() {
++            return Err(invalid("Handoff preparation does not support provider-owned opaque history"));
++        }
++        if self.services.extensions.model_request_contributors().iter()
++            .any(|contributor| contributor.prepares_request(&context.extension_data)) {
++            return Err(invalid("Handoff preparation cannot combine with prepare_request"));
++        }
++        if source.is_some_and(|source| source.profile.data.get::<
++            crate::realtime_conversation::VoiceProfileScope,
++        >().is_some()) {
++            return Err(invalid("Handoff preparation does not support Realtime"));
++        }
++        let retained = context.extension_data.get::<HandoffInputFrontierOwner>()
++            .map(|owner| owner.0.lock().map_err(|_| invalid("Handoff frontier owner poisoned"))
++                .map(|frontier| frontier.clone())).transpose()?.flatten();
++        let frontier = match retained {
++            Some(frontier) => frontier,
++            None => self.restored_handoff_input_frontier(context).await?
++                .ok_or_else(|| invalid("Accepted handoff lacks native input frontiers"))?,
++        };
++        let history = self.clone_history().await;
++        crate::prepared_request::check_handoff_budget(history.raw_items()).map_err(invalid)?;
++        let items: Vec<_> = history.raw_items().collect();
++        if frontier.root_count > frontier.sample_count || frontier.sample_count > items.len()
++            || handoff_prefix_digest(&items[..frontier.root_count])? != frontier.root_sha256
++            || handoff_prefix_digest(&items[..frontier.sample_count])? != frontier.sample_sha256 {
++            return Err(invalid("Accepted handoff input frontiers changed"));
++        }
++        let approved: std::collections::HashSet<_> = items
++            .iter()
++            .filter_map(|item| match item {
++                ResponseItem::McpApprovalResponse {
++                    approve: true,
++                    approval_request_id,
++                    ..
++                } => Some(approval_request_id.clone()),
++                _ => None,
++            })
++            .collect();
++        let values = |selected: &[&ResponseItem]| handoff_source_values(&approved, selected);
++        let mut input = values(&items[..frontier.root_count])?;
++        let mut previous = values(&items[frontier.root_count..frontier.sample_count])?;
++        if let Some(source) = source {
++            if let Some(presentation) = source
++                .profile
++                .data
++                .get::<AgentProfileHandoffPresentation>()
++                .filter(|_| handoff_presentation_is_live(&source.profile))
++            {
++                let publication = handoff_presentation_anchor(&source.profile);
++                let publication = &publication;
++                let anchors: Vec<_> = items.iter().enumerate().filter_map(|(index,item)|
++                    (item.id() == publication.id()).then_some(index)).collect();
++                if anchors.len() != 1 || *items[anchors[0]] != *publication || anchors[0] >= frontier.sample_count {
++                    return Err(invalid("Source handoff publication is missing or changed"));
++                }
++                let anchor = anchors[0] + 1;
++                input = presentation.input.clone();
++                if anchor > frontier.root_count {
++                    previous = presentation.previous.iter().chain(&presentation.generated).cloned().collect();
++                    previous.extend(values(&items[anchor..frontier.sample_count])?);
++                } else {
++                    input.extend(presentation.previous.iter().chain(&presentation.generated).cloned());
++                    input.extend(values(&items[anchor..frontier.root_count])?);
++                }
++            }
++        }
++        let presentation = AgentProfileHandoffPresentation {
++            handoff:handoff.clone(), destination:AgentProfileReceipt {
++                profile_id:handoff.target_profile_id.clone(),
++                epoch:handoff.source.epoch.checked_add(1).ok_or_else(|| invalid("Agent profile epoch exhausted"))?,
++            }, input, previous, generated:values(&items[frontier.sample_count..])?,
++        };
++        crate::prepared_request::validate_handoff_presentation(&presentation).map_err(invalid)?;
++        Ok(presentation)
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::super::tests::{
+@@ -614,6 +1145,188 @@ mod tests {
+         })
+     }
+ 
++    #[test]
++    fn legitimate_source_approval_pair_is_archived_only_from_presentation() {
++        let source: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
++            {"type":"mcp_approval_request","id":"approved-source",
++                "server_label":"docs","name":"search","arguments":"{}"},
++            {"type":"mcp_call","id":"effect-source","server_label":"docs",
++                "name":"search","arguments":"{}","output":"accepted result","status":"completed"},
++            {"type":"mcp_approval_response","approval_request_id":"approved-source","approve":true}
++        ]))
++        .unwrap();
++        let durable = source.clone();
++        let borrowed: Vec<_> = source.iter().collect();
++        let approved = std::collections::HashSet::from(["approved-source".to_owned()]);
++        // The approval may span groups; retain the settled MCP result.
++        assert!(
++            handoff_source_values(&approved, &borrowed[..1])
++                .unwrap()
++                .is_empty()
++        );
++        let effect = handoff_source_values(&approved, &borrowed[1..2]).unwrap();
++        assert_eq!(effect, vec![serde_json::to_value(&source[1]).unwrap()]);
++        assert!(
++            handoff_source_values(&approved, &borrowed[2..])
++                .unwrap()
++                .is_empty()
++        );
++        assert_eq!(source, durable);
++    }
++
++    #[tokio::test]
++    async fn persisted_presentation_has_exact_source_and_destination_ownership() {
++        use codex_protocol::agent_profile::{AgentProfileHandoff, AgentProfileHandoffPresentation};
++        let (_, context) = make_session_and_context().await;
++        let source = profile(&context, "a", "presentation-a");
++        let destination = profile(&context, "b", "presentation-b");
++        let presentation = AgentProfileHandoffPresentation {
++            handoff: AgentProfileHandoff {
++                source: AgentProfileReceipt {
++                    profile_id: "a".into(),
++                    epoch: 0,
++                },
++                target_profile_id: "b".into(),
++                call_id: "accepted-transfer".into(),
++            },
++            destination: AgentProfileReceipt {
++                profile_id: "b".into(),
++                epoch: 1,
++            },
++            input: vec![
++                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"input-1"}]}),
++            ],
++            previous: vec![],
++            generated: vec![
++                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"generated-0"}]}),
++            ],
++        };
++        let envelope = |profile: &AgentProfile, epoch, presentation| {
++            let mut envelope = profile.application_instructions.clone();
++            envelope.metadata.get_or_insert_default().sdk_agent_profile = Some(
++                serde_json::to_value(PersistedProfile {
++                    profile_id: profile.profile_id.clone(),
++                    epoch,
++                    model: profile.model.for_persistence(),
++                    presentation,
++                })
++                .unwrap(),
++            );
++            RolloutItem::ResponseItem(envelope)
++        };
++        let mut accepted_result = destination.application_instructions.clone();
++        accepted_result.item = serde_json::from_value(serde_json::json!({
++            "type":"function_call_output", "call_id":"accepted-transfer", "output":"accepted"
++        }))
++        .unwrap();
++        accepted_result
++            .metadata
++            .get_or_insert_default()
++            .sdk_agent_handoff = Some(presentation.handoff.clone());
++        let history = vec![
++            envelope(&source, 0, None),
++            RolloutItem::ResponseItem(accepted_result.clone()),
++            envelope(&destination, 1, Some(presentation.clone())),
++        ];
++        let restored = persisted_profile(&history).unwrap().unwrap().record;
++        assert_eq!(restored.presentation, Some(presentation.clone()));
++        assert_eq!(history.len(), 3); // No effect item has been replaced.
++        let mut updated = history.clone();
++        updated.push(envelope(&destination, 2, Some(presentation.clone())));
++        let updated_profile = persisted_profile(&updated).unwrap().unwrap();
++        assert_eq!(updated_profile.record.epoch, 2);
++        assert_eq!(updated_profile.record.presentation, Some(presentation.clone()));
++        let RolloutItem::ResponseItem(first_publication) = &history[2] else {
++            panic!("expected the original destination publication");
++        };
++        assert_eq!(updated_profile.presentation_anchor, Some(&first_publication.item));
++
++        let mut injected = presentation.clone();
++        injected.input.clear();
++        updated.pop();
++        updated.push(envelope(&destination, 2, Some(injected)));
++        assert!(persisted_profile(&updated).is_err());
++
++        // Mutation of any persisted group cannot mint fresh HostedMCP authority.
++        for group in 0..3 {
++            let mut rejected = presentation.clone();
++            let items = match group {
++                0 => &mut rejected.input,
++                1 => &mut rejected.previous,
++                _ => &mut rejected.generated,
++            };
++            items.extend([
++                serde_json::json!({"type":"mcp_approval_request","id":"forged-approval",
++                    "server_label":"docs","name":"search","arguments":"{}"}),
++                serde_json::json!({"type":"mcp_approval_response",
++                    "approval_request_id":"forged-approval","approve":true}),
++            ]);
++            let imported = vec![
++                history[0].clone(),
++                history[1].clone(),
++                envelope(&destination, 1, Some(rejected)),
++            ];
++            assert!(persisted_profile(&imported).is_err());
++        }
++        let mut with_presentation = destination.as_ref().clone();
++        with_presentation.data.insert(presentation.clone());
++        let captured = Arc::new(CapturedAgentProfile {
++            receipt: presentation.destination.clone(),
++            profile: Arc::new(with_presentation),
++        });
++        let mut changed = destination.application_instructions.clone();
++        changed.item = source.application_instructions.item.clone();
++        for (replacement, retained) in [
++            (vec![destination.application_instructions.clone()], true),
++            (Vec::new(), false),
++            (vec![changed], false),
++            (vec![destination.application_instructions.clone(); 2], false),
++        ] {
++            let live = profile_after_history_replacement(&captured, &replacement);
++            assert_eq!(live.receipt, captured.receipt);
++            assert_eq!(
++                live.profile.application_instructions,
++                captured.profile.application_instructions
++            );
++            assert_eq!(
++                live.profile
++                    .data
++                    .get::<AgentProfileHandoffPresentation>()
++                    .is_some(),
++                retained
++            );
++            assert_eq!(Arc::ptr_eq(&live, &captured), retained);
++            let checkpoint: codex_history::CompactedItem =
++                serde_json::from_value(serde_json::json!({
++                    "message": "",
++                    "replacement_history": replacement,
++                    "sdk_originals": codex_history::sdk_originals::SdkOriginalHistory::default(),
++                }))
++                .unwrap();
++            let mut edited = history.clone();
++            edited.push(RolloutItem::Compacted(checkpoint));
++            let restored = persisted_profile(&edited).unwrap().unwrap().record;
++            assert_eq!(restored.presentation.is_some(), retained);
++            // The original admitted transfer and presentation remain audit facts.
++            assert_eq!(edited[..history.len()], history);
++        }
++        for mutation in ["source", "target", "epoch", "call"] {
++            let mut rejected = presentation.clone();
++            match mutation {
++                "source" => rejected.handoff.source.profile_id = "unrelated".into(),
++                "target" => rejected.destination.profile_id = "unrelated".into(),
++                "call" => rejected.handoff.call_id = "unrelated".into(),
++                _ => rejected.destination.epoch = 2,
++            }
++            let wrong = vec![
++                envelope(&source, 0, None),
++                RolloutItem::ResponseItem(accepted_result.clone()),
++                envelope(&destination, 1, Some(rejected)),
++            ];
++            assert!(persisted_profile(&wrong).is_err(), "{mutation}");
++        }
++    }
++
+     #[tokio::test]
+     async fn child_inherits_clean_captured_profile_instructions_before_role_overrides() {
+         let (mut session, context) = make_session_and_context().await;
+@@ -1004,7 +1717,7 @@ for line in sys.stdin:
+             .load_history(true)
+             .await
+             .unwrap();
+-        let (_, persisted) = persisted_profile(&history.items).unwrap().unwrap();
++        let persisted = persisted_profile(&history.items).unwrap().unwrap().record;
+         assert_eq!((persisted.profile_id.as_str(), persisted.epoch), ("a", 2));
+         assert!(
+             session
+@@ -1014,6 +1727,84 @@ for line in sys.stdin:
+         );
+     }
+ 
++    #[tokio::test]
++    async fn agent_profile_environment_switch_and_restore_share_the_profile_fence() {
++        let (mut session, context) = make_session_and_context().await;
++        attach_thread_persistence(&mut session).await;
++        let workspace = tempfile::tempdir().unwrap();
++        let root = codex_utils_absolute_path::AbsolutePathBuf::try_from(workspace.path()).unwrap();
++        let initial = session.services.turn_environments.selections()[0].clone();
++        let mut config = session
++            .state
++            .lock()
++            .await
++            .session_configuration
++            .inferred_environment_config();
++        let destination = codex_utils_path_uri::PathUri::from_abs_path(&root);
++        config.workspace_roots = vec![destination.clone()];
++        let selection = codex_protocol::protocol::TurnEnvironmentSelection {
++            environment_id: initial.environment_id.clone(),
++            cwd: destination.clone(),
++            workspace_roots: vec![destination.clone()],
++            config: EnvironmentConfigState::Ready(config),
++        };
++        let a = session
++            .activate_agent_profile(None, profile(&context, "a", "resource-a"))
++            .await
++            .unwrap();
++        let mut b = profile(&context, "b", "resource-b").as_ref().clone();
++        b.data.insert(AgentProfileEnvironment(Some(selection.clone())));
++        let b = Arc::new(b);
++        let mut unavailable = b.as_ref().clone();
++        let mut invalid_selection = selection.clone();
++        invalid_selection.environment_id = "unregistered-profile-environment".into();
++        unavailable.data.insert(AgentProfileEnvironment(Some(invalid_selection)));
++        assert!(
++            session
++                .activate_agent_profile(Some(a.clone()), Arc::new(unavailable))
++                .await
++                .is_err()
++        );
++        assert_eq!(session.agent_profile_receipt().await.unwrap(), Some(a.clone()));
++        assert_eq!(session.services.turn_environments.selections(), vec![initial.clone()]);
++
++        let b_receipt = session
++            .activate_agent_profile(Some(a), Arc::clone(&b))
++            .await
++            .unwrap();
++        let snapshot = session.services.turn_environments.snapshot().await;
++        assert_eq!(snapshot.primary().unwrap().selection.cwd, destination);
++        assert_eq!(session.configured_environment_selections().await, vec![selection.clone()]);
++        assert_eq!(session.agent_profile_receipt().await.unwrap(), Some(b_receipt.clone()));
++
++        // Reopening a bound Agent reselects from the current host graph. History
++        // supplies the Agent receipt and never provides the environment grant.
++        {
++            let mut state = session.state.lock().await;
++            state.session_configuration.agent_profile = None;
++            state.session_configuration.environments = vec![initial.clone()];
++        }
++        session.services.turn_environments.update_selections(&[initial]);
++        assert_eq!(
++            session.activate_agent_profile(None, b).await.unwrap(),
++            b_receipt
++        );
++        assert_eq!(session.configured_environment_selections().await, vec![selection]);
++        assert_eq!(
++            session.services.turn_environments.snapshot().await.primary().unwrap().selection.cwd,
++            destination
++        );
++
++        let mut model_only = profile(&context, "model-only", "no-workspace").as_ref().clone();
++        model_only.data.insert(AgentProfileEnvironment(None));
++        session
++            .activate_agent_profile(Some(b_receipt), Arc::new(model_only))
++            .await
++            .unwrap();
++        assert!(session.configured_environment_selections().await.is_empty());
++        assert!(session.services.turn_environments.snapshot().await.primary().is_none());
++    }
++
+     #[tokio::test]
+     async fn agent_profile_restore_checks_model_and_exact_instruction_publication() {
+         let (mut session, context) = make_session_and_context().await;
+@@ -1599,7 +2390,7 @@ for line in sys.stdin:
+             .load_history(true)
+             .await
+             .unwrap();
+-        let (_, persisted) = persisted_profile(&saved.items).unwrap().unwrap();
++        let persisted = persisted_profile(&saved.items).unwrap().unwrap().record;
+         assert_eq!(persisted.profile_id, receipt.profile_id);
+         assert_eq!(persisted.epoch, receipt.epoch);
+         session
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index e686abc3073498e18368dbe72d90dd57e7b4bcba..a7fc7707fbc33613d160b38357a17b05b8c53ef7 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -646,6 +646,13 @@ impl Session {
+         self.flush_rollout()
+             .await
+             .map_err(|_| CodexErr::Fatal("Canonical history commit outcome is uncertain".into()))?;
++        // Publish invalidation under the same state lock only after the checkpoint is durable.
++        // Retained exact publication anchors keep their admitted destination presentation.
++        if let Some(captured) = state.session_configuration.agent_profile.as_ref() {
++            state.session_configuration.agent_profile = Some(
++                super::agent_profile::profile_after_history_replacement(captured, &envelopes),
++            );
++        }
+         state.replace_annotated_history(envelopes, None, HistoryReplacement::Reset);
+         state.sdk_originals =
+             codex_history::sdk_originals::SdkOriginalHistoryCache::from(&originals);
+diff --git a/codex-rs/core/src/session/mcp_runtime.rs b/codex-rs/core/src/session/mcp_runtime.rs
+index a4fedb2018970930a394b24b33acd6e111ab5d4a..be7033004fcd235ddcb0c3c347d931bdf55a9b6c 100644
+--- a/codex-rs/core/src/session/mcp_runtime.rs
++++ b/codex-rs/core/src/session/mcp_runtime.rs
+@@ -113,15 +113,36 @@ impl Session {
+     ) -> CodexResult<(
+         Arc<codex_mcp::McpBinding>,
+         codex_extension_api::SelectedPluginSnapshot,
++    )> {
++        self.prepare_agent_profile_mcp_in_environment(servers, None).await
++    }
++
++    pub(crate) async fn prepare_agent_profile_mcp_in_environment(
++        self: &Arc<Self>,
++        servers: std::collections::HashMap<String, codex_config::McpServerConfig>,
++        environment: Option<&codex_extension_api::AgentProfileEnvironment>,
++    ) -> CodexResult<(
++        Arc<codex_mcp::McpBinding>,
++        codex_extension_api::SelectedPluginSnapshot,
+     )> {
+         self.check_agent_profile_admission()?;
++        if let Some(selection) = environment.and_then(|environment| environment.0.as_ref()) {
++            super::environment::validate_environment_configs(std::slice::from_ref(selection))
++                .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        }
+         let _refresh = self
+             .mcp_refresh
+             .acquire()
+             .await
+             .map_err(|_| CodexErr::TurnAborted)?;
+         self.check_agent_profile_admission()?;
+-        let environments = self.services.turn_environments.snapshot().await;
++        let environments = match environment.map(|environment| environment.0.as_ref()) {
++            Some(Some(selection)) => {
++                self.services.turn_environments.snapshot_for_profile(selection).await?
++            }
++            Some(None) => crate::environment_selection::TurnEnvironmentSnapshot::default(),
++            None => self.services.turn_environments.snapshot().await,
++        };
+         let auth = self.services.auth_manager.auth().await;
+         let mut desired = self.latest_mcp_desired_state(auth, environments).await;
+         let mut config = desired.config.as_ref().clone();
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index bc11bc6be3cdf8e22d1df6e1fc107d0b0976e44c..b7103fb01c9eca76e3b855abaebb8482f55416fa 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4757,6 +4757,19 @@ impl Session {
+             },
+             None => commit_locks.await,
+         };
++        let compaction_profile = state
++            .session_configuration
++            .agent_profile
++            .as_ref()
++            .filter(|captured| {
++                captured
++                    .profile
++                    .data
++                    .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                    .is_some()
++                    && agent_profile::handoff_presentation_is_live(&captured.profile)
++            })
++            .cloned();
+         let (compacted_item, window_number, window_ids, reviewer_compaction_hash) = {
+             let mut state = state;
+             let mcp_resource_origins = self.services.mcp_runtime.resource_origin_checkpoint();
+@@ -4911,6 +4924,15 @@ impl Session {
+                 return Err(self.stage_compaction_fatal(turn));
+             }
+         }
++        // Idle compaction can retire a live admitted view only after durable replacement.
++        if registered_turn.is_none()
++            && compaction_profile.is_some()
++            && (!persisted || self.flush_rollout().await.is_err())
++        {
++            return Err(CodexErr::Fatal(
++                "Canonical compaction commit outcome is uncertain".into(),
++            ));
++        }
+         if let Some(source) = source_step_context {
+             let mut state = self.state.lock().await;
+             // Apply to current state: retained reservations and host facts can arrive
+@@ -4932,6 +4954,25 @@ impl Session {
+             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+             state.history.set_world_state_baseline(world_state_baseline);
+         }
++        if let Some(expected) = compaction_profile {
++            let replacement = rollout_items
++                .iter()
++                .find_map(|record| match record {
++                    RolloutItem::Compacted(checkpoint) => checkpoint.replacement_history.as_deref(),
++                    _ => None,
++                })
++                .expect("Native compaction has a replacement");
++            let mut state = self.state.lock().await;
++            if let Some(current) = state.session_configuration.agent_profile.as_ref()
++                && current.receipt == expected.receipt
++                && agent_profile::handoff_presentation_anchor(&current.profile)
++                    == agent_profile::handoff_presentation_anchor(&expected.profile)
++            {
++                state.session_configuration.agent_profile = Some(
++                    agent_profile::profile_after_history_replacement(current, replacement),
++                );
++            }
++        }
+         if persisted && let Some(revision) = mcp_revision {
+             self.services
+                 .executed_tool_calls
+diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
+index acf2e822c51ddd1c4867d23d5ff41e5ba3a68e06..10620b175956608e4ac087894f648db05a76321e 100644
+--- a/codex-rs/core/src/session/sdk_produced_items.rs
++++ b/codex-rs/core/src/session/sdk_produced_items.rs
+@@ -8,8 +8,8 @@ use codex_protocol::error::CodexErr;
+ use codex_protocol::models::ResponseItem;
+ use serde::Serialize;
+ 
+-const MAX_ITEMS: usize = 4096;
+-const MAX_BYTES: usize = 8 * 1024 * 1024;
++pub(crate) const MAX_ITEMS: usize = 4096;
++pub(crate) const MAX_BYTES: usize = 8 * 1024 * 1024;
+ const LIMIT_ERROR: &str = "Produced run items exceed the one-shot result limit";
+ 
+ /// Opt-in capture of accepted items for a single SDK invocation.
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+index 9517027feb33031345932294db3831db00e44215..120e08a5fedb07de151d495c062cc2e7550c216f 100644
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -206,6 +206,9 @@ impl StepContext {
+             "strict_executor_writes": seed.strict_executor_writes && !executors.is_empty(),
+             "executors": executors,
+         });
++        if let Some(frontier) = super::agent_profile::handoff_sampling_frontier(&self.turn.extension_data) {
++            receipt["handoff_input_frontiers"] = frontier;
++        }
+         if let Some(source) = &seed.operation_declaration_source {
+             receipt["operation_declaration_source"] = serde_json::to_value(source)
+                 .expect("Agent profile receipt contains only JSON primitives");
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 83bbfecc842d69cd3fbdb4e4da0fd3b6ecec0a99..00421e1395db7645cc02ef897feced3582ab8d55 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -1965,7 +1965,7 @@ async fn run_auto_compact(
+     reason: CompactionReason,
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
+-    let turn_context = &step_context.turn;
++    let turn_context = Arc::clone(&step_context.turn);
+     if sess
+         .services
+         .extensions
+@@ -1986,6 +1986,15 @@ async fn run_auto_compact(
+     {
+         return Ok(());
+     }
++    let previous_window = if matches!(phase, CompactionPhase::MidTurn)
++        && sess.services.thread_extension_data.get::<
++            codex_protocol::agent_profile::AgentProfileHandoffInputCapture,
++        >().is_some()
++    {
++        Some(sess.current_window().await.2)
++    } else {
++        None
++    };
+     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
+     let _compaction_span = trace_span!(
+         "codex.compaction",
+@@ -2002,54 +2011,59 @@ async fn run_auto_compact(
+             world_state,
+         )
+         .await?;
+-        return Ok(());
+-    }
+-
+-    if crate::model_request::turn_sampling_stop(&turn_context.extension_data)
+-        .is_some_and(|stop| stop.requested())
+-    {
+-        // The native interrupt still owns task cancellation and cleanup.
+-        cancellation_token.cancelled().await;
+-        return Err(CodexErr::TurnAborted);
+-    }
+-
+-    match turn_context.provider.capabilities().remote_compaction {
+-        RemoteCompactionSupport::V2 => {
+-            emit_compact_metric(
+-                &sess.services.session_telemetry,
+-                "remote_v2",
+-                /*manual*/ false,
+-            );
+-            run_inline_remote_auto_compact_task_v2(
+-                Arc::clone(sess),
+-                step_context,
+-                replacement_step_context,
+-                client_session,
+-                world_state,
+-                reason,
+-                phase,
+-                cancellation_token,
+-            )
+-            .await?;
++    } else {
++        if crate::model_request::turn_sampling_stop(&turn_context.extension_data)
++            .is_some_and(|stop| stop.requested())
++        {
++            // The native interrupt still owns task cancellation and cleanup.
++            cancellation_token.cancelled().await;
++            return Err(CodexErr::TurnAborted);
+         }
+-        RemoteCompactionSupport::Unsupported => {
+-            emit_compact_metric(
+-                &sess.services.session_telemetry,
+-                "local",
+-                /*manual*/ false,
+-            );
+-            run_inline_auto_compact_task(
+-                Arc::clone(sess),
+-                Arc::clone(&step_context),
+-                replacement_step_context,
+-                world_state,
+-                reason,
+-                phase,
+-                cancellation_token,
+-            )
+-            .await?;
++
++        match turn_context.provider.capabilities().remote_compaction {
++            RemoteCompactionSupport::V2 => {
++                emit_compact_metric(
++                    &sess.services.session_telemetry,
++                    "remote_v2",
++                    /*manual*/ false,
++                );
++                run_inline_remote_auto_compact_task_v2(
++                    Arc::clone(sess),
++                    step_context,
++                    replacement_step_context,
++                    client_session,
++                    world_state,
++                    reason,
++                    phase,
++                    cancellation_token,
++                )
++                .await?;
++            }
++            RemoteCompactionSupport::Unsupported => {
++                emit_compact_metric(
++                    &sess.services.session_telemetry,
++                    "local",
++                    /*manual*/ false,
++                );
++                run_inline_auto_compact_task(
++                    Arc::clone(sess),
++                    Arc::clone(&step_context),
++                    replacement_step_context,
++                    world_state,
++                    reason,
++                    phase,
++                    cancellation_token,
++                )
++                .await?;
++            }
+         }
+     }
++    if let Some(previous) = previous_window
++        && sess.current_window().await.2 != previous
++        && sess.rebase_handoff_input_frontier(&turn_context).await.is_err()
++    {
++        super::agent_profile::forget_handoff_sampling_frontier(&turn_context.extension_data);
++    }
+     Ok(())
+ }
+ 
+@@ -2104,6 +2118,31 @@ pub(super) fn collect_explicit_app_ids_from_skill_items(
+     connector_ids
+ }
+ 
++// Keep native wire selection with the same immutable profile as model and tools.
++pub(super) fn selected_profile_output_schema(
++    profile: Option<&codex_extension_api::CapturedAgentProfile>,
++    control: Option<&codex_extension_api::AgentProfileOutputControl>,
++    turn_schema: Option<&serde_json::Value>,
++    thread_id: &str,
++) -> Result<Option<serde_json::Value>, String> {
++    let Some(schema) = profile.and_then(|profile| {
++        profile
++            .profile
++            .data
++            .get::<codex_extension_api::AgentProfileOutputSchema>()
++    }) else {
++        return Ok(turn_schema.cloned());
++    };
++    let control = control
++        .filter(|control| control.thread_id == thread_id)
++        .ok_or("Per-profile output schemas require their managed SDK thread scope")?;
++    Ok(if control.preserve_turn_output {
++        turn_schema.cloned()
++    } else {
++        schema.0.clone()
++    })
++}
++
+ #[instrument(level = "trace", skip_all)]
+ pub(crate) fn build_prompt(
+     input: Vec<ResponseItem>,
+@@ -2279,6 +2318,17 @@ async fn run_sampling_request(
+                 step_context.as_ref(),
+                 base_instructions.clone(),
+             );
++            let output_control = step_context
++                .turn
++                .extension_data
++                .get::<codex_extension_api::AgentProfileOutputControl>();
++            prompt.output_schema = selected_profile_output_schema(
++                step_context.settings.agent_profile.as_deref(),
++                output_control.as_deref(),
++                prompt.output_schema.as_ref(),
++                &sess.thread_id.to_string(),
++            )
++            .map_err(CodexErr::InvalidRequest)?;
+             prompt.canonical_history_input = sess
+                 .services
+                 .model_client
+@@ -2302,6 +2352,16 @@ async fn run_sampling_request(
+                     .output_schema_strict
+                     .unwrap_or(prompt.output_schema_strict);
+             }
++            // Bind schema and strictness to the same admitted output owner.
++            // The private value does not change the persisted model identity.
++            if output_control.as_deref().is_some_and(|control| {
++                control.thread_id == sess.thread_id.to_string() && !control.preserve_turn_output
++            }) && let Some(strict) = step_context.settings.agent_profile.as_ref().and_then(
++                |profile| profile.profile.data.get::<codex_extension_api::AgentProfileOutputStrict>(),
++            ) {
++                prompt.output_schema_strict = strict.0;
++                prompt.request_controls.output_schema_strict = Some(strict.0);
++            }
+             if prompt.tool_choice == codex_protocol::config_types::ToolChoice::Required
+                 && tool_choice_reset_applies(&step_context.settings, &turn_context.extension_data)
+             {
+@@ -2343,6 +2403,35 @@ async fn run_sampling_request(
+                         .get_or_init(codex_extension_api::TurnSamplingStop::default),
+                 );
+             }
++            // Missing old grouping receipts disable only opted-in handoff preparation.
++            // Ordinary transfers continue under their existing native authority.
++            if sess.record_handoff_input_frontier(&turn_context).await.is_err() {
++                super::agent_profile::forget_handoff_sampling_frontier(&turn_context.extension_data);
++            }
++            let handoff_prompt = step_context
++                .settings
++                .agent_profile
++                .as_ref()
++                .and_then(|profile| {
++                    profile
++                        .profile
++                        .data
++                        .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                        .filter(|_| {
++                            super::agent_profile::handoff_presentation_is_live(&profile.profile)
++                        })
++                        .map(|presentation| (profile, presentation))
++                })
++                .map(|(profile, presentation)| {
++                    crate::prepared_request::apply_handoff_presentation(
++                        &prompt,
++                        &presentation,
++                        &presentation.destination,
++                        &super::agent_profile::handoff_presentation_anchor(&profile.profile),
++                    )
++                })
++                .transpose()
++                .map_err(CodexErr::Fatal)?;
+             let responses_metadata = sess
+                 .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
+                 .await;
+@@ -2354,6 +2443,11 @@ async fn run_sampling_request(
+                 .filter(|contributor| contributor.prepares_request(&turn_context.extension_data))
+                 .collect();
+             if !editors.is_empty() {
++                if handoff_prompt.is_some() {
++                    return Err(CodexErr::Fatal(
++                        "Handoff presentation cannot combine with prepare_request".into(),
++                    ));
++                }
+                 if editors.len() != 1
+                     || turn_context.provider.info().supports_websockets
+                     || step_context.settings.model_info.use_responses_lite
+@@ -2429,7 +2523,7 @@ async fn run_sampling_request(
+                 )
+                 .await?;
+                 // The original prompt remains authoritative for history and retry bookkeeping.
+-                let mut sampling_prompt = Cow::Borrowed(&prompt);
++                let mut sampling_prompt = Cow::Borrowed(handoff_prompt.as_ref().unwrap_or(&prompt));
+                 if !editors.is_empty() {
+                     let data =
+                         crate::prepared_request::snapshot(&prompt).map_err(CodexErr::Fatal)?;
+@@ -2458,6 +2552,41 @@ async fn run_sampling_request(
+                     }
+                     sampling_prompt.to_mut().prepared_request_admission = Some(output.admission);
+                 }
++                if let Some(guidance) = step_context
++                    .settings
++                    .agent_profile
++                    .as_ref()
++                    .and_then(|profile| {
++                        profile
++                            .profile
++                            .data
++                            .get::<codex_extension_api::AgentProfileOutputGuidance>()
++                    })
++                {
++                    let control = output_control
++                        .as_deref()
++                        .filter(|control| control.thread_id == sess.thread_id.to_string())
++                        .ok_or_else(|| {
++                            CodexErr::InvalidRequest(
++                                "Per-profile output guidance requires its managed SDK thread scope"
++                                    .into(),
++                            )
++                        })?;
++                    if !control.preserve_turn_output {
++                        let id = uuid::Uuid::new_v5(
++                            &uuid::Uuid::NAMESPACE_OID,
++                            format!("{}:{}:{}", sess.thread_id, turn_context.sub_id, guidance.0)
++                                .as_bytes(),
++                        );
++                        sampling_prompt.to_mut().input.push(ResponseItem::Message {
++                            id: Some(ResponseItemId::with_suffix("msg", id)),
++                            role: "developer".into(),
++                            content: vec![ContentItem::InputText { text: guidance.0.clone() }],
++                            phase: None,
++                            internal_chat_message_metadata_passthrough: None,
++                        });
++                    }
++                }
+                 crate::file_admission::validate_response_items(
+                     sess.captured_provider_image_reference_policy(),
+                     &step_context.settings.model_info,
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index 74fe33a3d6b75d32d202efa7dfd0148528fb1f1a..81843c28540000cf904797f00062fba046e36bd6 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -997,8 +997,26 @@ impl Session {
+         // Compare JSON values directly instead of serialized schema text.
+         // Value equality ignores object key order while preserving array and
+         // scalar distinctions; broader JSON Schema equivalence is out of scope.
++        let current_profile = self
++            .state
++            .lock()
++            .await
++            .session_configuration
++            .agent_profile
++            .clone();
++        let output_control = active_task
++            .turn_context
++            .extension_data
++            .get::<codex_extension_api::AgentProfileOutputControl>();
++        let active_schema = super::turn::selected_profile_output_schema(
++            current_profile.as_deref(),
++            output_control.as_deref(),
++            active_task.turn_context.final_output_json_schema.as_ref(),
++            &self.thread_id.to_string(),
++        )
++        .map_err(|_| NotSubmittedReason::ActiveTurnOutputSchemaMismatch)?;
+         if let Some(required_schema) = required_final_output_json_schema
+-            && active_task.turn_context.final_output_json_schema.as_ref() != Some(required_schema)
++            && active_schema.as_ref() != Some(required_schema)
+         {
+             return Err(NotSubmittedReason::ActiveTurnOutputSchemaMismatch);
+         }
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..d3afc8e3c08ee661d3e19fbd5716c2fee8f563a3 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -150,6 +150,20 @@ pub(crate) async fn build_tool_router(
+     let mut resolved_forced_tool = None;
+     let mut forced_identity_seen = false;
+     let mut resolved_policy = tool_policy.as_ref().clone();
++    if let Some(executor) = step_store
++        .get::<codex_extension_api::AgentProfileExecutorTools>()
++        .or_else(|| {
++            session.services.thread_extension_data
++                .get::<codex_extension_api::AgentProfileExecutorTools>()
++        })
++    {
++        // Freeze the same inherited grant onto the issuing step for native descendants.
++        step_store.insert((*executor).clone());
++        // Named Agent environment grants can only narrow the host's thread ceiling.
++        // SDKs declaring a profile graph always provide that explicit ceiling.
++        let allowed = resolved_policy.allowed_tools.get_or_insert_with(Vec::new);
++        allowed.retain(|tool| executor.permits(tool));
++    }
+     if let Some(selectors) = &resolved_policy.allowed_mcp_tools {
+         let named_ceiling = resolved_policy.allowed_tools.clone();
+         if let Some(allowed) = &mut resolved_policy.allowed_tools {
+diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
+index 41f692fb2357b3c8ebf0405fa87f4b72be519c59..6420ea881f99d47f8d9a78b077e38eee5bee9c26 100644
+--- a/codex-rs/exec-server/src/environment.rs
++++ b/codex-rs/exec-server/src/environment.rs
+@@ -5,6 +5,7 @@ use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::RwLock;
++use std::sync::Weak;
+ 
+ use arc_swap::ArcSwapOption;
+ use codex_config::ScopedSkillsConfig;
+@@ -92,11 +93,43 @@ pub enum EnvironmentConnectionState {
+ pub struct EnvironmentManager {
+     default_environment: Option<String>,
+     pub(super) environments: RwLock<HashMap<String, Arc<Environment>>>,
++    scoped_environments: RwLock<HashMap<String, Weak<Environment>>>,
+     local_environment: Option<Arc<Environment>>,
+     local_runtime_paths: Option<ExecServerRuntimeOptions>,
+     http_client_factory: HttpClientFactory,
+ }
+ 
++/// Owner of a named executor that is never selected by default.
++#[derive(Debug)]
++pub struct ScopedEnvironment {
++    manager: Weak<EnvironmentManager>,
++    id: String,
++    environment: Arc<Environment>,
++}
++
++impl ScopedEnvironment {
++    pub fn environment(&self) -> &Environment {
++        &self.environment
++    }
++}
++
++impl Drop for ScopedEnvironment {
++    fn drop(&mut self) {
++        if let Some(manager) = self.manager.upgrade() {
++            let mut scoped = manager
++                .scoped_environments
++                .write()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if scoped
++                .get(&self.id)
++                .is_some_and(|entry| entry.as_ptr() == Arc::as_ptr(&self.environment))
++            {
++                scoped.remove(&self.id);
++            }
++        }
++    }
++}
++
+ /// Information supplied by the environment owner when an environment is ready.
+ #[derive(Clone, Debug, Default, Eq, PartialEq)]
+ pub struct EnvironmentReadyInfo {
+@@ -143,6 +176,7 @@ impl EnvironmentManager {
+                 LOCAL_ENVIRONMENT_ID.to_string(),
+                 Arc::new(Environment::default_for_tests()),
+             )])),
++            scoped_environments: RwLock::default(),
+             local_environment: Some(Arc::new(Environment::default_for_tests())),
+             local_runtime_paths: None,
+             // Test-only construction has no application config from which to resolve proxy policy.
+@@ -155,6 +189,7 @@ impl EnvironmentManager {
+         Self {
+             default_environment: None,
+             environments: RwLock::new(HashMap::new()),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths: None,
+             http_client_factory,
+@@ -253,6 +288,7 @@ impl EnvironmentManager {
+         let manager = Self {
+             default_environment: Some(REMOTE_ENVIRONMENT_ID.to_string()),
+             environments: RwLock::new(HashMap::new()),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths,
+             http_client_factory,
+@@ -369,6 +405,7 @@ impl EnvironmentManager {
+         Ok(Self {
+             default_environment,
+             environments: RwLock::new(environment_map),
++            scoped_environments: RwLock::default(),
+             local_environment,
+             local_runtime_paths,
+             http_client_factory,
+@@ -412,13 +449,107 @@ impl EnvironmentManager {
+         self.local_environment.as_ref().map(Arc::clone)
+     }
+ 
+-    /// Returns a named environment instance.
++    /// Returns a named environment instance, including a live explicit scope.
+     pub fn get_environment(&self, environment_id: &str) -> Option<Arc<Environment>> {
+-        self.environments
++        if let Some(environment) = self
++            .environments
+             .read()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .get(environment_id)
+             .cloned()
++        {
++            return Some(environment);
++        }
++        self.scoped_environments
++            .read()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .get(environment_id)
++            .and_then(Weak::upgrade)
++    }
++
++    /// Registers a host-owned local executor without selecting it by default.
++    pub fn register_scoped_local_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        runtime: ExecServerRuntimeOptions,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped(
++            environment_id,
++            Environment::local(runtime, self.http_client_factory.clone()),
++        )
++    }
++
++    /// Registers an explicitly selected remote WebSocket executor for one owner.
++    pub fn register_scoped_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        options: RemoteEnvironmentOptions,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped_transport(environment_id, options.into_transport_params()?)
++    }
++
++    /// Registers an explicitly selected stdio executor for one owner.
++    pub fn register_scoped_stdio_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        command: StdioExecServerCommand,
++        initialize_timeout: Option<std::time::Duration>,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped_transport(
++            environment_id,
++            ExecServerTransportParams::StdioCommand {
++                command,
++                initialize_timeout: initialize_timeout
++                    .unwrap_or(crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT),
++            },
++        )
++    }
++
++    fn register_scoped_transport(
++        self: &Arc<Self>,
++        id: String,
++        transport: ExecServerTransportParams,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped(
++            id,
++            Environment::remote_with_transport(
++                transport,
++                self.local_runtime_paths.clone(),
++                self.http_client_factory.clone(),
++                ScopedSkillsConfig::default(),
++            ),
++        )
++    }
++
++    fn register_scoped(
++        self: &Arc<Self>,
++        id: String,
++        environment: Environment,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        validate_environment_id(&id)?;
++        let environment = Arc::new(environment);
++        {
++            let configured = self
++                .environments
++                .read()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            let mut scoped = self
++                .scoped_environments
++                .write()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if configured.contains_key(&id) || scoped.contains_key(&id) {
++                return Err(ExecServerError::Protocol(
++                    "scoped executor identity is already registered".to_owned(),
++                ));
++            }
++            scoped.insert(id.clone(), Arc::downgrade(&environment));
++        }
++        environment.start_connecting();
++        Ok(ScopedEnvironment {
++            manager: Arc::downgrade(self),
++            id,
++            environment,
++        })
+     }
+ 
+     /// Records a Ready or Failed provisioning result for an environment.
+@@ -442,6 +573,9 @@ impl EnvironmentManager {
+             .environments
+             .write()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if self.has_scoped_environment(&environment_id) {
++            return Ok(None);
++        }
+         if let Some(environment) = environments.get(&environment_id).cloned() {
+             if environment.provisioning_status_tx.is_none() {
+                 return Ok(None);
+@@ -566,6 +700,11 @@ impl EnvironmentManager {
+             .environments
+             .write()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if self.has_scoped_environment(&environment_id) {
++            return Err(ExecServerError::Protocol(
++                "scoped executor identity is already registered".to_owned(),
++            ));
++        }
+         if let Some(environment) = environments.get(&environment_id) {
+             if environment.provisioning_status_tx.is_none() {
+                 return Err(ExecServerError::ProvisioningModeConflict { environment_id });
+@@ -599,6 +738,14 @@ impl EnvironmentManager {
+         Ok(environment)
+     }
+ 
++    // Configured writers hold the registry lock before checking the scoped map.
++    fn has_scoped_environment(&self, id: &str) -> bool {
++        self.scoped_environments
++            .read()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .contains_key(id)
++    }
++
+     fn insert_environment(
+         &self,
+         environment_id: String,
+@@ -609,6 +756,11 @@ impl EnvironmentManager {
+                 .environments
+                 .write()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if self.has_scoped_environment(&environment_id) {
++                return Err(ExecServerError::Protocol(
++                    "scoped executor identity is already registered".to_owned(),
++                ));
++            }
+             environments.insert(environment_id, Arc::clone(&environment))
+         };
+         drop(replaced);
+@@ -1266,6 +1418,7 @@ mod tests {
+     use super::EnvironmentObservedStatus;
+     use super::LOCAL_ENVIRONMENT_ID;
+     use super::REMOTE_ENVIRONMENT_ID;
++    use super::RemoteEnvironmentOptions;
+     use super::noise_environment_config_from_values;
+     use crate::ExecServerRuntimeOptions;
+     use crate::ProcessId;
+@@ -1941,6 +2094,45 @@ mod tests {
+         assert!(status.warnings[0].contains("environment `stdio` is unavailable"));
+     }
+ 
++    #[tokio::test]
++    async fn scoped_environment_never_enters_defaults_and_retires_by_identity() {
++        let manager = Arc::new(EnvironmentManager::default_for_tests());
++        let listener = TcpListener::bind("127.0.0.1:0")
++            .await
++            .expect("executor listener");
++        let url = format!("ws://{}", listener.local_addr().expect("executor address"));
++        let id = "sdk-profile-test";
++        let attach = || {
++            manager.register_scoped_environment(
++                id.to_owned(),
++                RemoteEnvironmentOptions {
++                    exec_server_url: url.clone(),
++                    connect_timeout: None,
++                    http_headers: HashMap::new(),
++                },
++            )
++        };
++        let scope = attach().expect("first scoped registration");
++        let retained = manager.get_environment(id).expect("live scoped executor");
++        assert_eq!(
++            manager.default_environment_ids(),
++            vec![LOCAL_ENVIRONMENT_ID]
++        );
++        assert!(attach().is_err());
++        assert!(
++            manager
++                .upsert_environment(id.to_owned(), url.clone(), None)
++                .is_err()
++        );
++        drop(scope);
++        assert!(manager.get_environment(id).is_none());
++        let next = attach().expect("scope can register again after retirement");
++        let current = manager.get_environment(id).expect("fresh scoped executor");
++        assert!(!Arc::ptr_eq(&retained, &current));
++        drop(next);
++        assert!(manager.get_environment(id).is_none());
++    }
++
+     #[tokio::test]
+     async fn replacing_environment_stops_its_startup_task() {
+         let first_listener = TcpListener::bind("127.0.0.1:0")
+diff --git a/codex-rs/exec-server/src/environment/accepted.rs b/codex-rs/exec-server/src/environment/accepted.rs
+index a3772a24860ac4ad9378179200824a9fa7067e6b..855abba800f6f8296b41f20c8a1a5adb28e95159 100644
+--- a/codex-rs/exec-server/src/environment/accepted.rs
++++ b/codex-rs/exec-server/src/environment/accepted.rs
+@@ -37,6 +37,7 @@ impl EnvironmentManager {
+         Ok(Self {
+             default_environment: Some(environment_id.clone()),
+             environments: RwLock::new(HashMap::from([(environment_id, environment)])),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths: None,
+             http_client_factory,
+diff --git a/codex-rs/exec-server/src/lib.rs b/codex-rs/exec-server/src/lib.rs
+index c87d8ee33f41cece2eb493696e7babcf470ea3cb..4877812c4c07de5024a934d045faa4934843fbb8 100644
+--- a/codex-rs/exec-server/src/lib.rs
++++ b/codex-rs/exec-server/src/lib.rs
+@@ -126,6 +126,7 @@ pub use environment::LOCAL_ENVIRONMENT_ID;
+ pub use environment::MAX_SELECTED_CAPABILITY_ROOTS;
+ pub use environment::REMOTE_ENVIRONMENT_ID;
+ pub use environment::RemoteEnvironmentOptions;
++pub use environment::ScopedEnvironment;
+ pub use environment_bootstrap::PreparedEnvironmentManager;
+ pub use environment_provider::DefaultEnvironmentProvider;
+ pub use environment_provider::EnvironmentProvider;
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index c1425a4e0c01cf0a35517460e62620c2db3883be..2a9e533dabf8e83f8f8b912a18822f3295bcfca7 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -68,9 +68,15 @@ pub use turn_lifecycle::AgentProfile;
+ pub use turn_lifecycle::AgentProfileActivation;
+ pub use turn_lifecycle::AgentProfileBoundaryInput;
+ pub use turn_lifecycle::AgentProfileDecisionHandoffTools;
++pub use turn_lifecycle::AgentProfileEnvironment;
++pub use turn_lifecycle::AgentProfileExecutorTools;
+ pub use turn_lifecycle::AgentProfileHandoffTools;
+ pub use turn_lifecycle::AgentProfileInstructions;
+ pub use turn_lifecycle::AgentProfileModelSettings;
++pub use turn_lifecycle::AgentProfileOutputControl;
++pub use turn_lifecycle::AgentProfileOutputGuidance;
++pub use turn_lifecycle::AgentProfileOutputSchema;
++pub use turn_lifecycle::AgentProfileOutputStrict;
+ pub use turn_lifecycle::AgentProfileReceipt;
+ pub use turn_lifecycle::CapturedAgentProfile;
+ pub use turn_lifecycle::HeldToolCompletionResults;
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index e24d2b593b0020ce09a9b10b57d017402d70088e..04b8afc79926df96b2375993001415f41e5add43 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -214,6 +214,25 @@ impl AgentProfileModelSettings {
+     }
+ }
+ 
++/// Native wire schema selection owned by an admitted SDK profile.
++#[derive(Clone, Debug)]
++pub struct AgentProfileOutputSchema(pub Option<serde_json::Value>);
++
++/// In-process wire strictness from the exact admitted SDK declaration.
++#[derive(Clone, Debug)]
++pub struct AgentProfileOutputStrict(pub bool);
++
++/// Per-sampling output instructions owned by the active SDK profile.
++#[derive(Clone, Debug)]
++pub struct AgentProfileOutputGuidance(pub String);
++
++/// Live output selection scoped to its actual managed SDK thread.
++#[derive(Clone, Debug)]
++pub struct AgentProfileOutputControl {
++    pub thread_id: String,
++    pub preserve_turn_output: bool,
++}
++
+ /// Immutable in-process profile supplied by an admitted host roster.
+ #[derive(Clone)]
+ pub struct AgentProfile {
+@@ -232,6 +251,29 @@ impl std::fmt::Debug for AgentProfile {
+     }
+ }
+ 
++/// Trusted environment selection provided by the current host Agent graph.
++/// Portable history only records the profile identity, never this attachment.
++#[derive(Clone, Debug)]
++pub struct AgentProfileEnvironment(pub Option<codex_protocol::protocol::TurnEnvironmentSelection>);
++
++/// Exact executor tools admitted by the current host Agent's Environment.
++/// The thread-level tool policy remains a ceiling.
++#[derive(Clone, Debug, Default)]
++pub struct AgentProfileExecutorTools {
++    pub allowed: std::collections::HashSet<String>,
++}
++
++impl AgentProfileExecutorTools {
++    pub fn permits(&self, tool: &codex_tools::ToolName) -> bool {
++        !tool.is_default_namespace()
++            || !matches!(
++                tool.name.as_str(),
++                "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
++            )
++            || self.allowed.contains(tool.name.as_str())
++    }
++}
++
+ /// One committed native profile, shared by current and future step captures.
+ #[derive(Clone, Debug)]
+ pub struct CapturedAgentProfile {
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 479f3e0fff708186e804d530b7a73d73d95e3a38..6df9da5f154cc116f271cbcc47fcd84d27be6d15 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -55,9 +55,15 @@ pub use contributors::AgentProfile;
+ pub use contributors::AgentProfileActivation;
+ pub use contributors::AgentProfileBoundaryInput;
+ pub use contributors::AgentProfileDecisionHandoffTools;
++pub use contributors::AgentProfileEnvironment;
++pub use contributors::AgentProfileExecutorTools;
+ pub use contributors::AgentProfileHandoffTools;
+ pub use contributors::AgentProfileInstructions;
+ pub use contributors::AgentProfileModelSettings;
++pub use contributors::AgentProfileOutputControl;
++pub use contributors::AgentProfileOutputGuidance;
++pub use contributors::AgentProfileOutputSchema;
++pub use contributors::AgentProfileOutputStrict;
+ pub use contributors::AgentProfileReceipt;
+ pub use contributors::ApprovalDecision;
+ pub use contributors::ApprovalDecisionInput;
+diff --git a/codex-rs/ext/extension-api/src/state.rs b/codex-rs/ext/extension-api/src/state.rs
+index 7d6e79dc5872968147c1aba00b4aa08d1efdae4c..5af8193e59c586a14a9bc81ae2647bbaf4d7220c 100644
+--- a/codex-rs/ext/extension-api/src/state.rs
++++ b/codex-rs/ext/extension-api/src/state.rs
+@@ -34,6 +34,14 @@ impl ExtensionDataInit {
+             .map(downcast_data)
+     }
+ 
++    /// Removes and returns the initial attachment of type `T`, if one exists.
++    pub fn remove<T>(&mut self) -> Option<Arc<T>>
++    where
++        T: Any + Send + Sync,
++    {
++        self.entries.remove(&TypeId::of::<T>()).map(downcast_data)
++    }
++
+     /// Returns a host-supplied initial attachment without creating a mutable scope.
+     pub fn get<T>(&self) -> Option<Arc<T>>
+     where
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index d85015c7571b4c39b0566f2476aa55995b353582..b3572085b40c29944e20ab3a9d1cb51382f03da4 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -106,6 +106,9 @@ pub struct CodexHarnessMetadata {
+     /// Host graph declaration fingerprint; never an authority or a serialized graph.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_graph: Option<String>,
++    /// Fingerprint of executor grants accepted by the SDK at Agent publication.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub sdk_agent_environment_policy: Option<String>,
+ 
+     /// Native Agent profile/model receipt accompanying an accepted instruction envelope.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+diff --git a/codex-rs/protocol/src/agent_profile.rs b/codex-rs/protocol/src/agent_profile.rs
+index 6fb4c2d2f8bb9fcd8c5f8563cbb41af9537e2c00..5339e989e748501ce0a96e1c25384280058e385d 100644
+--- a/codex-rs/protocol/src/agent_profile.rs
++++ b/codex-rs/protocol/src/agent_profile.rs
+@@ -18,3 +18,83 @@ pub struct AgentProfileHandoff {
+     pub target_profile_id: String,
+     pub call_id: String,
+ }
++
++impl AgentProfileHandoff {
++    /// The accepted transfer consumes exactly the next epoch of its destination.
++    pub fn matches_destination(&self, committed: &AgentProfileReceipt) -> bool {
++        self.target_profile_id == committed.profile_id
++            && self.source.epoch.checked_add(1) == Some(committed.epoch)
++    }
++}
++
++/// An accepted destination presentation, separate from canonical effect history.
++/// This source prototype has not been connected to public input or persistence.
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
++#[serde(deny_unknown_fields)]
++pub struct AgentProfileHandoffPresentation {
++    pub handoff: AgentProfileHandoff,
++    pub destination: AgentProfileReceipt,
++    pub input: Vec<serde_json::Value>,
++    pub previous: Vec<serde_json::Value>,
++    pub generated: Vec<serde_json::Value>,
++}
++
++impl AgentProfileHandoffPresentation {
++    /// The destination publication has to consume this exact source epoch.
++    pub fn belongs_to(&self, committed: &AgentProfileReceipt) -> bool {
++        self.destination == *committed && self.handoff.matches_destination(committed)
++    }
++}
++
++#[cfg(test)]
++mod presentation_tests {
++    use super::*;
++
++    #[test]
++    fn accepted_presentation_remains_bound_to_exact_destination_epoch() {
++        let handoff = AgentProfileHandoff {
++            source: AgentProfileReceipt {
++                profile_id: "a".into(),
++                epoch: 2,
++            },
++            target_profile_id: "b".into(),
++            call_id: "accepted-call".into(),
++        };
++        let destination = AgentProfileReceipt {
++            profile_id: "b".into(),
++            epoch: 3,
++        };
++        let accepted = AgentProfileHandoffPresentation {
++            handoff,
++            destination: destination.clone(),
++            input: vec![serde_json::json!({"occurrence":"input-1"})],
++            previous: vec![],
++            generated: vec![serde_json::json!({"occurrence":"generated-0"})],
++        };
++        let restored: AgentProfileHandoffPresentation =
++            serde_json::from_str(&serde_json::to_string(&accepted).unwrap()).unwrap();
++        assert_eq!(restored, accepted);
++        assert!(restored.belongs_to(&destination));
++        assert!(!restored.belongs_to(&AgentProfileReceipt {
++            profile_id: "a".into(),
++            epoch: 3
++        }));
++        assert!(!restored.belongs_to(&AgentProfileReceipt {
++            profile_id: "b".into(),
++            epoch: 4
++        }));
++    }
++}
++
++/// Opt-in capture of native grouping frontiers for accepted handoff preparation.
++#[derive(Clone, Debug)]
++pub struct AgentProfileHandoffInputCapture;
++
++/// A native selected handoff requests presentation preparation without changing transfer authority.
++#[derive(Clone, Debug)]
++pub struct AgentProfileHandoffInputRequest {
++    pub turn_id: String,
++    pub tool_name: String,
++    pub handoff: AgentProfileHandoff,
++    pub restored: bool,
++}

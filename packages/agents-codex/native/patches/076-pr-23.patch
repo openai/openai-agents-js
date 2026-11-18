@@ -1,0 +1,2133 @@
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+index d550bd038d7c019866a11f74d519422fb23f113c..05542818263715b7894b7d9d9309d917d1a8cc44 100644
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -182,6 +182,16 @@ impl StepContext {
+             receipt["operation_declaration_source"] = serde_json::to_value(source)
+                 .expect("Agent profile receipt contains only JSON primitives");
+         }
++        if self
++            .turn
++            .extension_data
++            .get::<codex_extension_api::ToolNotFoundBehavior>()
++            .as_deref()
++            == Some(&codex_extension_api::ToolNotFoundBehavior::RaiseError)
++        {
++            receipt[codex_extension_api::ToolNotFoundBehavior::RECEIPT_KEY] =
++                serde_json::json!(codex_extension_api::ToolNotFoundBehavior::STRICT_RECEIPT_VALUE);
++        }
+         Some(receipt)
+     }
+ 
+diff --git a/codex-rs/core/src/tools/builtin_result_policy.rs b/codex-rs/core/src/tools/builtin_result_policy.rs
+index ee1b5a7fc565bf8aec5e971e25ef528d0b86f4a5..40a74907034ce8c14fb78794112a596bbb564347 100644
+--- a/codex-rs/core/src/tools/builtin_result_policy.rs
++++ b/codex-rs/core/src/tools/builtin_result_policy.rs
+@@ -98,6 +98,7 @@ struct AcceptedOutput {
+     hook_id: String,
+     hook_response: bool,
+     token_limit: Option<usize>,
++    process_exit_code: Option<i32>,
+ }
+ impl ToolOutput for AcceptedOutput {
+     fn log_output(&self) -> String {
+@@ -106,6 +107,9 @@ impl ToolOutput for AcceptedOutput {
+     fn success_for_logging(&self) -> bool {
+         self.inner.success_for_logging()
+     }
++    fn process_exit_code(&self) -> Option<i32> {
++        self.process_exit_code
++    }
+     fn contains_external_context(&self) -> bool {
+         self.inner.contains_external_context()
+     }
+@@ -172,6 +176,7 @@ pub(crate) async fn accept(
+     owner: &dyn ToolLifecycleContributor,
+     raw: Box<dyn ToolOutput>,
+ ) -> Result<(Box<dyn ToolOutput>, Option<PendingLocalExec>), FunctionCallError> {
++    let process_exit_code = raw.process_exit_code();
+     let hook_input = raw.post_tool_use_input(&invocation.payload);
+     let hook_id = raw.post_tool_use_id(&invocation.call_id);
+     let hook_response = raw
+@@ -232,6 +237,7 @@ pub(crate) async fn accept(
+             hook_id,
+             hook_response,
+             token_limit,
++            process_exit_code,
+         }),
+         pending_exec,
+     ))
+@@ -267,6 +273,7 @@ mod tests {
+             hook_id: "original-exec".into(),
+             hook_response: true,
+             token_limit: Some(42),
++            process_exit_code: Some(17),
+         };
+         for payload in [
+             ToolPayload::Function {
+@@ -296,6 +303,7 @@ mod tests {
+         }
+         assert_eq!(output.log_output(), "{\"output\":\"accepted\"}");
+         assert!(!output.success_for_logging());
++        assert_eq!(output.process_exit_code(), Some(17));
+         assert!(output.contains_external_context());
+         assert_eq!(output.post_tool_use_id("call"), "original-exec");
+         assert_eq!(output.fallback_token_limit_override(), Some(42));
+diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
+index 25620081cf727ff7e184a543fdcfeda918503a1e..d73a7ad6e25e9ba159948cb055a59f013752b240 100644
+--- a/codex-rs/core/src/tools/context.rs
++++ b/codex-rs/core/src/tools/context.rs
+@@ -50,6 +50,8 @@ pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
+ #[derive(Default)]
+ pub(crate) struct ToolCallState {
+     pub(crate) terminal_outcome_reached: AtomicBool,
++    pub(crate) dispatch_started_at: OnceLock<std::time::Instant>,
++    pub(crate) builtin_sandbox_operation: OnceLock<codex_extension_api::BuiltinSandboxOperation>,
+     pub(crate) delivered_assistant_message: OnceLock<String>,
+ }
+ 
+@@ -396,6 +398,10 @@ impl ToolOutput for ExecCommandToolOutput {
+         true
+     }
+ 
++    fn process_exit_code(&self) -> Option<i32> {
++        self.exit_code
++    }
++
+     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+         function_tool_response(
+             call_id,
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index f23b6a8864280cc31798e74fed9a33878b6bf362..55fef67e416c8e860528930a3965954892fd6c42 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -51,6 +51,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         self.0.is_native_environment_tool()
+     }
+ 
++    fn allowed_callers(&self) -> Option<codex_tools::ToolExposures> {
++        self.0.allowed_callers()
++    }
++
+     fn exposure(&self) -> crate::tools::registry::ToolExposure {
+         self.0.exposure()
+     }
+@@ -71,6 +75,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         self.0.supports_parallel_tool_calls()
+     }
+ 
++    fn is_automatic_function_callback(&self) -> bool {
++        self.0.is_automatic_function_callback()
++    }
++
+     fn search_info(&self) -> Option<ToolSearchInfo> {
+         self.0.search_info()
+     }
+diff --git a/codex-rs/core/src/tools/handlers/mcp.rs b/codex-rs/core/src/tools/handlers/mcp.rs
+index f312091b8b5b4f3b32624cc8d042bf658cac6d55..8997d9bb63cccc17522c6f0fe1552dfbb175a195 100644
+--- a/codex-rs/core/src/tools/handlers/mcp.rs
++++ b/codex-rs/core/src/tools/handlers/mcp.rs
+@@ -258,7 +258,12 @@ impl McpHandler {
+                 },
+             )
+         });
+-        notify_tool_start(&invocation, mcp_tool.as_ref()).await;
++        notify_tool_start(
++            &invocation,
++            mcp_tool.as_ref(),
++            /*builtin_sandbox_operation*/ None,
++        )
++        .await;
+ 
+         let originating_call = invocation.originating_call().await;
+         let ToolInvocation {
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index 33deee58edf35b9ae5fd33f5115fd52ef19664d2..971e5a0903d2027bbfec35be82d683343a550e40 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -515,6 +515,10 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
+ }
+ 
+ impl CoreToolRuntime for ExecCommandHandler {
++    fn builtin_sandbox_operation(&self) -> Option<codex_extension_api::BuiltinSandboxOperation> {
++        Some(codex_extension_api::BuiltinSandboxOperation::Exec)
++    }
++
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(payload, ToolPayload::Function { .. })
+     }
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs b/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
+index 3a6aa8d96f8dbdf4e77afed68d1880e3012d642b..715366e7abb63f061ade06c8a19835192baac0a2 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
+@@ -137,6 +137,10 @@ impl WriteStdinHandler {
+ }
+ 
+ impl CoreToolRuntime for WriteStdinHandler {
++    fn builtin_sandbox_operation(&self) -> Option<codex_extension_api::BuiltinSandboxOperation> {
++        Some(codex_extension_api::BuiltinSandboxOperation::WriteStdin)
++    }
++
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(payload, ToolPayload::Function { .. })
+     }
+diff --git a/codex-rs/core/src/tools/handlers/view_image.rs b/codex-rs/core/src/tools/handlers/view_image.rs
+index 12e0a27ea862154a1aa53d2410d739c19c72b69a..ed253813e96e6c1b0ef7332bdb5ff7f26cbfaaef 100644
+--- a/codex-rs/core/src/tools/handlers/view_image.rs
++++ b/codex-rs/core/src/tools/handlers/view_image.rs
+@@ -233,6 +233,10 @@ impl ViewImageHandler {
+ }
+ 
+ impl CoreToolRuntime for ViewImageHandler {
++    fn builtin_sandbox_operation(&self) -> Option<codex_extension_api::BuiltinSandboxOperation> {
++        Some(codex_extension_api::BuiltinSandboxOperation::ViewImage)
++    }
++
+     fn is_builtin_control_tool(&self) -> bool {
+         true
+     }
+diff --git a/codex-rs/core/src/tools/lifecycle.rs b/codex-rs/core/src/tools/lifecycle.rs
+index 12ff3232bbab710a6b3de05692c6b7d13e40e420..e0b82fef7c72d7726a1c24cd69ad507e3b0a7280 100644
+--- a/codex-rs/core/src/tools/lifecycle.rs
++++ b/codex-rs/core/src/tools/lifecycle.rs
+@@ -21,6 +21,7 @@ use crate::tools::context::ToolInvocation;
+ pub(crate) async fn notify_tool_start(
+     invocation: &ToolInvocation,
+     mcp_tool: Option<&McpToolContext>,
++    builtin_sandbox_operation: Option<codex_extension_api::BuiltinSandboxOperation>,
+ ) {
+     let contributors = invocation
+         .session
+@@ -50,6 +51,7 @@ pub(crate) async fn notify_tool_start(
+                 call_id: invocation.call_id.as_str(),
+                 originating_item_id: originating_item_id.as_ref(),
+                 tool_name: &invocation.tool_name,
++                builtin_sandbox_operation,
+                 mcp_tool,
+                 permissions: Box::pin(async { tool_permission_context(invocation).await.ok() }),
+                 payload: &invocation.payload,
+@@ -110,7 +112,15 @@ pub(crate) async fn process_mcp_tool_result(
+     }
+ }
+ 
+-pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: ToolCallOutcome) {
++pub(crate) async fn notify_tool_finish(
++    invocation: &ToolInvocation,
++    outcome: ToolCallOutcome,
++    builtin_sandbox_operation: (
++        Option<codex_extension_api::BuiltinSandboxOperation>,
++        Option<std::time::Duration>,
++        Option<i32>,
++    ),
++) {
+     notify_tool_finish_parts(
+         invocation.session.as_ref(),
+         invocation.turn.as_ref(),
+@@ -118,6 +128,7 @@ pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: Too
+         &invocation.tool_name,
+         invocation.source.clone(),
+         outcome,
++        builtin_sandbox_operation,
+     )
+     .await;
+ }
+@@ -128,6 +139,11 @@ pub(crate) async fn notify_tool_aborted(
+     call_id: &str,
+     tool_name: &ToolName,
+     source: ToolCallSource,
++    builtin_sandbox_operation: (
++        Option<codex_extension_api::BuiltinSandboxOperation>,
++        Option<std::time::Duration>,
++        Option<i32>,
++    ),
+ ) {
+     notify_tool_finish_parts(
+         session,
+@@ -136,6 +152,7 @@ pub(crate) async fn notify_tool_aborted(
+         tool_name,
+         source,
+         ToolCallOutcome::Aborted,
++        builtin_sandbox_operation,
+     )
+     .await;
+ }
+@@ -147,6 +164,11 @@ async fn notify_tool_finish_parts(
+     tool_name: &ToolName,
+     source: ToolCallSource,
+     outcome: ToolCallOutcome,
++    builtin_sandbox_operation: (
++        Option<codex_extension_api::BuiltinSandboxOperation>,
++        Option<std::time::Duration>,
++        Option<i32>,
++    ),
+ ) {
+     for contributor in session.services.extensions.tool_lifecycle_contributors() {
+         contributor
+@@ -157,6 +179,13 @@ async fn notify_tool_finish_parts(
+                 turn_id: turn.sub_id.as_str(),
+                 call_id,
+                 tool_name,
++                builtin_sandbox_operation: builtin_sandbox_operation.0,
++                builtin_sandbox_duration: builtin_sandbox_operation
++                    .0
++                    .and(builtin_sandbox_operation.1),
++                builtin_sandbox_exit_code: builtin_sandbox_operation
++                    .0
++                    .and(builtin_sandbox_operation.2),
+                 source: extension_tool_call_source(source.clone()),
+                 outcome,
+             })
+@@ -178,3 +207,34 @@ pub(crate) fn extension_tool_call_source(source: ToolCallSource) -> ExtensionToo
+         },
+     }
+ }
++
++/// The caller has already rejected handler lookup and excluded strict rejection.
++pub(crate) async fn format_tool_not_found(
++    invocation: &ToolInvocation,
++    default_message: &str,
++) -> Result<Option<String>, ()> {
++    for contributor in invocation
++        .session
++        .services
++        .extensions
++        .tool_lifecycle_contributors()
++    {
++        let formatted = contributor
++            .on_tool_not_found(codex_extension_api::ToolNotFoundInput {
++                step_store: Some(&invocation.step_context.extension_data),
++                thread_store: &invocation.session.services.thread_extension_data,
++                turn_store: invocation.turn.extension_data.as_ref(),
++                turn_id: &invocation.turn.sub_id,
++                call_id: &invocation.call_id,
++                tool_name: &invocation.tool_name,
++                model: &invocation.step_context.settings.model_info.slug,
++                default_message,
++                cancellation: invocation.cancellation_token.clone(),
++            })
++            .await?;
++        if formatted.is_some() {
++            return Ok(formatted);
++        }
++    }
++    Ok(None)
++}
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 62f1f652a49d87c3f92432ee3a8096ce08eb788c..6fa49d898b0b77592f651e9a1d9a3e9d1a37410a 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -1,3 +1,4 @@
++use std::collections::VecDeque;
+ use std::sync::Arc;
+ use std::sync::OnceLock;
+ use std::sync::atomic::Ordering;
+@@ -50,6 +51,205 @@ pub(crate) struct DirectToolResult {
+     pub(crate) pending_exec: Option<PendingLocalExec>,
+ }
+ 
++// Reserve workspace mutations before dispatch tasks can be scheduled out of order.
++// Automatic callbacks remain concurrent, but later mutations await their settlement.
++// Manual callbacks stay independent so they can unblock an automatic callback.
++struct OrderedWorkspaceCalls {
++    state: std::sync::Mutex<WorkspaceDispatchState>,
++    progress: tokio::sync::watch::Sender<CallbackProgress>,
++}
++
++impl Default for OrderedWorkspaceCalls {
++    fn default() -> Self {
++        let (progress, _) = tokio::sync::watch::channel(CallbackProgress::default());
++        Self {
++            state: std::sync::Mutex::new(WorkspaceDispatchState::default()),
++            progress,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Default)]
++struct CallbackProgress {
++    settled: usize,
++    failed_at: Option<usize>,
++}
++
++#[derive(Default)]
++struct WorkspaceDispatchState {
++    waiting: VecDeque<WorkspaceWaiter>,
++    callbacks: VecDeque<bool>,
++    progress: CallbackProgress,
++}
++
++struct CallbackBarrier {
++    progress: tokio::sync::watch::Receiver<CallbackProgress>,
++    through: usize,
++    failed: bool,
++}
++
++impl CallbackBarrier {
++    async fn wait(mut self) -> Result<(), FunctionCallError> {
++        if self.failed {
++            return Err(FunctionCallError::Fatal(
++                "Earlier automatic callback failed".into(),
++            ));
++        }
++        let progress = self
++            .progress
++            .wait_for(|progress| {
++                let boundary = progress
++                    .failed_at
++                    .filter(|failed| *failed <= self.through)
++                    .unwrap_or(self.through);
++                progress.settled >= boundary
++            })
++            .await
++            .map_err(|_| FunctionCallError::Fatal("Automatic callback settlement closed".into()))?;
++        if progress
++            .failed_at
++            .is_some_and(|failed| failed <= self.through)
++        {
++            return Err(FunctionCallError::Fatal(
++                "Earlier automatic callback failed".into(),
++            ));
++        }
++        Ok(())
++    }
++}
++
++struct AutomaticCallbackLease {
++    calls: Arc<OrderedWorkspaceCalls>,
++    sequence: usize,
++    success: bool,
++}
++
++impl Drop for AutomaticCallbackLease {
++    fn drop(&mut self) {
++        let mut state = self
++            .calls
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
++        if !self.success {
++            state.progress.failed_at = Some(
++                state
++                    .progress
++                    .failed_at
++                    .map_or(self.sequence, |previous| previous.min(self.sequence)),
++            );
++        }
++        let index = self.sequence - state.progress.settled - 1;
++        state.callbacks[index] = true;
++        while state.callbacks.front() == Some(&true) {
++            state.callbacks.pop_front();
++            state.progress.settled += 1;
++        }
++        self.calls.progress.send_replace(state.progress);
++    }
++}
++
++struct WorkspaceWaiter {
++    identity: Arc<()>,
++    ready: Option<tokio::sync::oneshot::Sender<()>>,
++}
++
++struct WorkspaceTicket {
++    lease: WorkspaceLease,
++    ready: tokio::sync::oneshot::Receiver<()>,
++    callbacks: CallbackBarrier,
++}
++
++struct WorkspaceLease {
++    calls: Arc<OrderedWorkspaceCalls>,
++    identity: Arc<()>,
++}
++
++impl OrderedWorkspaceCalls {
++    fn callbacks_at_drain(&self) -> (usize, bool) {
++        let state = self
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
++        (
++            state.progress.settled + state.callbacks.len(),
++            state.progress.failed_at.is_some(),
++        )
++    }
++
++    fn reserve_callback(self: &Arc<Self>) -> AutomaticCallbackLease {
++        let mut state = self
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
++        state.callbacks.push_back(false);
++        AutomaticCallbackLease {
++            calls: Arc::clone(self),
++            sequence: state.progress.settled + state.callbacks.len(),
++            success: false,
++        }
++    }
++
++    fn reserve(self: &Arc<Self>) -> WorkspaceTicket {
++        let (sender, ready) = tokio::sync::oneshot::channel();
++        let identity = Arc::new(());
++        let mut state = self
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
++        let callbacks = CallbackBarrier {
++            progress: self.progress.subscribe(),
++            through: state.progress.settled + state.callbacks.len(),
++            failed: state.progress.failed_at.is_some(),
++        };
++        let waiting = &mut state.waiting;
++        let sender = if waiting.is_empty() {
++            let _ = sender.send(());
++            None
++        } else {
++            Some(sender)
++        };
++        waiting.push_back(WorkspaceWaiter {
++            identity: Arc::clone(&identity),
++            ready: sender,
++        });
++        WorkspaceTicket {
++            lease: WorkspaceLease {
++                calls: Arc::clone(self),
++                identity,
++            },
++            ready,
++            callbacks,
++        }
++    }
++}
++
++impl Drop for WorkspaceLease {
++    fn drop(&mut self) {
++        let mut state = self
++            .calls
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
++        let waiting = &mut state.waiting;
++        let Some(position) = waiting
++            .iter()
++            .position(|entry| Arc::ptr_eq(&entry.identity, &self.identity))
++        else {
++            return;
++        };
++        waiting.remove(position);
++        // Removing a cancelled middle waiter cannot release the next mutation
++        // while the original head is still running.
++        if position == 0
++            && let Some(next) = waiting.front_mut()
++            && let Some(ready) = next.ready.take()
++        {
++            let _ = ready.send(());
++        }
++    }
++}
++
+ #[derive(Default)]
+ struct AgentHandoffSelection {
+     first_requested: Option<(String, codex_tools::ToolName)>,
+@@ -227,8 +427,18 @@ impl ToolCallRuntime {
+         let call_state = Arc::new(ToolCallState::default());
+         let retained_step_context = Arc::clone(&step_context);
+         let dispatch_call_state = Arc::clone(&call_state);
+-        // Construct dispatch eagerly: manual tool requests can unblock the
+-        // provider while the rest of its response is still streaming.
++        // Reserve mutation order eagerly, but start its execution when the
++        // sampling loop first drains results after the response stream ends.
++        // Automatic and manual callbacks still dispatch during the stream.
++        let (dispatch_start, dispatch_ready) = if matches!(
++            &call.payload,
++            ToolPayload::Shell { .. } | ToolPayload::ApplyPatch { .. }
++        ) {
++            let (start, ready) = tokio::sync::oneshot::channel();
++            (Some(start), Some(ready))
++        } else {
++            (None, None)
++        };
+         let future = if ignored {
+             Either::Left(std::future::ready(Ok(AnyToolResult {
+                 harness_metadata: None,
+@@ -242,15 +452,19 @@ impl ToolCallRuntime {
+                 pending_exec: None,
+             })))
+         } else {
+-            Either::Right(self.handle_tool_call_with_source(
++            Either::Right(self.handle_tool_call_with_source_after_start(
+                 step_context,
+                 call,
+                 source,
+                 cancellation_token,
+                 dispatch_call_state,
++                dispatch_ready,
+             ))
+         };
+         async move {
++            if let Some(start) = dispatch_start {
++                let _ = start.send(());
++            }
+             let result = future.await;
+             let mut recorded_call =
+                 recorded_call.filter(|(_, recording)| recording.strong_count() > 0);
+@@ -355,6 +569,25 @@ impl ToolCallRuntime {
+         source: ToolCallSource,
+         cancellation_token: CancellationToken,
+         call_state: Arc<ToolCallState>,
++    ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
++        self.handle_tool_call_with_source_after_start(
++            step_context,
++            call,
++            source,
++            cancellation_token,
++            call_state,
++            None,
++        )
++    }
++
++    fn handle_tool_call_with_source_after_start(
++        self,
++        step_context: Arc<StepContext>,
++        call: ToolCall,
++        source: ToolCallSource,
++        cancellation_token: CancellationToken,
++        call_state: Arc<ToolCallState>,
++        dispatch_ready: Option<tokio::sync::oneshot::Receiver<()>>,
+     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
+         let message_admission =
+             super::user_messaging::admit_code_mode_send(&self.session, &source, &call.tool_name);
+@@ -365,6 +598,55 @@ impl ToolCallRuntime {
+         let router = &step_context.tool_router;
+         let supports_parallel = router.tool_supports_parallel(&call);
+         let tool_runtime = router.tool_runtime(&call.tool_name);
++        let callback_lease = tool_runtime
++            .as_ref()
++            .filter(|runtime| runtime.is_automatic_function_callback())
++            .map(|_| {
++                step_context
++                    .turn
++                    .extension_data
++                    .get_or_init(OrderedWorkspaceCalls::default)
++                    .reserve_callback()
++            });
++        let workspace_ticket = tool_runtime
++            .as_ref()
++            .filter(|runtime| {
++                matches!(
++                    runtime.spec(),
++                    codex_tools::ToolSpec::ApplicationShell { .. }
++                        | codex_tools::ToolSpec::ApplyPatch {}
++                )
++            })
++            .map(|_| {
++                step_context
++                    .turn
++                    .extension_data
++                    .get_or_init(OrderedWorkspaceCalls::default)
++                    .reserve()
++            });
++        let callback_batch = dispatch_ready.as_ref().and_then(|_| {
++            workspace_ticket
++                .as_ref()
++                .map(|ticket| Arc::clone(&ticket.lease.calls))
++        });
++        let (workspace_lease, workspace_ready, mut callbacks) = match workspace_ticket {
++            Some(ticket) => (
++                Some(ticket.lease),
++                Some(ticket.ready),
++                Some(ticket.callbacks),
++            ),
++            None => (None, None, None),
++        };
++        // These operations retain admission until callback cleanup settles,
++        // including when a caller passively drops its future.
++        let ordered_workspace = workspace_lease.is_some();
++        let retained_callback = callback_lease.is_some();
++        let (cancellation_token, cancel_on_drop) = if ordered_workspace || retained_callback {
++            let owned = cancellation_token.child_token();
++            (owned.clone(), Some(owned.drop_guard()))
++        } else {
++            (cancellation_token, None)
++        };
+         let router = Arc::clone(router);
+         let session = Arc::clone(&self.session);
+         let turn = Arc::clone(&step_context.turn);
+@@ -372,6 +654,7 @@ impl ToolCallRuntime {
+         let lock = Arc::clone(&self.parallel_execution);
+         let invocation_cancellation_token = cancellation_token.clone();
+         let started = Instant::now();
++        let _ = call_state.dispatch_started_at.set(started);
+         let mut tool_call_timing_guard = ToolCallTimingGuard::capture(
+             started,
+             &session.thread_id,
+@@ -422,6 +705,28 @@ impl ToolCallRuntime {
+         let mut dispatch_handle = AbortOnDropHandle::new(tokio::spawn(
+             async move {
+                 let _message_admission = message_admission?;
++                if let Some(ready) = dispatch_ready {
++                    ready.await.map_err(|_| {
++                        FunctionCallError::Fatal(
++                            "Workspace mutation was not admitted to drain".into(),
++                        )
++                    })?;
++                }
++                // Every automatic sibling has registered by the model-response
++                // drain boundary, including calls appearing after this mutation.
++                if let (Some(callbacks), Some(batch)) =
++                    (callbacks.as_mut(), callback_batch.as_ref())
++                {
++                    (callbacks.through, callbacks.failed) = batch.callbacks_at_drain();
++                }
++                if let Some(ready) = workspace_ready {
++                    ready.await.map_err(|_| {
++                        FunctionCallError::Fatal("Workspace dispatch queue closed".to_string())
++                    })?;
++                }
++                if let Some(callbacks) = callbacks {
++                    callbacks.wait().await?;
++                }
+                 if let Some(tool_runtime) = tool_runtime {
+                     if crate::realtime_conversation::uses_retained_mcp_binding(&step_context)
+                         && let Some(server) = tool_runtime.mcp_server_name()
+@@ -444,30 +749,38 @@ impl ToolCallRuntime {
+                         "Canonical thread persistence failed; tool execution stopped".to_string(),
+                     )
+                 })?;
+-                // Admission through the parallel-execution gate marks the end
+-                // of dispatch waiting and the start of handler execution.
+-                if let Some(execution_started_at) = execution_started_at {
+-                    let _ = execution_started_at.set(Instant::now());
+-                }
+-
+-                if let Some(captured) = step_context
+-                    .extension_data
+-                    .get::<codex_extension_api::CapturedModelAttempt>()
++                // Cancellation can race with a predecessor releasing this queue
++                // or with readiness, the parallel gate, and durable persistence.
++                // Recheck immediately before hooks and handler admission.
++                let result = if (ordered_workspace || retained_callback)
++                    && invocation_cancellation_token.is_cancelled()
+                 {
+-                    captured.0.mark_local_effect();
+-                }
+-                let result = router
+-                    .dispatch_tool_call_with_state(
+-                        session,
+-                        step_context,
+-                        invocation_cancellation_token,
+-                        tracker,
+-                        dispatch_call,
+-                        source,
+-                        dispatch_call_state,
+-                    )
+-                    .instrument(dispatch_span.clone())
+-                    .await;
++                    Err(FunctionCallError::RespondToModel(
++                        "Tool call cancelled before dispatch".to_string(),
++                    ))
++                } else {
++                    if let Some(execution_started_at) = execution_started_at {
++                        let _ = execution_started_at.set(Instant::now());
++                    }
++                    if let Some(captured) = step_context
++                        .extension_data
++                        .get::<codex_extension_api::CapturedModelAttempt>()
++                    {
++                        captured.0.mark_local_effect();
++                    }
++                    router
++                        .dispatch_tool_call_with_state(
++                            session,
++                            step_context,
++                            invocation_cancellation_token,
++                            tracker,
++                            dispatch_call,
++                            source,
++                            dispatch_call_state,
++                        )
++                        .instrument(dispatch_span.clone())
++                        .await
++                };
+                 drop(guard);
+                 // The sampling loop collects results in order only after its stream ends.
+                 // Record readiness here, before either caller encodes or collects the result.
+@@ -487,7 +800,11 @@ impl ToolCallRuntime {
+             .in_current_span(),
+         ));
+ 
+-        async move {
++        let operation = async move {
++            // The operation owns admission until both dispatch and abort cleanup
++            // have settled, including passive drop of the caller's future.
++            let workspace_lease = workspace_lease;
++            let mut callback_lease = callback_lease;
+             let mut tool_call_timing_guard = tool_call_timing_guard;
+             let mut result = tokio::select! {
+                 res = &mut dispatch_handle => res.map_err(Self::tool_task_join_error)?,
+@@ -501,7 +818,9 @@ impl ToolCallRuntime {
+                         match dispatch_handle.await {
+                             Ok(result) => result,
+                             Err(err) if err.is_cancelled() => {
+-                                if matches!(call.payload, ToolPayload::Computer { .. } | ToolPayload::ApplyPatch { .. }) {
++                                if workspace_lease.is_none()
++                                    && matches!(call.payload, ToolPayload::Computer { .. } | ToolPayload::ApplyPatch { .. })
++                                {
+                                     return Err(FunctionCallError::Fatal("computer call cancelled".into()));
+                                 }
+                                 if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
+@@ -521,8 +840,12 @@ impl ToolCallRuntime {
+                                     call.call_id.as_str(),
+                                     &call.tool_name,
+                                     abort_source,
++                                    (call_state.builtin_sandbox_operation.get().copied(), call_state.dispatch_started_at.get().map(Instant::elapsed), None),
+                                 )
+                                 .await;
++                                if matches!(call.payload, ToolPayload::ApplyPatch { .. }) {
++                                    return Err(FunctionCallError::Fatal("computer call cancelled".into()));
++                                }
+                                 Ok(response)
+                             }
+                             Err(err) => Err(Self::tool_task_join_error(err)),
+@@ -530,6 +853,10 @@ impl ToolCallRuntime {
+                     }
+                 },
+             };
++            if let Some(callback) = callback_lease.as_mut() {
++                callback.success = !cancellation_token.is_cancelled()
++                    && !matches!(&result, Err(FunctionCallError::Fatal(_)));
++            }
+             // Use one completion measurement for logging and response formatting.
+             // Measuring inside a handler would omit routing and output processing.
+             if let Some(timing) = tool_call_timing_guard.as_mut()
+@@ -540,7 +867,19 @@ impl ToolCallRuntime {
+             }
+             result
+         }
+-        .in_current_span()
++        .in_current_span();
++        if let Some(cancel_on_drop) = cancel_on_drop {
++            let operation = tokio::spawn(operation);
++            Either::Left(
++                async move {
++                    let _cancel_on_drop = cancel_on_drop;
++                    operation.await.map_err(Self::tool_task_join_error)?
++                }
++                .in_current_span(),
++            )
++        } else {
++            Either::Right(operation)
++        }
+     }
+ }
+ 
+@@ -954,6 +1293,493 @@ mod tests {
+         Ok(())
+     }
+ 
++    struct OrderedWorkspaceHandler {
++        entered: Arc<Notify>,
++        cleanup_finished: Arc<std::sync::atomic::AtomicBool>,
++    }
++
++    impl ToolExecutor<ToolInvocation> for OrderedWorkspaceHandler {
++        fn tool_name(&self) -> codex_tools::ToolName {
++            codex_tools::ToolName::plain("shell")
++        }
++
++        fn spec(&self) -> codex_tools::ToolSpec {
++            codex_tools::application_shell_spec(
++                &codex_protocol::dynamic_tools::DynamicShellToolSpec { skills: Vec::new() },
++            )
++        }
++
++        fn supports_parallel_tool_calls(&self) -> bool {
++            true
++        }
++
++        fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
++        where
++            ToolInvocation: 'a,
++        {
++            Box::pin(async move {
++                if invocation.call_id == "first" {
++                    self.entered.notify_one();
++                    std::future::pending::<()>().await;
++                }
++                assert_ne!(invocation.call_id, "cancelled-middle");
++                assert!(self.cleanup_finished.load(Ordering::Acquire));
++                Ok(
++                    Box::new(FunctionToolOutput::from_text("ok".into(), Some(true)))
++                        as Box<dyn crate::tools::context::ToolOutput>,
++                )
++            })
++        }
++    }
++
++    impl CoreToolRuntime for OrderedWorkspaceHandler {
++        fn matches_kind(&self, payload: &ToolPayload) -> bool {
++            matches!(payload, ToolPayload::Shell { .. })
++        }
++    }
++
++    struct WorkspaceCleanupContributor {
++        started: Arc<Notify>,
++        release: Arc<Notify>,
++        finished: Arc<std::sync::atomic::AtomicBool>,
++    }
++
++    impl codex_extension_api::ToolLifecycleContributor for WorkspaceCleanupContributor {
++        fn on_tool_finish<'a>(
++            &'a self,
++            input: codex_extension_api::ToolFinishInput<'a>,
++        ) -> codex_extension_api::ToolLifecycleFuture<'a> {
++            Box::pin(async move {
++                if input.call_id == "first" && matches!(input.outcome, ToolCallOutcome::Aborted) {
++                    self.started.notify_one();
++                    self.release.notified().await;
++                    self.finished.store(true, Ordering::Release);
++                }
++            })
++        }
++    }
++
++    #[tokio::test]
++    async fn workspace_successors_wait_for_cleanup_and_skip_cancelled_middle() -> anyhow::Result<()>
++    {
++        for passive_drop in [false, true] {
++            let (mut session, turn_context) =
++                crate::session::tests::make_session_and_context().await;
++            let entered = Arc::new(Notify::new());
++            let cleanup_started = Arc::new(Notify::new());
++            let release_cleanup = Arc::new(Notify::new());
++            let cleanup_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
++            let mut builder =
++                codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
++            builder.tool_lifecycle_contributor(Arc::new(WorkspaceCleanupContributor {
++                started: Arc::clone(&cleanup_started),
++                release: Arc::clone(&release_cleanup),
++                finished: Arc::clone(&cleanup_finished),
++            }));
++            session.services.extensions = Arc::new(builder.build());
++            let handler = Arc::new(OrderedWorkspaceHandler {
++                entered: Arc::clone(&entered),
++                cleanup_finished: Arc::clone(&cleanup_finished),
++            }) as Arc<dyn CoreToolRuntime>;
++            let router = Arc::new(ToolRouter::from_parts(
++                ToolRegistry::from_tools([handler]),
++                Vec::new(),
++                ToolMode::Direct,
++                BTreeMap::new(),
++                None,
++                &[],
++                None,
++            ));
++            let step =
++                StepContext::for_test(Arc::new(turn_context)).with_tool_router_for_test(router);
++            let runtime = ToolCallRuntime::new(
++                Arc::new(session),
++                Arc::clone(&step),
++                Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
++            );
++            let call = |id: &str| ToolCall {
++                tool_name: codex_tools::ToolName::plain("shell"),
++                call_id: id.to_string(),
++                payload: ToolPayload::Shell {
++                    arguments: "{}".into(),
++                },
++                encrypted_function_args: None,
++            };
++            let cancelled = CancellationToken::new();
++            let mut first = Some(Box::pin(runtime.clone().handle_tool_call_with_source(
++                Arc::clone(&step),
++                call("first"),
++                ToolCallSource::Direct,
++                cancelled.clone(),
++                Arc::default(),
++            )));
++            tokio::time::timeout(Duration::from_secs(1), entered.notified()).await?;
++            let middle_cancelled = CancellationToken::new();
++            middle_cancelled.cancel();
++            let middle = runtime.clone().handle_tool_call_with_source(
++                Arc::clone(&step),
++                call("cancelled-middle"),
++                ToolCallSource::Direct,
++                middle_cancelled,
++                Arc::default(),
++            );
++            // This successor has independent cancellation and must survive both earlier calls.
++            let mut successor = tokio::spawn(runtime.handle_tool_call_with_source(
++                Arc::clone(&step),
++                call("second"),
++                ToolCallSource::Direct,
++                CancellationToken::new(),
++                Arc::default(),
++            ));
++            if passive_drop {
++                drop(first.take());
++            } else {
++                cancelled.cancel();
++            }
++            tokio::time::timeout(Duration::from_secs(1), cleanup_started.notified()).await?;
++            assert!(
++                tokio::time::timeout(Duration::from_millis(20), &mut successor)
++                    .await
++                    .is_err()
++            );
++            assert!(!cleanup_finished.load(Ordering::Acquire));
++            release_cleanup.notify_one();
++            tokio::time::timeout(Duration::from_secs(1), successor)
++                .await??
++                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
++            middle
++                .await
++                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
++            if let Some(first) = first {
++                first
++                    .await
++                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn workspace_callback_barriers_keep_linear_shared_state() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let mut callbacks = (0..2048)
++            .map(|_| calls.reserve_callback())
++            .collect::<Vec<_>>();
++        let tickets = (0..2048).map(|_| calls.reserve()).collect::<Vec<_>>();
++        assert_eq!(calls.progress.receiver_count(), tickets.len());
++        assert_eq!(calls.state.lock().unwrap().callbacks.len(), callbacks.len());
++        for ticket in &tickets {
++            assert_eq!(ticket.callbacks.through, callbacks.len());
++        }
++        while let Some(mut callback) = callbacks.pop() {
++            callback.success = true;
++            drop(callback);
++        }
++        assert_eq!(calls.progress.borrow().settled, 2048);
++        assert!(calls.state.lock().unwrap().callbacks.is_empty());
++        assert_eq!(calls.progress.receiver_count(), tickets.len());
++    }
++
++    #[tokio::test]
++    async fn workspace_callback_barriers_preserve_prefix_and_failure() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let mut first = calls.reserve_callback();
++        let earlier = calls.reserve();
++        let second = calls.reserve_callback();
++        let later = calls.reserve();
++        drop(second);
++        assert_eq!(calls.progress.borrow().settled, 0);
++        first.success = true;
++        drop(first);
++        earlier.callbacks.wait().await.unwrap();
++        assert!(matches!(
++            later.callbacks.wait().await,
++            Err(FunctionCallError::Fatal(_))
++        ));
++        assert_eq!(calls.progress.borrow().settled, 2);
++    }
++
++    #[tokio::test]
++    async fn workspace_callback_barriers_preserve_early_failure() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let first = calls.reserve_callback();
++        let later = calls.reserve_callback();
++        let ticket = calls.reserve();
++        drop(first);
++        let result = tokio::time::timeout(Duration::from_secs(1), ticket.callbacks.wait())
++            .await
++            .unwrap();
++        assert!(matches!(result, Err(FunctionCallError::Fatal(_))));
++        drop(later);
++
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let first = calls.reserve_callback();
++        let later = calls.reserve_callback();
++        drop(later);
++        let ticket = calls.reserve();
++        let result = tokio::time::timeout(Duration::from_secs(1), ticket.callbacks.wait())
++            .await
++            .unwrap();
++        assert!(matches!(result, Err(FunctionCallError::Fatal(_))));
++        drop(first);
++    }
++
++    struct DeferredFatalCallback {
++        ready_started: Arc<Notify>,
++        allow_ready: Arc<Notify>,
++    }
++
++    impl ToolExecutor<ToolInvocation> for DeferredFatalCallback {
++        fn tool_name(&self) -> codex_tools::ToolName {
++            codex_tools::ToolName::plain("fail")
++        }
++        fn spec(&self) -> codex_tools::ToolSpec {
++            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
++                name: "fail".into(),
++                description: "Synthetic failing callback.".into(),
++                strict: false,
++                defer_loading: None,
++                parameters: codex_tools::JsonSchema::default(),
++                output_schema: None,
++            })
++        }
++        fn supports_parallel_tool_calls(&self) -> bool {
++            true
++        }
++        fn is_automatic_function_callback(&self) -> bool {
++            true
++        }
++        fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
++        where
++            ToolInvocation: 'a,
++        {
++            Box::pin(async { Err(FunctionCallError::Fatal("original callback failure".into())) })
++        }
++    }
++    impl CoreToolRuntime for DeferredFatalCallback {
++        fn wait_until_ready<'a>(
++            &'a self,
++            _session: &'a Arc<Session>,
++        ) -> Option<futures::future::BoxFuture<'a, ()>> {
++            Some(Box::pin(async move {
++                self.ready_started.notify_one();
++                self.allow_ready.notified().await;
++            }))
++        }
++    }
++
++    struct CountingWorkspaceHandler(Arc<std::sync::atomic::AtomicUsize>);
++    impl ToolExecutor<ToolInvocation> for CountingWorkspaceHandler {
++        fn tool_name(&self) -> codex_tools::ToolName {
++            codex_tools::ToolName::plain("shell")
++        }
++        fn spec(&self) -> codex_tools::ToolSpec {
++            codex_tools::application_shell_spec(
++                &codex_protocol::dynamic_tools::DynamicShellToolSpec { skills: Vec::new() },
++            )
++        }
++        fn supports_parallel_tool_calls(&self) -> bool {
++            true
++        }
++        fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
++        where
++            ToolInvocation: 'a,
++        {
++            Box::pin(async move {
++                self.0.fetch_add(1, Ordering::AcqRel);
++                Ok(Box::new(FunctionToolOutput::from_text(
++                    "unexpected".into(),
++                    Some(true),
++                ))
++                    as Box<dyn crate::tools::context::ToolOutput>)
++            })
++        }
++    }
++    impl CoreToolRuntime for CountingWorkspaceHandler {
++        fn matches_kind(&self, payload: &ToolPayload) -> bool {
++            matches!(payload, ToolPayload::Shell { .. })
++        }
++    }
++
++    #[tokio::test]
++    async fn mutations_wait_for_earlier_automatic_callback_before_readiness() -> anyhow::Result<()>
++    {
++        let (session, turn) = crate::session::tests::make_session_and_context().await;
++        let ready_started = Arc::new(Notify::new());
++        let allow_ready = Arc::new(Notify::new());
++        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let handlers: Vec<Arc<dyn CoreToolRuntime>> = vec![
++            Arc::new(DeferredFatalCallback {
++                ready_started: Arc::clone(&ready_started),
++                allow_ready: Arc::clone(&allow_ready),
++            }),
++            Arc::new(CountingWorkspaceHandler(Arc::clone(&effects))),
++            // Manual callback metadata does not join the automatic prefix barrier.
++            Arc::new(ImmediateHandler {
++                tool_name: codex_tools::ToolName::plain("manual"),
++            }),
++        ];
++        let router = Arc::new(ToolRouter::from_parts(
++            ToolRegistry::from_tools(handlers),
++            Vec::new(),
++            ToolMode::Direct,
++            BTreeMap::new(),
++            None,
++            &[],
++            None,
++        ));
++        let step = StepContext::for_test(Arc::new(turn)).with_tool_router_for_test(router);
++        let runtime = ToolCallRuntime::new(
++            Arc::new(session),
++            Arc::clone(&step),
++            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
++        );
++        let call = |name: &str, payload| ToolCall {
++            tool_name: codex_tools::ToolName::plain(name),
++            call_id: name.into(),
++            payload,
++            encrypted_function_args: None,
++        };
++        let function = runtime.clone().handle_tool_call_with_source(
++            Arc::clone(&step),
++            call(
++                "fail",
++                ToolPayload::Function {
++                    arguments: "{}".into(),
++                },
++            ),
++            ToolCallSource::Direct,
++            CancellationToken::new(),
++            Arc::default(),
++        );
++        tokio::time::timeout(Duration::from_secs(1), ready_started.notified()).await?;
++        let mut mutation = tokio::spawn(runtime.clone().handle_tool_call_with_source(
++            Arc::clone(&step),
++            call(
++                "shell",
++                ToolPayload::Shell {
++                    arguments: "{}".into(),
++                },
++            ),
++            ToolCallSource::Direct,
++            CancellationToken::new(),
++            Arc::default(),
++        ));
++        tokio::time::timeout(
++            Duration::from_secs(1),
++            runtime.handle_tool_call_with_source(
++                Arc::clone(&step),
++                call(
++                    "manual",
++                    ToolPayload::Function {
++                        arguments: "{}".into(),
++                    },
++                ),
++                ToolCallSource::Direct,
++                CancellationToken::new(),
++                Arc::default(),
++            ),
++        )
++        .await?
++        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
++        assert!(
++            tokio::time::timeout(Duration::from_millis(20), &mut mutation)
++                .await
++                .is_err()
++        );
++        assert_eq!(effects.load(Ordering::Acquire), 0);
++        allow_ready.notify_one();
++        assert!(matches!(function.await, Err(FunctionCallError::Fatal(_))));
++        assert!(matches!(mutation.await?, Err(FunctionCallError::Fatal(_))));
++        assert_eq!(effects.load(Ordering::Acquire), 0);
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn mutations_wait_for_later_automatic_callback_at_drain() -> anyhow::Result<()> {
++        let (session, turn) = crate::session::tests::make_session_and_context().await;
++        let ready_started = Arc::new(Notify::new());
++        let allow_ready = Arc::new(Notify::new());
++        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let handlers: Vec<Arc<dyn CoreToolRuntime>> = vec![
++            Arc::new(DeferredFatalCallback {
++                ready_started: Arc::clone(&ready_started),
++                allow_ready: Arc::clone(&allow_ready),
++            }),
++            Arc::new(CountingWorkspaceHandler(Arc::clone(&effects))),
++            Arc::new(ImmediateHandler {
++                tool_name: codex_tools::ToolName::plain("manual"),
++            }),
++        ];
++        let router = Arc::new(ToolRouter::from_parts(
++            ToolRegistry::from_tools(handlers),
++            Vec::new(),
++            ToolMode::Direct,
++            BTreeMap::new(),
++            None,
++            &[],
++            None,
++        ));
++        let step = StepContext::for_test(Arc::new(turn)).with_tool_router_for_test(router);
++        let runtime = ToolCallRuntime::new(
++            Arc::new(session),
++            Arc::clone(&step),
++            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
++        );
++        let call = |name: &str, payload| ToolCall {
++            tool_name: codex_tools::ToolName::plain(name),
++            call_id: name.into(),
++            payload,
++            encrypted_function_args: None,
++        };
++        // Model order puts the mutation first, before the failing callback is known.
++        let mutation = runtime.clone().handle_tool_call(
++            call(
++                "shell",
++                ToolPayload::Shell {
++                    arguments: "{}".into(),
++                },
++            ),
++            CancellationToken::new(),
++        );
++        let function = runtime.clone().handle_tool_call(
++            call(
++                "fail",
++                ToolPayload::Function {
++                    arguments: "{}".into(),
++                },
++            ),
++            CancellationToken::new(),
++        );
++        tokio::time::timeout(Duration::from_secs(1), ready_started.notified()).await?;
++        // A manual request can still unblock the provider before mutation drain.
++        tokio::time::timeout(
++            Duration::from_secs(1),
++            runtime.handle_tool_call(
++                call(
++                    "manual",
++                    ToolPayload::Function {
++                        arguments: "{}".into(),
++                    },
++                ),
++                CancellationToken::new(),
++            ),
++        )
++        .await??;
++        let mut mutation = tokio::spawn(mutation);
++        assert!(
++            tokio::time::timeout(Duration::from_millis(20), &mut mutation)
++                .await
++                .is_err()
++        );
++        assert_eq!(effects.load(Ordering::Acquire), 0);
++        allow_ready.notify_one();
++        assert!(function.await.is_err());
++        assert!(mutation.await?.is_err());
++        assert_eq!(effects.load(Ordering::Acquire), 0);
++        Ok(())
++    }
++
+     struct ImmediateHandler {
+         tool_name: codex_tools::ToolName,
+     }
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index 3c21393924458d1eee993d7b71e5f82edab343eb..0d95fddf67801dbe50e7033e31e4f640625f63d7 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -66,6 +66,11 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> + std::any::Any {
+         })
+     }
+ 
++    /// Trusted operation identity, supplied only by actual Core sandbox runtimes.
++    fn builtin_sandbox_operation(&self) -> Option<codex_extension_api::BuiltinSandboxOperation> {
++        None
++    }
++
+     /// Whether this built-in control tool needs a structured tool-call event.
+     fn is_builtin_control_tool(&self) -> bool {
+         false
+@@ -289,6 +294,10 @@ impl ToolOutput for PostToolUseFeedbackOutput {
+         self.original.mark_accepted();
+     }
+ 
++    fn process_exit_code(&self) -> Option<i32> {
++        self.original.process_exit_code()
++    }
++
+     fn realtime_response_requested(&self) -> bool {
+         self.original.realtime_response_requested()
+     }
+@@ -685,11 +694,59 @@ impl ToolRegistry {
+                     &tool_result_tags,
+                     /*extra_trace_fields*/ &[],
+                 );
+-                let err = FunctionCallError::RespondToModel(message);
++                let strict_unknown_function = matches!(&invocation.payload, ToolPayload::Function { .. })
++                    && matches!(
++                        &invocation.source,
++                        crate::tools::context::ToolCallSource::Direct
++                            | crate::tools::context::ToolCallSource::DirectPlaintextMessage
++                    )
++                    && invocation.turn.extension_data
++                        .get::<codex_extension_api::ToolNotFoundBehavior>()
++                        .as_deref()
++                        == Some(&codex_extension_api::ToolNotFoundBehavior::RaiseError);
++                let err = if strict_unknown_function {
++                    FunctionCallError::Fatal(message)
++                } else {
++                    let message = if matches!(&invocation.payload, ToolPayload::Function { .. })
++                        && matches!(
++                            &invocation.source,
++                            crate::tools::context::ToolCallSource::Direct
++                                | crate::tools::context::ToolCallSource::DirectPlaintextMessage
++                        ) {
++                        crate::tools::lifecycle::format_tool_not_found(&invocation, &message)
++                            .await
++                            .map_err(|()| {
++                                FunctionCallError::Fatal("Tool error formatting cancelled".into())
++                            })?
++                            .unwrap_or(message)
++                    } else {
++                        message
++                    };
++                    FunctionCallError::RespondToModel(message)
++                };
+                 dispatch_trace.record_failed(&err);
+                 return Err(err);
+             }
+         };
++        if let Some(callers) = tool.allowed_callers() {
++            let allowed = match &invocation.source {
++                crate::tools::context::ToolCallSource::CodeMode { .. } => {
++                    callers.contains(codex_tools::ToolExposures::CODE_MODE)
++                }
++                crate::tools::context::ToolCallSource::Direct
++                | crate::tools::context::ToolCallSource::DirectPlaintextMessage => callers
++                    .intersects(
++                        codex_tools::ToolExposures::DIRECT | codex_tools::ToolExposures::DEFERRED,
++                    ),
++            };
++            if !allowed {
++                let err = FunctionCallError::RespondToModel(format!(
++                    "Tool {tool_name} does not allow calls from this source"
++                ));
++                dispatch_trace.record_failed(&err);
++                return Err(err);
++            }
++        }
+         let telemetry_tags = tool.telemetry_tags(&invocation);
+         let mut tool_result_tags = Vec::with_capacity(2 + telemetry_tags.len() + 1);
+         let mut extra_trace_fields = Vec::new();
+@@ -773,8 +830,19 @@ impl ToolRegistry {
+             }
+         }
+ 
++        let builtin_sandbox_operation = tool.builtin_sandbox_operation();
+         if tool.mcp_server_name().is_none() {
+-            notify_tool_start(&invocation, /*mcp_tool*/ None).await;
++            if let (Some(state), Some(operation)) =
++                (call_state.as_deref(), builtin_sandbox_operation)
++            {
++                let _ = state.builtin_sandbox_operation.set(operation);
++            }
++            notify_tool_start(
++                &invocation,
++                /*mcp_tool*/ None,
++                builtin_sandbox_operation,
++            )
++            .await;
+         }
+         let mut control_tool_analytics = tool
+             .is_builtin_control_tool()
+@@ -830,6 +898,12 @@ impl ToolRegistry {
+             Ok(result) => result.result.success_for_logging(),
+             Err(_) => false,
+         };
++        let builtin_sandbox_exit_code = builtin_sandbox_operation.and_then(|_| {
++            result
++                .as_ref()
++                .ok()
++                .and_then(|result| result.result.process_exit_code())
++        });
+         if let Some(analytics) = control_tool_analytics.as_mut() {
+             analytics.finish(if success {
+                 ControlToolCallStatus::Completed
+@@ -982,7 +1056,19 @@ impl ToolRegistry {
+             }
+         })();
+         if notify_finish {
+-            notify_tool_finish(&invocation, lifecycle_outcome).await;
++            notify_tool_finish(
++                &invocation,
++                lifecycle_outcome,
++                (
++                    builtin_sandbox_operation,
++                    call_state
++                        .as_deref()
++                        .and_then(|state| state.dispatch_started_at.get())
++                        .map(std::time::Instant::elapsed),
++                    builtin_sandbox_exit_code,
++                ),
++            )
++            .await;
+         }
+         result
+     }
+@@ -997,7 +1083,15 @@ async fn notify_tool_finish_if_unclaimed(
+         return false;
+     }
+ 
+-    notify_tool_finish(invocation, outcome).await;
++    notify_tool_finish(
++        invocation,
++        outcome,
++        (
++            /*builtin_sandbox_operation*/ None, /*duration*/ None,
++            /*exit_code*/ None,
++        ),
++    )
++    .await;
+     true
+ }
+ 
+diff --git a/codex-rs/core/src/tools/registry_tests.rs b/codex-rs/core/src/tools/registry_tests.rs
+index 0c0cdc326596a2f386cd6777ab25375ae7a8cd11..f34f66f64aa48906f9a20aed3e7f1ad0f7667ad5 100644
+--- a/codex-rs/core/src/tools/registry_tests.rs
++++ b/codex-rs/core/src/tools/registry_tests.rs
+@@ -139,11 +139,14 @@ enum RecordedToolLifecycle {
+         call_id: String,
+         tool_name: codex_tools::ToolName,
+         root_turn_id: Option<String>,
++        builtin_sandbox_operation: Option<codex_extension_api::BuiltinSandboxOperation>,
+     },
+     Finish {
+         call_id: String,
+         tool_name: codex_tools::ToolName,
+         outcome: codex_extension_api::ToolCallOutcome,
++        builtin_sandbox_operation: Option<codex_extension_api::BuiltinSandboxOperation>,
++        timed: bool,
+     },
+ }
+ 
+@@ -161,6 +164,7 @@ impl codex_extension_api::ToolLifecycleContributor for ToolLifecycleRecorder {
+             call_id: input.call_id.to_string(),
+             tool_name: input.tool_name.clone(),
+             root_turn_id: input.root_turn_id.map(str::to_owned),
++            builtin_sandbox_operation: input.builtin_sandbox_operation,
+         };
+         Box::pin(async move {
+             records
+@@ -179,6 +183,8 @@ impl codex_extension_api::ToolLifecycleContributor for ToolLifecycleRecorder {
+             call_id: input.call_id.to_string(),
+             tool_name: input.tool_name.clone(),
+             outcome: input.outcome,
++            builtin_sandbox_operation: input.builtin_sandbox_operation,
++            timed: input.builtin_sandbox_duration.is_some(),
+         };
+         Box::pin(async move {
+             records
+@@ -796,16 +802,20 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
+             call_id: "ok-call".to_string(),
+             tool_name: ok_tool.clone().with_default_namespace(),
+             root_turn_id: Some("root-turn".to_string()),
++            builtin_sandbox_operation: None,
+         },
+         RecordedToolLifecycle::Finish {
+             call_id: "ok-call".to_string(),
+             tool_name: ok_tool.with_default_namespace(),
+             outcome: codex_extension_api::ToolCallOutcome::Completed { success: false },
++            builtin_sandbox_operation: None,
++            timed: false,
+         },
+         RecordedToolLifecycle::Start {
+             call_id: "failing-call".to_string(),
+             tool_name: failing_tool.clone(),
+             root_turn_id: Some("root-turn".to_string()),
++            builtin_sandbox_operation: None,
+         },
+         RecordedToolLifecycle::Finish {
+             call_id: "failing-call".to_string(),
+@@ -813,6 +823,8 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
+             outcome: codex_extension_api::ToolCallOutcome::Failed {
+                 handler_executed: true,
+             },
++            builtin_sandbox_operation: None,
++            timed: false,
+         },
+     ];
+     let actual = records
+@@ -825,6 +837,117 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
+     Ok(())
+ }
+ 
++#[tokio::test]
++async fn sandbox_lifecycle_marks_only_builtin_runtimes() -> anyhow::Result<()> {
++    use codex_extension_api::BuiltinSandboxOperation;
++
++    let (mut session, turn) = crate::session::tests::make_session_and_context().await;
++    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
++    builder.tool_lifecycle_contributor(Arc::new(ToolLifecycleRecorder {
++        records: Arc::clone(&records),
++    }));
++    session.services.extensions = Arc::new(builder.build());
++    let session = Arc::new(session);
++    let turn = Arc::new(turn);
++    let handlers: [(Arc<dyn CoreToolRuntime>, BuiltinSandboxOperation); 3] = [
++        (
++            Arc::new(crate::tools::handlers::ExecCommandHandler::default()),
++            BuiltinSandboxOperation::Exec,
++        ),
++        (
++            Arc::new(crate::tools::handlers::WriteStdinHandler),
++            BuiltinSandboxOperation::WriteStdin,
++        ),
++        (
++            Arc::new(crate::tools::handlers::ViewImageHandler::default()),
++            BuiltinSandboxOperation::ViewImage,
++        ),
++    ];
++
++    for (index, (handler, operation)) in handlers.into_iter().enumerate() {
++        let tool_name = handler.tool_name().with_default_namespace();
++        let native_call = format!("native-{index}");
++        let registry = ToolRegistry::from_tools([handler]);
++        let mut invocation = test_invocation(
++            Arc::clone(&session),
++            Arc::clone(&turn),
++            &native_call,
++            tool_name.clone(),
++        );
++        // Actual native handlers fail before any executor or file side effect.
++        // The lifecycle must still pair the start and its exact failed owner.
++        invocation.payload = ToolPayload::Function {
++            arguments: "{".into(),
++        };
++        let state = Arc::new(ToolCallState::default());
++        let _ = state.dispatch_started_at.set(std::time::Instant::now());
++        assert!(
++            registry
++                .dispatch_any_with_state(invocation, Some(state))
++                .await
++                .is_err()
++        );
++
++        let application_call = format!("application-{index}");
++        let registry = ToolRegistry::from_tools([Arc::new(LifecycleTestHandler {
++            tool_name: tool_name.clone(),
++            result: LifecycleTestResult::Ok { success: true },
++        }) as Arc<dyn CoreToolRuntime>]);
++        registry
++            .dispatch_any_with_state(
++                test_invocation(
++                    Arc::clone(&session),
++                    Arc::clone(&turn),
++                    &application_call,
++                    tool_name.clone(),
++                ),
++                None,
++            )
++            .await?;
++
++        let actual = records
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .drain(..)
++            .collect::<Vec<_>>();
++        assert_eq!(
++            actual,
++            vec![
++                RecordedToolLifecycle::Start {
++                    call_id: native_call.clone(),
++                    tool_name: tool_name.clone().with_default_namespace(),
++                    root_turn_id: None,
++                    builtin_sandbox_operation: Some(operation),
++                },
++                RecordedToolLifecycle::Finish {
++                    call_id: native_call,
++                    tool_name: tool_name.clone().with_default_namespace(),
++                    outcome: codex_extension_api::ToolCallOutcome::Failed {
++                        handler_executed: true
++                    },
++                    builtin_sandbox_operation: Some(operation),
++                    timed: true,
++                },
++                RecordedToolLifecycle::Start {
++                    call_id: application_call.clone(),
++                    tool_name: tool_name.clone().with_default_namespace(),
++                    root_turn_id: None,
++                    builtin_sandbox_operation: None,
++                },
++                RecordedToolLifecycle::Finish {
++                    call_id: application_call,
++                    tool_name: tool_name.with_default_namespace(),
++                    outcome: codex_extension_api::ToolCallOutcome::Completed { success: true },
++                    builtin_sandbox_operation: None,
++                    timed: false,
++                },
++            ]
++        );
++    }
++    Ok(())
++}
++
+ fn test_invocation(
+     session: Arc<crate::session::session::Session>,
+     turn: Arc<crate::session::turn_context::TurnContext>,
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 0b7d1c422009b517babf882a533b526cd714e478..17a2009c2e05fb4ddf74a0a8066195c6a716f7ca 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -613,6 +613,11 @@ fn finalize_selected_tool_router(
+     hosted_specs.retain(|spec| registry.tool_policy.allows(&hosted_tool_policy_name(spec)));
+     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
+     enforce_strict_3p_tools(turn_context, model_info, &mut registry);
++    for tool in registry.entries_mut() {
++        if let Some(callers) = tool.runtime.allowed_callers() {
++            tool.exposure = tool.exposure.restrict_to(callers);
++        }
++    }
+     let tool_mode = effective_tool_mode(turn_context, model_info);
+     let code_mode_enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly);
+     if code_mode_enabled {
+@@ -917,7 +922,12 @@ fn build_model_visible_specs(
+         }
+ 
+         let tool_name = tool.runtime.tool_name();
+-        if is_hidden_by_code_mode_only(turn_context, model_info, &tool_name, exposure) {
++        let explicit_direct = tool.runtime.allowed_callers().is_some_and(|callers| {
++            callers.intersects(ToolExposures::DIRECT | ToolExposures::DEFERRED)
++        });
++        if is_hidden_by_code_mode_only(turn_context, model_info, &tool_name, exposure)
++            && !explicit_direct
++        {
+             continue;
+         }
+ 
+@@ -1249,7 +1259,11 @@ fn register_code_mode_executors(
+             }
+         }
+ 
+-        if exposure == ToolExposure::Deferred {
++        let deferred_in_code_mode = exposure == ToolExposure::Deferred
++            || (exposure == ToolExposure::CodeModeOnly
++                && tool.runtime.allowed_callers().is_some()
++                && tool.runtime.exposure().is_deferred());
++        if deferred_in_code_mode {
+             if deferred_tools_guidance_enabled
+                 && (cached_runtime.is_none() || !included_deferred_mcp_output_schema)
+             {
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index d8d80722ff880a31c2d3202cac7b7c228af9e73a..54fb36dd58b3d37eb11f954636111f794ad2534a 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -46,6 +46,7 @@ pub use thread_lifecycle::ThreadReadyInput;
+ pub use thread_lifecycle::ThreadResumeInput;
+ pub use thread_lifecycle::ThreadStartInput;
+ pub use thread_lifecycle::ThreadStopInput;
++pub use tool_lifecycle::BuiltinSandboxOperation;
+ pub use tool_lifecycle::BuiltinToolResultInput;
+ pub use tool_lifecycle::CommandStartInput;
+ pub use tool_lifecycle::McpToolContext;
+@@ -55,6 +56,7 @@ pub use tool_lifecycle::McpToolSource;
+ pub use tool_lifecycle::ToolCallOutcome;
+ pub use tool_lifecycle::ToolFinishInput;
+ pub use tool_lifecycle::ToolLifecycleFuture;
++pub use tool_lifecycle::ToolNotFoundInput;
+ pub use tool_lifecycle::ToolStartInput;
+ pub use tool_lifecycle::ToolTimingBoundary;
+ pub use tool_lifecycle::ToolTimingInput;
+@@ -451,6 +453,15 @@ pub trait ToolContributor: Send + Sync {
+ /// rewriting the invocation. Use `ToolContributor` for owning a tool implementation
+ /// and hooks for policy that changes tool payloads.
+ pub trait ToolLifecycleContributor: Send + Sync {
++    /// Format only a rejected unknown direct function in recoverable mode.
++    /// None preserves the host error. Strict rejection never calls this method.
++    fn on_tool_not_found<'a>(
++        &'a self,
++        _input: ToolNotFoundInput<'a>,
++    ) -> crate::ExtensionFuture<'a, Result<Option<String>, ()>> {
++        Box::pin(async { Ok(None) })
++    }
++
+     /// Opt into whole-result control for selected native Environment tools.
+     /// The host preserves ordinary streaming when this returns false.
+     fn controls_builtin_result(
+diff --git a/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
+index 45e55b7b03cca82972da1cae282f4a34a6cbf06b..ef8f77543fb74d93d369089dceff42ebc4c5d41e 100644
+--- a/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
+@@ -114,6 +114,17 @@ impl McpToolContext {
+     }
+ }
+ 
++/// Identity issued only by an actual Core sandbox tool runtime.
++///
++/// Tool names, arguments and persisted records cannot establish this identity.
++/// This fact carries no operation payload and does not identify a provider resource.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BuiltinSandboxOperation {
++    Exec,
++    WriteStdin,
++    ViewImage,
++}
++
+ /// Input supplied when the host starts executing one tool call.
+ pub struct ToolStartInput<'a> {
+     /// Immutable actual producing step, including captured SDK policy source.
+@@ -135,6 +146,8 @@ pub struct ToolStartInput<'a> {
+     pub originating_item_id: Option<&'a codex_protocol::ResponseItemId>,
+     /// Tool name as routed by the host.
+     pub tool_name: &'a ToolName,
++    /// Trusted builtin identity from the selected runtime, absent for application/MCP tools.
++    pub builtin_sandbox_operation: Option<BuiltinSandboxOperation>,
+     /// Read-only metadata and provenance from the exact MCP call that will execute.
+     pub mcp_tool: Option<&'a McpToolContext>,
+     /// Resolves evidence from the issuing step only when awaited; `None` prevents cached approval.
+@@ -255,6 +268,12 @@ pub struct ToolFinishInput<'a> {
+     pub call_id: &'a str,
+     /// Tool name as routed by the host.
+     pub tool_name: &'a ToolName,
++    /// Builtin identity retained by the exact native dispatch, absent before admission.
++    pub builtin_sandbox_operation: Option<BuiltinSandboxOperation>,
++    /// Monotonic elapsed time for the owning native dispatch.
++    pub builtin_sandbox_duration: Option<std::time::Duration>,
++    /// Typed process status from the actual builtin, never parsed from tool text.
++    pub builtin_sandbox_exit_code: Option<i32>,
+     /// Source that issued the tool call.
+     pub source: ToolCallSource,
+     /// Host-observed result of the tool call.
+@@ -322,3 +341,17 @@ pub struct BuiltinToolResultInput<'a> {
+     /// Cancellation of this exact native invocation, including yielded cells.
+     pub cancelled: crate::ExtensionFuture<'a, ()>,
+ }
++
++/// Presentation for an unknown direct function after handler lookup has rejected it.
++/// A response changes only the error text, never tool admission or execution.
++pub struct ToolNotFoundInput<'a> {
++    pub step_store: Option<&'a ExtensionData>,
++    pub thread_store: &'a ExtensionData,
++    pub turn_store: &'a ExtensionData,
++    pub turn_id: &'a str,
++    pub call_id: &'a str,
++    pub tool_name: &'a ToolName,
++    pub model: &'a str,
++    pub default_message: &'a str,
++    pub cancellation: tokio_util::sync::CancellationToken,
++}
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 8ddf5030d4fd45c2458d99f08ed8248567d7a5b3..66e9d3350e1ad8954330568f757e0a59ac04dbb2 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -4,6 +4,7 @@ mod provider_image_reference_policy;
+ mod registry;
+ mod session_isolation;
+ mod state;
++mod tool_not_found;
+ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
+@@ -12,6 +13,7 @@ pub use provider_image_reference_policy::ProviderImageReferencePolicy;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+ pub use tool_policy::FinalStepBuiltinTools;
++pub use tool_not_found::ToolNotFoundBehavior;
+ pub use tool_policy::ToolPolicy;
+ 
+ pub use capabilities::ConversationHistorySnapshot;
+@@ -40,6 +42,7 @@ pub use codex_tools::ToolCallSource;
+ pub use codex_tools::ToolEnvironment;
+ pub use codex_tools::ToolExecutor;
+ pub use codex_tools::ToolExecutorFuture;
++pub use codex_tools::ToolExposures;
+ pub use codex_tools::ToolName;
+ pub use codex_tools::ToolOutput;
+ pub use codex_tools::ToolPayload;
+@@ -59,6 +62,7 @@ pub use contributors::AgentProfileReceipt;
+ pub use contributors::ApprovalDecision;
+ pub use contributors::ApprovalDecisionInput;
+ pub use contributors::ApprovalReviewContributor;
++pub use contributors::BuiltinSandboxOperation;
+ pub use contributors::BuiltinToolResultInput;
+ pub use contributors::CapturedAgentProfile;
+ pub use contributors::CommandStartInput;
+@@ -105,6 +109,7 @@ pub use contributors::ToolContributor;
+ pub use contributors::ToolFinishInput;
+ pub use contributors::ToolLifecycleContributor;
+ pub use contributors::ToolLifecycleFuture;
++pub use contributors::ToolNotFoundInput;
+ pub use contributors::ToolStartInput;
+ pub use contributors::ToolTimingBoundary;
+ pub use contributors::ToolTimingInput;
+diff --git a/codex-rs/ext/extension-api/src/tool_not_found.rs b/codex-rs/ext/extension-api/src/tool_not_found.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9c15eabd548d2ce645324644c9d736202b0508b
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/tool_not_found.rs
+@@ -0,0 +1,37 @@
++use codex_history::RolloutItem;
++
++/// Unknown direct function-call handling for one admitted operation.
++/// Supply through that operation's turn ExtensionDataInit. Absence preserves
++/// model-visible recovery; this policy does not change known-tool admission.
++#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
++pub enum ToolNotFoundBehavior {
++    #[default]
++    ReturnErrorToModel,
++    RaiseError,
++}
++
++impl ToolNotFoundBehavior {
++    pub const RECEIPT_KEY: &'static str = "tool_not_found_behavior";
++    pub const STRICT_RECEIPT_VALUE: &'static str = "raise_error";
++
++    /// Recover the operation choice from the same turn's native sampling history.
++    /// Older receipts omit this setting and keep the default behavior.
++    pub fn from_turn_history(
++        history: &[RolloutItem],
++        turn_id: &str,
++    ) -> Result<Option<Self>, &'static str> {
++        let marker = history.iter().rev().find_map(|item| match item {
++            RolloutItem::TurnContext(context) if context.turn_id.as_deref() == Some(turn_id) => {
++                context.sdk_receipt.as_ref()?.get(Self::RECEIPT_KEY)
++            }
++            _ => None,
++        });
++        match marker {
++            None => Ok(None),
++            Some(marker) if marker.as_str() == Some(Self::STRICT_RECEIPT_VALUE) => {
++                Ok(Some(Self::RaiseError))
++            }
++            Some(_) => Err("Invalid native tool-not-found behavior receipt"),
++        }
++    }
++}
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend.rs b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+index e9b9ec400dd21c4552d309d5d3340ccc2b7832a8..e06f03cc4c3d1460f9faf9f04ac0c0d0126282c4 100644
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -1914,6 +1914,9 @@ impl GoalExtensionHarness {
+         for contributor in self.registry.tool_lifecycle_contributors() {
+             contributor
+                 .on_tool_finish(ToolFinishInput {
++                    builtin_sandbox_operation: None,
++                    builtin_sandbox_duration: None,
++                    builtin_sandbox_exit_code: None,
+                     session_store: &self.session_store,
+                     thread_store: &self.thread_store,
+                     turn_store: &turn_store,
+diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/budget_tests.rs b/codex-rs/ext/guardian-v2/src/async_scorer/budget_tests.rs
+index 11510337cb6fa467e3d9ce7ab5ddce5a77dfc0e0..b7f5739b5e4b4c9b685fd7559e1d899c4aebd8c5 100644
+--- a/codex-rs/ext/guardian-v2/src/async_scorer/budget_tests.rs
++++ b/codex-rs/ext/guardian-v2/src/async_scorer/budget_tests.rs
+@@ -224,6 +224,7 @@ async fn assert_catalog_budget(evidence: BudgetEvidence) -> Result<()> {
+         };
+         fixture.registry.tool_lifecycle_contributors()[0]
+             .on_tool_start(ToolStartInput {
++                builtin_sandbox_operation: None,
+                 step_store: None,
+                 permissions: Box::pin(async { Some(Default::default()) }),
+                 session_store: &fixture.session_store,
+diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs b/codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs
+index 9f69c6567cd586533c33c4ade965a7d24356a3ce..27a36f512c063dc380c7935b46f237e51971e893 100644
+--- a/codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs
++++ b/codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs
+@@ -293,6 +293,7 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
+         }
+         registry.tool_lifecycle_contributors()[0]
+             .on_tool_start(ToolStartInput {
++                builtin_sandbox_operation: None,
+                 step_store: None,
+                 permissions: Box::pin(async { Some(Default::default()) }),
+                 session_store: &session_store,
+@@ -570,6 +571,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
+     ] {
+         fixture.registry.tool_lifecycle_contributors()[0]
+             .on_tool_start(ToolStartInput {
++                builtin_sandbox_operation: None,
+                 step_store: None,
+                 permissions: Box::pin(async { panic!("unexpected permission resolution") }),
+                 session_store: &fixture.session_store,
+@@ -670,6 +672,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
+     };
+     fixture.registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &fixture.session_store,
+@@ -1042,6 +1045,7 @@ async fn sample_configured_conversation_history_with_delivery(
+ 
+     registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &session_store,
+@@ -1163,6 +1167,7 @@ impl GuardianFailureFixture {
+         };
+         self.registry.tool_lifecycle_contributors()[0]
+             .on_tool_start(ToolStartInput {
++                builtin_sandbox_operation: None,
+                 step_store: None,
+                 permissions: Box::pin(async { Some(Default::default()) }),
+                 session_store: &self.session_store,
+@@ -2418,6 +2423,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
+     };
+     registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { panic!("unexpected permission resolution") }),
+             session_store: &session_store,
+@@ -2722,6 +2728,7 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
+     };
+     registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &session_store,
+@@ -3241,6 +3248,7 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
+ 
+     registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &session_store,
+@@ -3320,6 +3328,7 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
+     };
+     registry.tool_lifecycle_contributors()[0]
+         .on_tool_start(ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &session_store,
+@@ -3418,6 +3427,7 @@ async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()>
+             },
+         };
+         progress.observe(&ToolStartInput {
++            builtin_sandbox_operation: None,
+             step_store: None,
+             permissions: Box::pin(async { Some(Default::default()) }),
+             session_store: &fixture.session_store,
+@@ -3583,6 +3593,7 @@ fn seed_cached_score(
+ 
+ fn observe_unscored_call(progress: &GuardianV2ScoreProgress, store: &ExtensionData) -> usize {
+     progress.observe(&ToolStartInput {
++        builtin_sandbox_operation: None,
+         step_store: None,
+         permissions: Box::pin(async { Some(Default::default()) }),
+         session_store: store,
+diff --git a/codex-rs/tools/src/tool_executor.rs b/codex-rs/tools/src/tool_executor.rs
+index 822689ce13d6691e0700bedbad910d12fe053835..c66e7ccbc8e38bc53481f10f0c3ec25debfd7374 100644
+--- a/codex-rs/tools/src/tool_executor.rs
++++ b/codex-rs/tools/src/tool_executor.rs
+@@ -96,6 +96,23 @@ pub enum ToolExposure {
+ }
+ 
+ impl ToolExposure {
++    /// Restrict visibility without adding a surface removed by host policy.
++    pub fn restrict_to(self, allowed: ToolExposures) -> Self {
++        match (
++            self.is_direct() && allowed.contains(ToolExposures::DIRECT),
++            self.is_deferred() && allowed.contains(ToolExposures::DEFERRED),
++            self.is_available_in_code_mode() && allowed.contains(ToolExposures::CODE_MODE),
++        ) {
++            (false, false, false) => Self::Hidden,
++            (false, false, true) => Self::CodeModeOnly,
++            (true, false, false) => Self::DirectModelOnly,
++            (true, false, true) => Self::Direct,
++            (false, true, false) => Self::DeferredModelOnly,
++            (false, true, true) => Self::Deferred,
++            (true, true, _) => unreachable!("direct and deferred exposure are exclusive"),
++        }
++    }
++
+     pub fn is_direct(self) -> bool {
+         matches!(self, Self::Direct | Self::DirectModelOnly)
+     }
+@@ -130,6 +147,11 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
+         false
+     }
+ 
++    /// An explicit caller ceiling. None preserves the host's legacy behavior.
++    fn allowed_callers(&self) -> Option<ToolExposures> {
++        None
++    }
++
+     /// The preferred exposure before the host applies step-specific policy.
+     fn exposure(&self) -> ToolExposure {
+         ToolExposure::Direct
+@@ -149,6 +171,12 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
+         false
+     }
+ 
++    /// Automatic application callbacks settle before later workspace mutations.
++    /// Manual callbacks stay independent so they can unblock an admitted callback.
++    fn is_automatic_function_callback(&self) -> bool {
++        false
++    }
++
+     /// Native child role selected by a trusted SDK tool declaration.
+     fn managed_agent_role(&self) -> Option<&str> {
+         None
+@@ -178,3 +206,47 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
+     where
+         Invocation: 'a;
+ }
++
++#[cfg(test)]
++mod caller_policy_tests {
++    use super::{ToolExposure, ToolExposures};
++
++    #[test]
++    fn caller_masks_never_add_removed_surfaces() {
++        let exposures = [
++            ToolExposure::Direct,
++            ToolExposure::Deferred,
++            ToolExposure::DirectModelOnly,
++            ToolExposure::DeferredModelOnly,
++            ToolExposure::CodeModeOnly,
++            ToolExposure::Hidden,
++        ];
++        for exposure in exposures {
++            for bits in 0..=ToolExposures::ALL.bits() {
++                let mask = ToolExposures::from_bits_retain(bits);
++                let narrowed = exposure.restrict_to(mask);
++                assert!(
++                    !narrowed.is_direct()
++                        || exposure.is_direct() && mask.contains(ToolExposures::DIRECT)
++                );
++                assert!(
++                    !narrowed.is_deferred()
++                        || exposure.is_deferred() && mask.contains(ToolExposures::DEFERRED)
++                );
++                assert!(
++                    !narrowed.is_available_in_code_mode()
++                        || exposure.is_available_in_code_mode()
++                            && mask.contains(ToolExposures::CODE_MODE)
++                );
++            }
++        }
++        assert_eq!(
++            ToolExposure::Deferred.restrict_to(ToolExposures::CODE_MODE),
++            ToolExposure::CodeModeOnly
++        );
++        assert_eq!(
++            ToolExposure::Deferred.restrict_to(ToolExposures::DIRECT | ToolExposures::DEFERRED),
++            ToolExposure::DeferredModelOnly
++        );
++    }
++}
+diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
+index 5da73d20a9ac7da671e7ff26c25683750697be13..53e862bfbe8f9d7adbf06900028557ebe86a32f9 100644
+--- a/codex-rs/tools/src/tool_output.rs
++++ b/codex-rs/tools/src/tool_output.rs
+@@ -22,6 +22,11 @@ pub trait ToolOutput: Send {
+ 
+     fn success_for_logging(&self) -> bool;
+ 
++    /// Typed process status, independent of logging success and rendered output.
++    fn process_exit_code(&self) -> Option<i32> {
++        None
++    }
++
+     /// Trusted SDK result disposition, consumed only after output policy acceptance.
+     /// Tool JSON and MCP metadata do not set this value.
+     fn realtime_response_requested(&self) -> bool {
+@@ -100,6 +105,10 @@ where
+         (**self).success_for_logging()
+     }
+ 
++    fn process_exit_code(&self) -> Option<i32> {
++        (**self).process_exit_code()
++    }
++
+     fn realtime_response_requested(&self) -> bool {
+         (**self).realtime_response_requested()
+     }
