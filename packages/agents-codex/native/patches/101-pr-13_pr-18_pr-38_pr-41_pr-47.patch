@@ -1,0 +1,577 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 5803eb424bca086896249fc57e412358463369bf..ae79cb39ac5d85df246dfc592e4275c0b029fb9a 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1716,11 +1716,21 @@ impl ModelClient {
+                 item.set_id(/*new_id*/ None);
+             }
+             match item {
+-                ResponseItem::ShellCall {
+-                    provider_fields, ..
+-                } => {
++                ResponseItem::FileSearchCall { provider_fields, .. }
++                | ResponseItem::CodeInterpreterCall { provider_fields, .. }
++                | ResponseItem::ImageGenerationCall { provider_fields, .. }
++                | ResponseItem::ShellCall { provider_fields, .. } => {
+                     provider_fields.remove("created_by");
+                 }
++                ResponseItem::ApplyPatchCall { fields, .. }
++                | ResponseItem::ComputerCall { fields, .. }
++                | ResponseItem::McpListTools { provider_fields: fields, .. }
++                | ResponseItem::McpCall { provider_fields: fields, .. }
++                | ResponseItem::McpApprovalRequest { provider_fields: fields, .. }
++                | ResponseItem::Program { provider_fields: fields, .. }
++                | ResponseItem::ProgramOutput { provider_fields: fields, .. } => {
++                    fields.remove("created_by");
++                }
+                 ResponseItem::ShellCallOutput {
+                     provider_fields, ..
+                 } => {
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index be10245c82d60f313c81974137f8b68e9dc4bedc..617867db2adb4268134c868f16ab9df72f2fa894 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -1,3 +1,5 @@
++mod request_usage;
++
+ use crate::context::UserGoalUpdate;
+ use crate::context_manager::ContextManager;
+ use std::collections::HashMap;
+@@ -385,6 +387,7 @@ pub(crate) async fn run_custom_post_turn_compaction(
+         .await?;
+     let candidate_indexes = compaction_candidate_indexes(&items);
+     let input = codex_extension_api::CompactionInput {
++        accounting: None,
+         step_store: Some(&step_context.extension_data),
+         thread_id: &thread_id,
+         turn_id: &step_context.turn.sub_id,
+@@ -411,10 +414,13 @@ pub(crate) async fn run_custom_post_turn_compaction(
+         if !contributor.schedules_post_turn_compaction(&thread_id, &step_context.extension_data) {
+             continue;
+         }
+-        let decision = contributor
+-            .post_turn_compaction(input.clone())
+-            .await
+-            .map_err(CodexErr::InvalidRequest)?;
++        let accounting = Arc::new(request_usage::BorrowedCompactionUsage::default());
++        let mut observed_input = input.clone();
++        observed_input.accounting = Some(accounting.clone());
++        let decision = contributor.post_turn_compaction(observed_input).await;
++        // The contributor has joined its physical callback on every result path.
++        accounting.flush(&sess, &step_context.turn).await?;
++        let decision = decision.map_err(CodexErr::InvalidRequest)?;
+         if let Some(admitted) = decision {
+             if !admitted || sess.input_queue.has_pending_input(&sess.active_turn).await {
+                 return Ok(true);
+@@ -498,6 +504,7 @@ async fn try_custom_compaction_with_history(
+             let filtered_handoff = projected.1;
+             indexes = compaction_candidate_indexes(&items);
+             current_input = codex_extension_api::CompactionInput {
++                accounting: None,
+                 step_store: Some(&source_step_context.extension_data),
+                 thread_id: &thread_id,
+                 turn_id: &turn_context.sub_id,
+@@ -527,10 +534,12 @@ async fn try_custom_compaction_with_history(
+         if !contributor.customizes_compaction(&thread_id) {
+             continue;
+         }
+-        let result = contributor
+-            .before_compact_result((*input).clone())
+-            .await
+-            .map_err(CodexErr::InvalidRequest)?;
++        let accounting = Arc::new(request_usage::BorrowedCompactionUsage::default());
++        let mut observed_input = (*input).clone();
++        observed_input.accounting = Some(accounting.clone());
++        let result = contributor.before_compact_result(observed_input).await;
++        accounting.flush(sess, turn_context).await?;
++        let result = result.map_err(CodexErr::InvalidRequest)?;
+         match result {
+             None => continue,
+             Some(codex_extension_api::CompactionResult::Summary(summary)) => {
+diff --git a/codex-rs/core/src/compact/request_usage.rs b/codex-rs/core/src/compact/request_usage.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3b13261795696d36c56855b0215678490999d47
+--- /dev/null
++++ b/codex-rs/core/src/compact/request_usage.rs
+@@ -0,0 +1,136 @@
++use super::{CodexResult, Session, TurnContext};
++use codex_extension_api::CompactionRequestAccounting;
++use codex_protocol::protocol::ReceivedResponseUsage;
++use std::sync::Mutex;
++
++#[derive(Debug)]
++struct Request {
++    id: String,
++    settled: bool,
++    received: bool,
++    usage: Option<ReceivedResponseUsage>,
++}
++
++#[derive(Debug, Default)]
++struct State {
++    closed: bool,
++    request: Option<Request>,
++}
++
++/// Each compaction callback can dispatch at most one borrowed SDK endpoint call.
++#[derive(Debug, Default)]
++pub(super) struct BorrowedCompactionUsage(Mutex<State>);
++
++impl CompactionRequestAccounting for BorrowedCompactionUsage {
++    fn dispatched(&self) -> Result<String, String> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        if state.closed || state.request.is_some() {
++            return Err("Compaction request already admitted or retired".into());
++        }
++        let id = uuid::Uuid::now_v7().to_string();
++        state.request = Some(Request {
++            id: id.clone(),
++            settled: false,
++            received: false,
++            usage: None,
++        });
++        Ok(id)
++    }
++
++    fn settled(
++        &self,
++        id: &str,
++        usage: Option<ReceivedResponseUsage>,
++        received: bool,
++    ) -> Result<(), String> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        if state.closed {
++            return Err("Compaction request retired".into());
++        }
++        let request = state
++            .request
++            .as_mut()
++            .filter(|request| request.id == id && !request.settled)
++            .ok_or_else(|| "Compaction request receipt expired".to_string())?;
++        if let Some(value) = &usage {
++            if !received
++                || [
++                    value.input_tokens,
++                    value.cached_input_tokens,
++                    value.cache_write_input_tokens,
++                    value.output_tokens,
++                    value.reasoning_output_tokens,
++                    value.total_tokens,
++                ]
++                .into_iter()
++                .flatten()
++                .any(|count| count < 0)
++            {
++                return Err("Invalid compaction usage".into());
++            }
++        }
++        request.settled = true;
++        request.received = received;
++        request.usage = usage;
++        Ok(())
++    }
++}
++
++impl BorrowedCompactionUsage {
++    fn take(&self) -> Option<Request> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        state.closed = true;
++        state.request.take()
++    }
++
++    pub(super) async fn flush(&self, sess: &Session, turn: &TurnContext) -> CodexResult<()> {
++        if let Some(request) = self.take() {
++            sess.record_borrowed_compaction_usage(
++                turn,
++                request.id,
++                request.usage,
++                request.received,
++            )
++            .await?;
++        }
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn one_identity_and_one_settlement() {
++        let owner = BorrowedCompactionUsage::default();
++        let id = owner.dispatched().unwrap();
++        assert!(owner.dispatched().is_err());
++        assert!(owner.settled("foreign", None, false).is_err());
++        owner.settled(&id, None, false).unwrap();
++        assert!(owner.settled(&id, None, false).is_err());
++        assert_eq!(owner.take().unwrap().id, id);
++        assert!(owner.take().is_none());
++        assert!(owner.dispatched().is_err());
++    }
++    #[test]
++    fn joined_unsettled_dispatch_retains_unknown_usage() {
++        let owner = BorrowedCompactionUsage::default();
++        owner.dispatched().unwrap();
++        let record = owner.take().unwrap();
++        assert!(record.usage.is_none());
++        assert!(!record.received);
++    }
++    #[test]
++    fn received_usage_survives_later_callback_failure() {
++        let owner = BorrowedCompactionUsage::default();
++        let id = owner.dispatched().unwrap();
++        let usage = ReceivedResponseUsage {
++            input_tokens: Some(4),
++            output_tokens: Some(2),
++            total_tokens: Some(6),
++            ..Default::default()
++        };
++        owner.settled(&id, Some(usage.clone()), true).unwrap();
++        assert_eq!(owner.take().unwrap().usage, Some(usage));
++    }
++}
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 7289314a2aed39f80c9fdc839162499597aad43d..c2806ac8d6be9e770a997f18a03265fd57dc7535 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -933,7 +933,8 @@ impl Session {
+         destination.agent_profile = Some(Arc::clone(&profile));
+         configuration.agent_profile = Some(profile);
+         configuration.step_settings = Arc::new(destination.selected().clone());
+-        let settings = configuration.thread_settings_snapshot(&configuration.environments);
++        let mut settings = configuration.thread_settings_snapshot(&configuration.environments);
++        settings.request_controls = settings.request_controls.for_persistence();
+         let batch = [
+             RolloutItem::ResponseItem(envelope.clone()),
+             RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 055034767d606649ba2cb92230ba91c3b91345a2..3d7e6d243bb948954c8312f99e95f9aff318334e 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -5786,6 +5786,51 @@ impl Session {
+         Ok(Some(retained))
+     }
+ 
++    pub(crate) async fn record_borrowed_compaction_usage(
++        &self,
++        turn_context: &TurnContext,
++        request_id: String,
++        usage: Option<codex_protocol::protocol::ReceivedResponseUsage>,
++        received: bool,
++    ) -> CodexResult<()> {
++        use codex_protocol::protocol::{
++            ResponseObservation, ResponseObservationEndpoint, ResponseObservationRecord,
++            ResponseObservationStatus,
++        };
++        let retained = self.live_thread().is_some();
++        if retained {
++            let record = ResponseObservationRecord {
++                id: request_id.clone(),
++                thread_id: self.thread_id,
++                turn_id: turn_context.sub_id.clone(),
++                compaction: Some(true),
++                endpoint: Some(ResponseObservationEndpoint::ResponsesCompact),
++                observation: ResponseObservation {
++                    // The native invocation identity is not a provider response ID.
++                    response_id: None,
++                    upstream_request_id: None,
++                    status: if received {
++                        ResponseObservationStatus::Completed
++                    } else {
++                        ResponseObservationStatus::Failed
++                    },
++                    incomplete_reason: None,
++                    usage,
++                },
++            };
++            if !self
++                .persist_rollout_items(&[RolloutItem::ResponseObservationRecord(record)])
++                .await
++            {
++                return Err(CodexErr::Fatal(
++                    "Could not retain borrowed compaction usage".into(),
++                ));
++            }
++        }
++        self.ensure_rollout_durable().await?;
++        Ok(())
++    }
++
+     pub(crate) async fn record_response_observation(
+         &self,
+         turn_context: &TurnContext,
+@@ -5802,6 +5847,7 @@ impl Session {
+             thread_id: self.thread_id,
+             turn_id: turn_context.sub_id.clone(),
+             compaction: compaction.then_some(true),
++            endpoint: None,
+             observation,
+         };
+         if !self
+diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
+index 8771f1e6a32c94a331fe3234d5fdd10a286981fd..8678efd9369b91608a806fad77a8fcf442db4b61 100644
+--- a/codex-rs/core/src/session/turn_tests.rs
++++ b/codex-rs/core/src/session/turn_tests.rs
+@@ -336,6 +336,7 @@ fn recovered_batch_fixture() -> (
+             thread_id: thread,
+             turn_id: "recovered".into(),
+             compaction: None,
++            endpoint: None,
+             observation: ResponseObservation {
+                 upstream_request_id: None,
+                 response_id: Some(id.into()),
+diff --git a/codex-rs/core/tests/tool_terminal_recovery.rs b/codex-rs/core/tests/tool_terminal_recovery.rs
+index cac5b75b6acb8fadad81332ad519b5897ef7a768..4d8b367b4585b3f21a9545f784c5fd8815de9cf8 100644
+--- a/codex-rs/core/tests/tool_terminal_recovery.rs
++++ b/codex-rs/core/tests/tool_terminal_recovery.rs
+@@ -233,6 +233,7 @@ async fn tool_terminal_recovery_request_boundary(case: RecoveryCase) -> anyhow::
+                     thread_id: thread,
+                     turn_id: TURN.into(),
+                     compaction: None,
++                    endpoint: None,
+                     observation: ResponseObservation {
+                         upstream_request_id: None,
+                         response_id: Some("provider-batch".into()),
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 37f71ec559bebdf6a2fab501b4f5e42852e563a7..af8916748f4b0f2887019ffcc0d2ca77743e267c 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -174,6 +174,7 @@ pub use codex_api::completed_model_response;
+ pub use model_request::CapturedRunModelOverride;
+ pub use model_request::CapturedRunModelSettingsOverride;
+ pub use model_request::CompactionInput;
++pub use model_request::CompactionRequestAccounting;
+ pub use model_request::CompactionResult;
+ pub use model_request::CompactionWindow;
+ pub use model_request::ModelContextInput;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 97f6d77e907370037a03bf5dd452e42a91af788a..3da0421144d5942ed8f2ae4284735997b85d2726 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -344,6 +344,8 @@ pub struct ProviderResponseAnchor {
+ /// Captured input before automatic or manual native summarization.
+ #[derive(Clone)]
+ pub struct CompactionInput<'a> {
++    /// Native-owned accounting for the SDK borrowed compact endpoint, never its inner retries.
++    pub accounting: Option<Arc<dyn CompactionRequestAccounting>>,
+     pub step_store: Option<&'a ExtensionData>,
+     pub thread_id: &'a str,
+     pub turn_id: &'a str,
+@@ -357,6 +359,17 @@ pub struct CompactionInput<'a> {
+     pub items: &'a [ResponseItem],
+ }
+ 
++/// One admitted SDK compact endpoint invocation, bounded to its callback lifetime.
++pub trait CompactionRequestAccounting: Send + Sync + std::fmt::Debug {
++    fn dispatched(&self) -> Result<String, String>;
++    fn settled(
++        &self,
++        id: &str,
++        usage: Option<codex_protocol::protocol::ReceivedResponseUsage>,
++        response_received: bool,
++    ) -> Result<(), String>;
++}
++
+ /// Complete canonical window returned by an application-owned compact client.
+ /// The response ID identifies this compact call, never a generation anchor.
+ #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 3451230786e086a46443d224b81c4fd1d01b6bf8..0113e14df152ae61cd8c97f4ba127cffec1caa93 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -21,6 +21,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
+ // Per-owner wire budgets. Processor queues still charge the complete encoded
+ // projection, including receipts and retained root descriptors.
+ pub(crate) const MAX_TRACING_OPTIONS_BYTES: usize = 128 * 1024;
++// Only explicit SDK metadata can use the existing native event allowance.
++pub(crate) const MAX_LOCAL_ANNOTATION_BYTES: usize =
++    crate::sdk_trace_routes::MAX_CUSTOM_COMPLETION_WIRE_BYTES;
+ pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 64 * 1024;
+ // Allow host JSON escaping and outcome framing, then validate compact data below.
+ const MAX_TRACING_OUTCOME_BYTES: usize = 4 * MAX_COMPLETION_DATA_BYTES;
+@@ -577,6 +580,9 @@ fn bounded_metadata_json(
+     encoded: &str,
+     depth: usize,
+ ) -> Result<Box<serde_json::value::RawValue>, String> {
++    if depth == 0 && encoded.len() > MAX_LOCAL_ANNOTATION_BYTES {
++        return Err("Tracing metadata exceeds the native annotation limit".into());
++    }
+     if depth > MAX_TRACING_DATA_DEPTH {
+         return Err(format!(
+             "Tracing metadata exceeds maximum depth of {MAX_TRACING_DATA_DEPTH}"
+@@ -624,9 +630,6 @@ fn metadata_attribute_value(value: &serde_json::value::RawValue) -> Result<Strin
+ // A single SDK-owned carrier avoids the generic OpenTelemetry attribute-count cap.
+ // Both export routes restore the existing per-key shape after native span collection.
+ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String> {
+-    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
+-        return Err("Tracing metadata exceeds 128 KiB".into());
+-    }
+     let bounded = bounded_metadata_json(encoded, 0)?;
+     let metadata: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
+         serde_json::from_str(bounded.get()).map_err(|_| "Tracing metadata must be an object")?;
+@@ -641,12 +644,24 @@ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String
+         .collect()
+ }
+ 
+-pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+-    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
+-        return Err("Tracing options exceed 128 KiB".into());
++fn parse_span_options(encoded: &str) -> Result<Options, String> {
++    if encoded.len() > crate::sdk_trace_routes::MAX_BYTES {
++        return Err("Tracing options exceed the native event limit".into());
+     }
+     let options: Options =
+         serde_json::from_str(encoded).map_err(|_| "Invalid native tracing span options")?;
++    let annotation_bytes = options
++        .metadata
++        .as_deref()
++        .map_or(0, |value| value.get().len());
++    if encoded.len().saturating_sub(annotation_bytes) > MAX_TRACING_OPTIONS_BYTES {
++        return Err("Non-metadata tracing options exceed 128 KiB".into());
++    }
++    Ok(options)
++}
++
++pub fn start_trace_span(encoded: &str) -> Result<String, String> {
++    let options = parse_span_options(encoded)?;
+     start_trace_span_options(options, false).map(|started| started.encoded)
+ }
+ 
+@@ -1146,12 +1161,33 @@ mod tests {
+         assert!(parse_trace_id("00000000000000000000000000000000").is_err());
+         assert!(parse_trace_id("workflow").is_err());
+     }
++    #[test]
++    fn larger_annotations_do_not_expand_non_metadata_options() {
++        let metadata = json!({"payload": "x".repeat(160 * 1024)});
++        let options = json!({"name": "local", "kind": "workflow", "metadata": metadata}).to_string();
++        let parsed = parse_span_options(&options).unwrap();
++        assert!(metadata_attributes(parsed.metadata.as_deref().unwrap().get()).is_ok());
++        let oversized = json!({
++            "name": "local",
++            "kind": "workflow",
++            "group_id": "x".repeat(MAX_TRACING_OPTIONS_BYTES),
++            "metadata": metadata,
++        })
++        .to_string();
++        assert!(
++            parse_span_options(&oversized)
++                .err()
++                .unwrap()
++                .contains("Non-metadata")
++        );
++    }
++
+     #[test]
+     fn validates_expanded_annotation_budgets_without_relaxing_shape_bounds() {
+         let metadata = json!({"x": "x".repeat(100_000)}).to_string();
+         assert!(metadata_attributes(&metadata).is_ok());
+         assert!(
+-            metadata_attributes(&json!({"x": "x".repeat(MAX_TRACING_OPTIONS_BYTES)}).to_string())
++            metadata_attributes(&json!({"x": "x".repeat(MAX_LOCAL_ANNOTATION_BYTES)}).to_string())
+                 .is_err()
+         );
+         let data = json!({"x": "x".repeat(MAX_COMPLETION_DATA_BYTES - 8)});
+diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
+index cc8a74a2073c07a31c151ba7e9ad167306391ac1..2196dee21d7a521188fbf58c3b8aa90520327636 100644
+--- a/codex-rs/otel/src/sdk_trace_routes.rs
++++ b/codex-rs/otel/src/sdk_trace_routes.rs
+@@ -305,15 +305,55 @@ fn sdk_metadata(
+     crate::sdk_trace::metadata_attributes(metadata.encoded()).ok()
+ }
+ 
+-fn export_sdk_metadata(mut span: SpanData, policy: Option<&crate::sdk_trace::ScopePolicy>) -> SpanData {
++fn export_sdk_metadata(
++    mut span: SpanData,
++    policy: Option<&crate::sdk_trace::ScopePolicy>,
++) -> SpanData {
+     if let Some(metadata) = sdk_metadata(&span, policy) {
+         // Configured attributes retain their existing precedence.
+-        let configured: BTreeSet<_> = span.attributes.iter().map(|kv| kv.key.to_string()).collect();
+-        span.attributes.extend(
+-            metadata
+-                .into_iter()
+-                .filter(|kv| !configured.contains(kv.key.as_str())),
+-        );
++        let configured: BTreeSet<_> = span
++            .attributes
++            .iter()
++            .map(|kv| kv.key.to_string())
++            .collect();
++        let local_only = policy
++            .and_then(|policy| policy.annotations.as_deref())
++            .is_some_and(|metadata| {
++                metadata.encoded().len() > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES
++            });
++        // Existing admitted metadata keeps its export behavior. Larger local
++        // annotations get a bounded projection before the exporter owns the span.
++        let encoded_entry_bytes = |kv: &opentelemetry::KeyValue| {
++            serde_json::to_string(kv.key.as_str())
++                .map_or(usize::MAX, |key| key.len())
++                .saturating_add(
++                    serde_json::to_string(&kv.value.to_string())
++                        .map_or(usize::MAX, |value| value.len()),
++                )
++                .saturating_add(2) // colon and a conservative comma allowance
++        };
++        let mut projected_bytes = span
++            .attributes
++            .iter()
++            .filter(|kv| kv.key.as_str().starts_with("sdk.metadata."))
++            .fold(2usize, |bytes, kv| {
++                bytes.saturating_add(encoded_entry_bytes(kv))
++            });
++        for kv in metadata {
++            if configured.contains(kv.key.as_str()) {
++                continue;
++            }
++            let bytes = encoded_entry_bytes(&kv);
++            if local_only
++                && projected_bytes.saturating_add(bytes)
++                    > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES
++            {
++                span.dropped_attributes_count = span.dropped_attributes_count.saturating_add(1);
++                continue;
++            }
++            projected_bytes = projected_bytes.saturating_add(bytes);
++            span.attributes.push(kv);
++        }
+     }
+     span
+ }
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index c080fb23aff0d3eb99938f775f4a9cd8e556d413..341f128ab8f90425d32e0857a38c06e584e6cbab 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -3063,6 +3063,13 @@ pub struct ResponseObservation {
+     pub usage: Option<ReceivedResponseUsage>,
+ }
+ 
++/// Exact endpoint known by the native SDK request owner.
++#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++pub enum ResponseObservationEndpoint {
++    #[serde(rename = "responses.compact")]
++    ResponsesCompact,
++}
++
+ /// A retained terminal occurrence with its original native identities.
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+ pub struct ResponseObservationRecord {
+@@ -3073,6 +3080,9 @@ pub struct ResponseObservationRecord {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional)]
+     pub compaction: Option<bool>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional)]
++    pub endpoint: Option<ResponseObservationEndpoint>,
+     #[serde(flatten)]
+     pub observation: ResponseObservation,
+ }
+@@ -7394,6 +7404,7 @@ mod response_observation_tests {
+             thread_id: ThreadId::new(),
+             turn_id: "origin-turn".to_string(),
+             compaction: None,
++            endpoint: None,
+             observation: ResponseObservation {
+                 upstream_request_id: None,
+                 response_id: None,
