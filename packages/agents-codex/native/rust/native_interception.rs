@@ -3967,18 +3967,18 @@ impl ModelResponseInterceptor for SentinelRequest {
             Some((self, stream, Some(Vec::new()))),
             |state| async {
                 let (guard, mut stream, mut output) = state?;
-                let next = stream.next().await;
+                let Some(next) = stream.next().await else {
+                    // Core reads past an error. An error recorded at EOF must also end this stream.
+                    return guard.take_failure(false).map(|error| (Err(error), None));
+                };
                 // A WebSocket opens its response stream before it receives
                 // the provider's terminal. The issued ticket may fail while
                 // this poll is pending; apply that decision before Core retries.
                 let decoded_integrity = matches!(
                     &next,
-                    Some(Err(ModelResponseError::ResponseIntegrity { .. }))
+                    Err(ModelResponseError::ResponseIntegrity { .. })
                 );
-                let next = match guard.take_failure(decoded_integrity) {
-                    Some(error) => Err(error),
-                    None => next?,
-                };
+                let next = guard.take_failure(decoded_integrity).map_or(next, Err);
                 match &next {
                     Ok(ResponseEvent::OutputItemDone(item)) => {
                         if guard.ticket.kind == ModelRequestKind::Generation
@@ -8367,6 +8367,32 @@ mod tests {
         drop(generation);
     }
 
+    fn admitted_sentinel_request(kind: ModelRequestKind) -> Box<SentinelRequest> {
+        let control = Arc::new(Control::new("root".into(), true));
+        let owner = (kind == ModelRequestKind::Generation)
+            .then(|| direct_request(control.clone(), "turn").owner);
+        *control.direct_turn.lock().unwrap() = owner.clone();
+        let ticket = Arc::new(SentinelTicket {
+            provider_id: "fixture".into(),
+            attempts: None,
+            nonce: "ticket".into(),
+            kind,
+            model: "model".into(),
+            model_omitted: false,
+            provider_managed_history: false,
+            admitted: AtomicBool::new(true),
+            owner,
+            failure: Mutex::new(None),
+            command_admission: None,
+        });
+        control.sentinel_request.lock().unwrap().request = Some(ticket.clone());
+        Box::new(SentinelRequest {
+            control,
+            ticket,
+            tool_admission: None,
+        })
+    }
+
     #[tokio::test]
     async fn admitted_websocket_failure_keeps_already_decoded_integrity() {
         use codex_protocol::error::ResponseIntegrityReason;
@@ -8378,29 +8404,8 @@ mod tests {
             (ModelRequestKind::Generation, false, true, true),
             (ModelRequestKind::Warmup, false, false, true),
         ] {
-            let control = Arc::new(Control::new("root".into(), true));
-            let owner = (kind == ModelRequestKind::Generation)
-                .then(|| direct_request(control.clone(), "turn").owner);
-            *control.direct_turn.lock().unwrap() = owner.clone();
-            let ticket = Arc::new(SentinelTicket {
-                provider_id: "fixture".into(),
-                attempts: None,
-                nonce: "ticket".into(),
-                kind,
-                model: "model".into(),
-                model_omitted: false,
-                provider_managed_history: false,
-                admitted: AtomicBool::new(true),
-                owner,
-                failure: Mutex::new(None),
-                command_admission: None,
-            });
-            control.sentinel_request.lock().unwrap().request = Some(ticket.clone());
-            let request = Box::new(SentinelRequest {
-                control,
-                ticket: ticket.clone(),
-                tool_admission: None,
-            });
+            let request = admitted_sentinel_request(kind);
+            let ticket = request.ticket.clone();
             let upstream = Box::pin(stream::once(async move {
                 *ticket.failure.lock().unwrap() =
                     Some(if early_integrity {
@@ -8436,6 +8441,29 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn admitted_integrity_failure_at_eof_is_yielded_once() {
+        use codex_protocol::error::ResponseIntegrityReason;
+
+        let request = admitted_sentinel_request(ModelRequestKind::Generation);
+        let ticket = request.ticket.clone();
+        // The bridge records the failure before closing its response channel.
+        let upstream = stream::poll_fn(move |_| {
+            *ticket.failure.lock().unwrap() = Some(SentinelFailure::DecodedIntegrity {
+                reason: ResponseIntegrityReason::UndecodableOutputItem,
+            });
+            std::task::Poll::Ready(None)
+        });
+        let mut response = request.intercept(Box::pin(upstream));
+        assert!(matches!(
+            response.next().await,
+            Some(Err(ModelResponseError::ResponseIntegrity {
+                reason: ResponseIntegrityReason::UndecodableOutputItem,
+            }))
+        ));
+        assert!(response.next().await.is_none());
     }
 
     #[tokio::test]
