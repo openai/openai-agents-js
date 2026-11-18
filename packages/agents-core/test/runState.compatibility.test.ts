@@ -33,6 +33,7 @@ type WriterSchema = {
   commit: string;
   npmIntegrity: string;
   fixtures: FixtureRecord[];
+  sessionCaptures?: Array<Omit<FixtureRecord, 'kind'>>;
 };
 
 type PolicySchema = {
@@ -124,6 +125,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.21',
       '1.22',
       '1.23',
+      '1.24',
     ]);
     expect(
       manifest.schemas
@@ -134,7 +136,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.24']);
+    ).toEqual(['1.25']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -150,6 +152,13 @@ describe('historical RunState compatibility corpus', () => {
         expect(
           readJson<Record<string, unknown>>(fixture.path).$schemaVersion,
         ).toBe(source.schemaVersion);
+      }
+      for (const capture of source.sessionCaptures ?? []) {
+        expect(hashFixture(capture.path)).toBe(capture.sha256);
+        const { snapshot } = readJson<{ snapshot: { $schemaVersion: string } }>(
+          capture.path,
+        );
+        expect(snapshot.$schemaVersion).toBe(source.schemaVersion);
       }
     }
     for (const fixture of manifest.negativeFixtures) {
@@ -188,7 +197,14 @@ describe('historical RunState compatibility corpus', () => {
           readJson('expected/v1.0-normalized-current.json'),
         );
       }
-      expect(firstRewrite.$schemaVersion).toBe('1.23');
+      if (source.schemaVersion === '1.24') {
+        expect(restored.usage.inputTokensDetails).toEqual([
+          { provider: 'historical' },
+        ]);
+        expect(firstRewrite.$schemaVersion).toBe('1.24');
+      } else {
+        expect(firstRewrite.$schemaVersion).toBe('1.23');
+      }
       expectJsonScalars(firstRewrite);
 
       const rewritten = await RunState.fromString(

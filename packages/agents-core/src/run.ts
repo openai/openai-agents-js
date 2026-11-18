@@ -1,6 +1,6 @@
 import { getAgentToolStreamBuffer } from './runner/agentToolStream';
 import { Agent, AgentOutputType } from './agent';
-import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
+import { RunAgentUpdatedStreamEvent } from './events';
 import {
   AgentsError,
   ModelBehaviorError,
@@ -33,6 +33,7 @@ import { RunContext } from './runContext';
 import { RunResult, StreamedRunResult } from './result';
 import {
   assertPendingSessionCompactionTerminalAuthority,
+  assertResumableCallbackOutputs,
   RunState,
 } from './runState';
 import { RunItem } from './items';
@@ -80,6 +81,7 @@ import {
 import { processModelResponseAsync } from './runner/modelOutputs';
 import {
   addStepToRunResult,
+  streamRawModelEventToRunResult,
   streamStepItemsToRunResult,
   isAbortError,
 } from './runner/streaming';
@@ -857,6 +859,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         'The same RunState cannot resume or reconcile a Session write concurrently.',
       );
     }
+    if (resumedState) assertResumableCallbackOutputs(resumedState);
     const resumedStateRequiresInputCompaction =
       resumedState !== undefined &&
       hasPendingApprovedToolInputCompaction(resumedState);
@@ -3251,7 +3254,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 await reconcileStreamAbortIfNeeded();
                 return;
               }
-              result._addItem(new RunRawModelStreamEvent(event));
+              streamRawModelEventToRunResult(result, event);
             }
           } catch (error) {
             if (isAbortError(error)) {

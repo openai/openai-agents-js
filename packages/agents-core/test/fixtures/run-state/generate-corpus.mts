@@ -570,6 +570,10 @@ const minimalState = new sdk.RunState(
   minimalAgent,
   3,
 );
+if (schemaVersion === '1.24') {
+  // The released writer uses 1.23 until a value requires the newer format.
+  minimalState.usage.inputTokensDetails = [{ provider: 'historical' }];
+}
 outputs.minimal = JSON.parse(minimalState.toString());
 
 if (schemaVersion === '1.1') {

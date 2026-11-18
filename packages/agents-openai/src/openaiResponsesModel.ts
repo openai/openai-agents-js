@@ -64,7 +64,10 @@ import {
   toRequestUsageEntry,
 } from './responsesUtils';
 import { ProviderData } from '@openai/agents-core/types';
-import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
+import {
+  getToolCallDisplayName,
+  normalizeHostedMcpRequireApproval,
+} from '@openai/agents-core/utils';
 import {
   reportModelFailureUsage,
   snapshotRawUsage,
@@ -534,6 +537,32 @@ function isNamedFunctionTool(
     tool.type === 'function' &&
     typeof (tool as { name?: unknown }).name === 'string'
   );
+}
+
+function getFunctionToolInputStart(
+  item: OpenAI.Responses.ResponseOutputItem,
+  request: ModelRequest,
+) {
+  if (
+    item.type === 'function_call' &&
+    !('agent' in item) &&
+    (!item.caller || item.caller.type === 'direct') &&
+    (item.namespace ||
+      !request.handoffs.some((handoff) => handoff.toolName === item.name)) &&
+    request.tools.some(
+      (tool) =>
+        tool.type === 'function' &&
+        tool.name === item.name &&
+        tool.namespace === (item.namespace ?? undefined) &&
+        !tool.deferLoading,
+    )
+  ) {
+    return {
+      type: 'start' as const,
+      callId: item.call_id,
+      name: getToolCallDisplayName(item) ?? item.name,
+    };
+  }
 }
 
 function isNamespaceTool(tool: ResponsesTool): tool is ResponsesTool & {
@@ -1960,25 +1989,39 @@ export class OpenAIResponsesModel implements Model {
       );
 
       let finalResponse: OpenAI.Responses.Response | undefined;
-      const outputItemsByIndex = new Map<number, Record<string, any>>();
+      const outputItemsByIndex = new Map<
+        number,
+        { item: Record<string, any>; previewCallId?: string }
+      >();
       for await (const event of response) {
         const eventType = (event as { type?: string }).type;
         const shouldEmitRawModelEvent = this._shouldEmitRawModelEvent(
           event as unknown as Record<string, any>,
         );
-        if (eventType === 'response.output_item.added') {
-          const outputItemAdded = event as unknown as {
-            output_index?: number;
-            item?: Record<string, any>;
-          };
+        let toolInput: protocol.StreamEventGenericItem['toolInput'];
+        if (event.type === 'response.output_item.added') {
+          const { output_index, item } = event;
+          if (typeof output_index === 'number' && item) {
+            if (shouldEmitRawModelEvent && !('agent' in event)) {
+              toolInput = getFunctionToolInputStart(item, request);
+            }
+            outputItemsByIndex.set(output_index, {
+              item,
+              previewCallId: toolInput?.callId,
+            });
+          }
+        } else if (event.type === 'response.function_call_arguments.delta') {
+          const output = outputItemsByIndex.get(event.output_index);
           if (
-            typeof outputItemAdded.output_index === 'number' &&
-            outputItemAdded.item
+            output?.previewCallId &&
+            output.item.id === event.item_id &&
+            !('agent' in event)
           ) {
-            outputItemsByIndex.set(
-              outputItemAdded.output_index,
-              outputItemAdded.item,
-            );
+            toolInput = {
+              type: 'delta',
+              callId: output.previewCallId,
+              delta: event.delta,
+            };
           }
         }
         if (eventType === 'response.created') {
@@ -2072,7 +2115,7 @@ export class OpenAIResponsesModel implements Model {
           const itemId = remainingEvent.item_id;
           const outputItem =
             typeof remainingEvent.output_index === 'number'
-              ? outputItemsByIndex.get(remainingEvent.output_index)
+              ? outputItemsByIndex.get(remainingEvent.output_index)?.item
               : undefined;
           if (
             this._shouldEmitOutputTextDelta(
@@ -2093,6 +2136,7 @@ export class OpenAIResponsesModel implements Model {
           yield {
             type: 'model',
             event: event,
+            ...(toolInput && { toolInput }),
             providerData: {
               rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
             },

@@ -1312,6 +1312,7 @@ export class AiSdkModel implements Model {
           };
       const orderedOutputEntries: StreamOutputEntry[] = [];
       const toolCallEntryIndexById = new Map<string, number>();
+      const streamingFunctionCallIds = new Set<string>();
       const requestedToolsByCallId = new Map<
         string,
         SerializedTool | SerializedHandoff
@@ -1396,7 +1397,38 @@ export class AiSdkModel implements Model {
           yield { type: 'response_started' };
         }
 
-        yield { type: 'model', event: part };
+        const rawEvent: protocol.StreamEventGenericItem = {
+          type: 'model',
+          event: part,
+        };
+        if (part.type === 'tool-input-start') {
+          const tool = requestedToolsByName.get(part.toolName);
+          if (
+            tool &&
+            'type' in tool &&
+            tool.type === 'function' &&
+            !part.providerExecuted
+          ) {
+            streamingFunctionCallIds.add(part.id);
+            rawEvent.toolInput = {
+              type: 'start',
+              callId: part.id,
+              name: part.toolName,
+            };
+          }
+        } else if (
+          part.type === 'tool-input-delta' &&
+          streamingFunctionCallIds.has(part.id)
+        ) {
+          rawEvent.toolInput = {
+            type: 'delta',
+            callId: part.id,
+            delta: part.delta,
+          };
+        } else if (part.type === 'tool-input-end') {
+          streamingFunctionCallIds.delete(part.id);
+        }
+        yield rawEvent;
 
         switch (part.type) {
           case 'text-delta': {

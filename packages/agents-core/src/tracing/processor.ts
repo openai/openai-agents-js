@@ -82,6 +82,7 @@ export class ConsoleSpanExporter implements TracingExporter {
       return;
     }
 
+    let skipped = 0;
     for (const item of items) {
       if (logger.dontLogModelData || logger.dontLogToolData) {
         console.log(
@@ -96,8 +97,21 @@ export class ConsoleSpanExporter implements TracingExporter {
           `[Exporter] Export trace traceId=${item.traceId} name=${item.name}${item.groupId ? ` groupId=${item.groupId}` : ''}`,
         );
       } else {
-        console.log(`[Exporter] Export span: ${JSON.stringify(item)}`);
+        let serialized: string;
+        try {
+          serialized = JSON.stringify(item);
+        } catch {
+          skipped++;
+          continue;
+        }
+        console.log(`[Exporter] Export span: ${serialized}`);
       }
+    }
+
+    if (skipped > 0) {
+      logger.warn(
+        `[non-fatal] Tracing: skipped ${skipped} of ${items.length} items during serialization.`,
+      );
     }
   }
 }

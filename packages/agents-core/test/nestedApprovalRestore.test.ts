@@ -5,6 +5,8 @@ import {
   RunContext,
   Runner,
   RunState,
+  ToolCallError,
+  UserError,
   tool,
   toolNamespace,
 } from '../src';
@@ -106,6 +108,108 @@ describe('nested approval restoration', () => {
           }),
         ]),
       );
+    },
+  );
+
+  it.each(['display-only', 'JSON string'] as const)(
+    'handles a %s result before publishing a second nested approval',
+    async (representation) => {
+      const result =
+        representation === 'display-only' ? new Uint8Array([1]) : 'retained';
+      const read = vi.fn(async () => result);
+      const approve = vi.fn(async () => 'approved');
+      const nestedModel = new ScriptedModel([
+        [call('approve', 'first')],
+        [call('read', 'result'), call('approve', 'second')],
+      ]);
+      const seen: unknown[][] = [];
+      const nested = new Agent({
+        name: 'Nested',
+        model: nestedModel,
+        tools: [
+          tool({
+            name: 'read',
+            description: '',
+            parameters: z.object({}),
+            execute: read,
+          }),
+          tool({
+            name: 'approve',
+            description: '',
+            parameters: z.object({}),
+            needsApproval: true,
+            execute: approve,
+          }),
+        ],
+        toolUseBehavior: (_context, results) => {
+          seen.push(
+            results
+              .filter((item) => item.type === 'function_output')
+              .map((item) => item.output),
+          );
+          return results.length === 1
+            ? { isFinalOutput: false, isInterrupted: undefined }
+            : {
+                isFinalOutput: true,
+                isInterrupted: undefined,
+                finalOutput: 'nested done',
+              };
+        },
+      });
+      const parent = new Agent({
+        name: 'Parent',
+        model: new ScriptedModel([
+          [functionCall('nested', { input: 'work' }, { callId: 'outer' })],
+          [message('Parent done')],
+        ]),
+        tools: [
+          nested.asTool({ toolName: 'nested', toolDescription: 'Nested' }),
+        ],
+      });
+      const runner = new Runner({ tracingDisabled: true });
+      const paused = await runner.run(parent, 'start');
+      paused.state.approve(paused.interruptions[0]);
+      const toolEnd = vi.fn();
+      parent.on('agent_tool_end', toolEnd);
+      const resume = runner.run(parent, paused.state);
+      if (representation === 'display-only') {
+        const error = await resume.catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(ToolCallError);
+        if (!(error instanceof ToolCallError)) throw error;
+        expect(error.error).toBeInstanceOf(UserError);
+        expect(error.message).toMatch(
+          /Return a JSON-compatible value from the child tool/,
+        );
+        expect(toolEnd).toHaveBeenCalledTimes(1);
+        expect(toolEnd.mock.calls[0][2]).toContain('Cannot request approval');
+        expect(error.state?.getInterruptions()).not.toContainEqual(
+          expect.objectContaining({
+            rawItem: expect.objectContaining({ callId: 'second' }),
+          }),
+        );
+        const childCheckpoint = error.state!.getPendingAgentToolRun(
+          'nested',
+          'outer',
+        )!;
+        const child = await RunState.fromString(nested, childCheckpoint);
+        expect(child.getInterruptions()[0].rawItem).toMatchObject({
+          callId: 'second',
+        });
+        expect(approve).toHaveBeenCalledTimes(1);
+        expect(seen).toEqual([['approved']]);
+      } else {
+        const next = await resume;
+        expect(next.interruptions[0].rawItem).toMatchObject({
+          callId: 'second',
+        });
+        next.state.approve(next.interruptions[0]);
+        const completed = await runner.run(parent, next.state);
+        expect(completed.finalOutput).toBe('Parent done');
+        expect(approve).toHaveBeenCalledTimes(2);
+        expect(seen).toEqual([['approved'], ['retained', 'approved']]);
+      }
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(nestedModel.calls).toHaveLength(2);
     },
   );
 

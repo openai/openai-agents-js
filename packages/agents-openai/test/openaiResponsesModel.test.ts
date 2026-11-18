@@ -6093,6 +6093,83 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it.each([
+    { namespace: undefined, displayName: 'lookup' },
+    { namespace: 'crm', displayName: 'crm.lookup' },
+  ])(
+    'streams $displayName arguments under their call ID and leaves handoffs raw',
+    async ({ namespace, displayName }) => {
+      const call = {
+        type: 'function_call',
+        id: 'fc_lookup',
+        call_id: 'call_lookup',
+        name: serializedFunctionTool.name,
+        arguments: '',
+        status: 'in_progress',
+      } as const;
+      const handoff = {
+        ...call,
+        id: 'fc_handoff',
+        call_id: 'call_handoff',
+        name: serializedHandoff.toolName,
+      };
+      const frames = [
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { ...call, namespace },
+        },
+        { type: 'response.output_item.added', output_index: 1, item: handoff },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          item_id: handoff.id,
+          delta: '{}',
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 0,
+          item_id: call.id,
+          delta: '{"id":',
+        },
+      ];
+      async function* fakeStream() {
+        yield* frames;
+      }
+      const model = new OpenAIResponsesModel(
+        { responses: { create: () => fakeStream() } } as unknown as OpenAI,
+        'model-stream',
+      );
+      const received: ResponseStreamEvent[] = [];
+      for await (const event of model.getStreamedResponse({
+        input: 'Look up a record.',
+        modelSettings: {},
+        tools: [
+          namespace
+            ? {
+                ...serializedFunctionTool,
+                namespace,
+                namespaceDescription: 'CRM tools.',
+              }
+            : serializedFunctionTool,
+        ],
+        outputType: 'text',
+        handoffs: [serializedHandoff],
+        tracing: false,
+      })) {
+        received.push(event);
+      }
+      const rawEvents = received.filter((event) => event.type === 'model');
+      expect(rawEvents.map((event) => event.event)).toEqual(frames);
+      expect(rawEvents.map((event) => event.toolInput)).toEqual([
+        { type: 'start', callId: 'call_lookup', name: displayName },
+        undefined,
+        undefined,
+        { type: 'delta', callId: 'call_lookup', delta: '{"id":' },
+      ]);
+    },
+  );
+
   it('emits response.completed once as a raw model event', async () => {
     const completedEvent: OpenAIResponseStreamEvent = {
       type: 'response.completed',
