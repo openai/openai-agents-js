@@ -74,20 +74,115 @@ If you pass a non–GPT-5 model name without custom `modelSettings`, the SDK rev
 
 ## Experimental: Codex provider
 
-For `CodexProvider`, install `@openai/codex-sdk@0.166.0` to use its bundled stock Codex App Server, or set `codexOptions.codexPathOverride` to a compatible stock executable. The [`codexTool()` function tool](/openai-agents-js/guides/tools#6-experimental-codex-tool) supports the older 0.86.0 SDK.
+`CodexProvider` runs Agents SDK model calls through the stock Codex CLI's App Server. Your agent can keep the same SDK tools, handoffs, guardrails, output schema, and local conversation history when you switch providers. Codex also has native workspace tools, which run under its own permissions.
 
-`CodexProvider` from `@openai/agents-extensions/experimental/codex` has been running agent model calls through the stock Codex App Server. The setup below has been selecting it for the global `run()` utility used in the companion examples on this page, [Running agents](/openai-agents-js/guides/running-agents#server-managed-conversations), and [Sessions](/openai-agents-js/guides/sessions#advanced-history-compaction). Without this setup or another provider override, those examples have been using the default OpenAI provider.
+This provider is experimental and is available on the `feat/simple-codex` branch. The published Agents SDK packages do not yet include it. In a clean repository checkout, switch to that branch before installing dependencies and building:
 
-```ts
-import { setDefaultModelProvider } from '@openai/agents';
-import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
-
-setDefaultModelProvider(new CodexProvider());
+```sh
+git switch feat/simple-codex
+pnpm install
+pnpm build
 ```
 
-Sign in with `codex login` in the same writable `CODEX_HOME` that the application uses. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key` before starting the application. Stock App Server 0.166.0 reads the saved login. On hosts that allow API-key login, passing `codexOptions: { apiKey: process.env.OPENAI_API_KEY }` to `CodexProvider` has been signing in for the lifetime of the child process. It has been leaving the saved CLI login in place. On managed hosts, omitting `apiKey` has been leaving authentication to the host.
+Use the runtime and package-manager versions in the repository's [setup instructions](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/CONTRIBUTING.md#getting-started).
 
-The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs. See the [MCP companions](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) for SDK-managed tool calls, approvals, and streaming in both modes.
+### Set up Codex
+
+Use `@openai/codex-sdk@0.166.0` with its optional CLI dependencies, or set `codexOptions.codexPathOverride` to a compatible stock executable. Automatic executable discovery requires Node.js 22.14 or later; the repository examples that run TypeScript directly require Node.js 22.18 or later in the 22.x line, Node.js 24.x, or Node.js 26 or later.
+
+The SDK package does not put a `codex` command on your shell's `PATH`. Use the CLI package to sign in before starting the application:
+
+```sh
+npx @openai/codex@0.166.0 login
+```
+
+Codex needs a writable `CODEX_HOME`, and the application must use the same directory as the login. For API-key login, use:
+
+```sh
+printenv OPENAI_API_KEY | npx @openai/codex@0.166.0 login --with-api-key
+```
+
+You can instead pass `codexOptions: { apiKey: process.env.OPENAI_API_KEY }` to the provider. On hosts that allow API-key login, the provider signs in for that child process only and leaves the saved CLI login unchanged. On managed hosts, omit this option to use the host's authentication.
+
+### Run the same agent with either provider
+
+Save this code in an application that uses your branch checkout. Run it from a Git repository. Set `USE_CODEX=1` to choose Codex; omit the variable to use the default OpenAI provider and `OPENAI_API_KEY`.
+
+```ts
+import { Agent, Runner, tool } from '@openai/agents';
+import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
+import { z } from 'zod';
+
+const lookupOrder = tool({
+  name: 'lookup_order',
+  description: 'Look up an order status.',
+  parameters: z.object({ orderId: z.string() }),
+  execute: async ({ orderId }) => ({ orderId, status: 'shipped' }),
+});
+const agent = new Agent({
+  name: 'Order assistant',
+  instructions: 'Use lookup_order to answer order questions.',
+  tools: [lookupOrder],
+  modelSettings: { toolChoice: 'required' },
+});
+const runner = new Runner({
+  tracingDisabled: true,
+  modelProvider:
+    process.env.USE_CODEX === '1'
+      ? new CodexProvider({
+          threadOptions: { sandboxMode: 'read-only', approvalPolicy: 'never' },
+        })
+      : undefined,
+});
+const result = await runner.run(agent, 'What is the status of order A123?');
+console.log(result.finalOutput);
+```
+
+The example disables SDK tracing so a saved Codex login is sufficient for Codex mode. SDK trace export needs separate OpenAI credentials; enable tracing when those credentials are configured.
+
+The answer should report that order A123 has shipped. `toolChoice: 'required'` requires an SDK tool or handoff request. It does not guarantee that the tool succeeds; check tool outputs when that is part of your application's contract.
+
+Leaving `model` unset lets Codex choose its configured model. An explicit model name must be available through the selected provider. An explicit model **object**, such as `OpenAIChatCompletionsModel`, handles its own inference and bypasses the provider switch.
+
+For an application-wide default, call `setDefaultModelProvider(new CodexProvider())` before using `run()`. Use a `Runner` when the choice should apply only to particular runs.
+
+### Tools, streaming, and history
+
+The SDK executes function tools and handoffs, including SDK approvals and guardrails. Codex supplies model output and native tool execution. Each model step starts a fresh ephemeral Codex thread; the SDK replays supported messages and SDK tool results. Use a client-managed [`Session`](/openai-agents-js/guides/sessions), such as `MemorySession`, or `result.history` to continue a conversation.
+
+Streaming uses the normal `runner.run(agent, input, { stream: true })` interface. Text deltas arrive during generation. SDK function arguments arrive together in one update. Strict structured output is enforced during generation. For `strict: false`, the provider supplies the schema as instructions and the Runner parses the returned JSON.
+
+Deferred tools require a model whose stock Codex catalog advertises tool search. A model can accept ordinary function calls without supporting native discovery. The [tool-search example](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/examples/tools/tool-search.ts) accepts `--codex` and requires `CODEX_MODEL`; it checks discovery and tool execution. Audio input likewise requires a model whose catalog entry advertises audio support.
+
+Native Codex commands follow `threadOptions.workingDirectory`, `sandboxMode`, and `approvalPolicy`. The working directory defaults to the current directory and must be in a Git repository unless `skipGitRepoCheck: true` is set. Native approval requests are not SDK approval interruptions: the provider rejects those requests. For unattended work, choose a sandbox policy appropriate to the task and `approvalPolicy: 'never'`.
+
+For `SandboxAgent`, or an ordinary agent with SDK local shell or apply-patch tools, the provider disables native workspace execution and other Codex integrations so the SDK executor owns filesystem access and approvals. Configured native Codex MCP servers must be disabled for these runs; use [SDK-managed MCP](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) instead. Other ordinary agents retain Codex's native workspace tools.
+
+A native command may change files before a timeout, cancellation, or output guardrail rejection. Those failures do not roll back workspace changes. The Runner treats Codex calls as unsafe to replay automatically.
+
+### Supported settings and limitations
+
+The provider accepts `reasoning.effort`, `reasoning.summary`, `text.verbosity`, `toolChoice: 'auto' | 'required'`, `store: false`, `timeoutMs`, `retry`, and `preserveRawUsage`. Supported reasoning and verbosity values depend on the model. Implicit SDK model defaults do not override Codex's configuration. With `preserveRawUsage: true`, inspect `result.rawResponses[n].rawUsage` for Codex's original usage data.
+
+Configure Codex-specific settings through `codexOptions` and `threadOptions`. Connected apps and native web search are disabled by default. Ordinary agents can enable them with `codexOptions.config.features.apps` and `threadOptions.webSearchMode`, respectively. SDK sandbox runs keep those integrations disabled.
+
+A provider switch does not translate service-specific APIs. Unsupported inputs and settings fail explicitly.
+
+| Feature | Codex behavior or alternative |
+| --- | --- |
+| SDK function tools, handoffs, guardrails, structured output, local history | Supported. SDK-managed MCP tools use the same function-tool mechanism. |
+| Images and PDFs | Local images and image data URLs are supported. Direct remote image URLs, file inputs, and hosted file IDs are unsupported. The [media examples](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/examples/basic/README.md#running-locally-with-codex) show application-side image loading and PDF text extraction. |
+| `conversationId`, `previousResponseId`, and stored prompt IDs | Responses API features. Use local sessions, `result.history`, or application-owned prompt text. |
+| History compaction | `OpenAIResponsesCompactionSession` calls `responses.compact` separately and requires OpenAI credentials, even when the agent uses a Codex login. Its model is independent of the agent's model. |
+| Hosted MCP and connector IDs | Responses API features. Connect through the SDK's MCP client when the server supports that transport and you have its required credentials. |
+| Hosted file search, code interpreter, image generation, computer use, and programmatic tool callers | Their Responses tool APIs are unsupported. Local code execution can use an SDK shell tool, but does not reproduce hosted containers or events. |
+| Hosted web search | Requires a compatible Codex model and host policy. Domain filters use Codex configuration. Responses source-inclusion metadata is unsupported; see the [filtered-search example](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/examples/tools/web-search-filters.ts) for a check based on completed page opens. |
+| Named or disabled tool choice, parallel-tool settings, sampling controls, output-token limits, and prompt-cache controls | Unsupported. Use a provider that implements these request settings. |
+| Realtime, voice, or an explicitly constructed OpenAI model | These select their own model or transport. Changing the text-model provider does not switch them to Codex. |
+
+[`codexTool()`](/openai-agents-js/guides/tools#6-experimental-codex-tool) is a separate function tool: an outer agent asks Codex to perform a workspace task. It does not replace the outer model provider, and it supports `@openai/codex-sdk` starting at 0.86.0. Applications can use it with the default OpenAI provider.
+
+See the [runnable provider examples](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/examples/tools/codex-provider.md) for native file writes, a combined image/tool/handoff workflow, and Linux sandbox troubleshooting.
 
 ## OpenAI provider configuration
 
@@ -304,7 +399,7 @@ GPT-5.6 adds request-level reasoning modes and explicit prompt-cache breakpoints
 
 Explicit breakpoints are supported on GPT-5.6 and later models. The supported content-part types and breakpoint limits vary by API; see the official [prompt cache breakpoint guide](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints) for current details.
 
-The companion example has been using the [configured provider](#experimental-codex-provider) and setting only `reasoning.effort: 'medium'`. Omitting `model` has been leaving model selection to the configured provider. The original GPT-5.6 example above has been demonstrating the separate Responses-only `reasoning.mode` and `reasoning.context` controls alongside explicit prompt caching. `CodexProvider` has been rejecting those controls and `promptCacheOptions` rather than translating them into Codex settings.
+The companion example uses the [configured provider](#experimental-codex-provider) and sets only `reasoning.effort: 'medium'`. Omitting `model` leaves model selection to the provider. The GPT-5.6 example above demonstrates the separate Responses-only `reasoning.mode`, `reasoning.context`, and prompt-cache controls. `CodexProvider` rejects those controls and `promptCacheOptions`.
 
 <Code
   lang="typescript"

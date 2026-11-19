@@ -162,7 +162,7 @@ You can create a conversation once using [Conversations API](https://platform.op
   title="Reusing a server conversation"
 />
 
-The companion example has been using the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and keeping conversation history in a `MemorySession`. Reusing the session has been carrying the earlier turns into each request without a server conversation ID. `MemorySession` has been storing history only for the lifetime of the process; the [sessions guide](/openai-agents-js/guides/sessions) has been covering persistent stores.
+The companion example uses the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and stores history in a `MemorySession`. Reuse that session to carry earlier turns into each request without a server conversation ID. `MemorySession` lasts only for the lifetime of the process; see the [sessions guide](/openai-agents-js/guides/sessions) for persistent stores.
 
 <Code
   lang="typescript"
@@ -180,7 +180,7 @@ If you want to start only with Responses API anyway, you can chain each request 
   title="Chaining with previousResponseId"
 />
 
-The companion example has been using the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and passing `first.history` and the new user message into the next run. The application has been owning the replayed history without relying on `lastResponseId` or server response chaining.
+The companion example uses the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and passes `first.history` with the new user message into the next run. The application owns the replayed history and does not need `lastResponseId` or server response chaining.
 
 <Code
   lang="typescript"

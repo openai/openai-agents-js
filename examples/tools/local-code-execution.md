@@ -1,10 +1,12 @@
 # Local code execution with either provider
 
-This companion has been using a local Python 3 interpreter to solve the same kind of numeric problem as the hosted code-interpreter example. It has been streaming tool events and returning a structured answer. It has been checking the actual command output and final numeric answer independently.
+This example uses a local Python 3 interpreter to solve a numeric problem, streams SDK tool events, and returns a structured answer. It checks the command output and final numeric answer independently.
 
 ## Setup and run
 
-Use the repository's normal JavaScript setup and install Python 3 on the host. The default provider has been using `OPENAI_API_KEY`. Codex mode has been using the stock CLI's authentication and configuration, as described in [the provider guide](./codex-provider.md). Optional `OPENAI_MODEL` and `CODEX_MODEL` variables have been selecting the model for each mode.
+Follow [Codex provider setup](./codex-provider.md) and install Python 3 on the host. The default provider uses `OPENAI_API_KEY`; Codex uses the stock CLI's authentication. Optional `OPENAI_MODEL` and `CODEX_MODEL` variables select the model for each mode.
+
+`UnixLocalSandboxClient` runs commands as your current user and does not provide OS isolation. Use a trusted, disposable development host.
 
 From the repository root:
 
@@ -13,10 +15,6 @@ pnpm -F tools exec tsx local-code-execution.ts
 pnpm -F tools exec tsx local-code-execution.ts --codex
 ```
 
-Both commands have been asking the model to run Python through the SDK's `exec_command` tool. They have been printing `Verified local computation.` only after observing a tool call, a matching numeric tool result, and a matching structured final answer. No extra service account or hosted code-interpreter container has been participating.
+Both commands ask the model to run Python through the SDK's `exec_command` tool. They print `Verified local computation.` only after a tool call produces the expected number and the structured answer matches. The example closes the temporary session on success or failure.
 
-## Execution boundary
-
-`UnixLocalSandboxClient` has been running commands directly as your current user. It has not been providing OS isolation. Use this example only on a trusted, disposable development host. The example has been closing the temporary session on success and failure.
-
-The original [hosted code-interpreter example](./code-interpreter.ts) has been using the Responses API's managed container and emitting `code_interpreter_call` events. This companion has been emitting SDK shell-tool events instead; it has not been emulating hosted container IDs or that API's persistence and isolation.
+The original [hosted code-interpreter example](./code-interpreter.ts) uses a Responses API managed container and emits `code_interpreter_call` events. This local example emits SDK shell-tool events. It does not provide hosted container IDs, persistence, or isolation.

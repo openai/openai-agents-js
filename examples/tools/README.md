@@ -1,6 +1,6 @@
 # Tool Integrations
 
-These examples demonstrate the hosted tools provided by the Agents SDK.
+These examples demonstrate hosted tools, SDK-managed local tools, and the Codex integration. Hosted Responses tools require that provider. See the [Codex provider examples](./codex-provider.md) for setup, commands that switch providers, and links to supported alternatives.
 
 ## Examples
 

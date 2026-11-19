@@ -81,9 +81,9 @@ Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or 
 
 ## Running locally with Codex
 
-The default commands have been keeping their original provider. In the examples below, `--codex` has been switching to the stock Codex CLI. These paths need access to Codex, but no cloud sandbox, prompt store, or third-party connector.
+These examples provide explicit Codex variants. Follow [Codex provider setup](../tools/codex-provider.md) first. The commands below require Codex access and local tools, but no cloud sandbox or connector account. Omitting the switches keeps each original example's provider and service requirements.
 
-From the repo root:
+From the repository root:
 
 ```sh
 pnpm -F basic start:previous-response-id --local --codex --stream
@@ -91,8 +91,8 @@ pnpm -F basic start:local-file --codex
 pnpm -F basic start:image-tool-output --codex --file media/image_bison.jpg
 ```
 
-The first command has been remembering the country between two turns using a local SDK session. It hasn't been creating a hosted response ID. The [conversations example](./conversations.ts) has also been accepting `--local --codex`.
+The first command asks two questions in one local SDK session. The second answer uses the country from the first turn. This mode does not create a hosted response ID. The [conversations example](./conversations.ts) also accepts `--local --codex`.
 
-The second has been reading the **text** of the bundled PDF via Poppler's `pdftotext`. Install Poppler first (`poppler-utils` on Debian/Ubuntu, `poppler` with Homebrew). The [file tool](./file-tool-output.ts) has been returning the same extracted text from a function call. Neither path has been interpreting pictures or doing OCR.
+The second command reads the text of the bundled PDF using Poppler's `pdftotext`. Install Poppler first (`poppler-utils` on Debian/Ubuntu, `poppler` with Homebrew). The [file tool](./file-tool-output.ts) returns the same extracted text from a function call. These variants do not interpret pictures or perform OCR.
 
-The third has been passing a JPEG returned by an SDK tool to Codex. Omitting `--file` has been using the sample's public URL. In [remote-image](./remote-image.ts) and [remote-pdf](./remote-pdf.ts), `--codex --file PATH` has likewise been reading a local JPEG or PDF instead of downloading anything. Paths passed to the commands above have been resolving from `examples/basic`, the selected pnpm package. The provider hasn't been fetching arbitrary URLs from prompts.
+The third command returns a JPEG from an SDK tool. Omitting `--file` downloads the sample's public URL in the application. The [remote-image](./remote-image.ts) and [remote-pdf](./remote-pdf.ts) examples also accept `--codex --file PATH` to read a local JPEG or PDF. Relative paths in these pnpm commands resolve from `examples/basic`, the selected package. The provider does not fetch arbitrary URLs from prompts.

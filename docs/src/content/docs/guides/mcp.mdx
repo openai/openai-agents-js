@@ -181,7 +181,7 @@ The constructor also accepts additional MCP TypeScript‑SDK options such as `au
 
 ### SDK-managed companions for hosted MCP examples
 
-The companion examples below have been using the same public `openai/codex` repository question through SDK-managed Streamable HTTP. The SDK has been discovering MCP tools and converting them to function tools with `getAllMcpTools`. Your application has been executing the MCP calls, so these examples have been working with both OpenAI Responses models and the experimental [`CodexProvider`](/openai-agents-js/guides/models#experimental-codex-provider). Hosted MCP tools have been requiring the OpenAI Responses API.
+The companion examples ask the same public `openai/codex` repository question through SDK-managed Streamable HTTP. The SDK discovers MCP tools and converts them to function tools with `getAllMcpTools`. Your application executes the MCP calls, so these examples work with both OpenAI Responses models and the experimental [`CodexProvider`](/openai-agents-js/guides/models#experimental-codex-provider). Hosted MCP tools require the Responses API.
 
 | Hosted example | SDK-managed companion | Behavior |
 | --- | --- | --- |
@@ -198,7 +198,7 @@ pnpm exec tsx examples/docs/mcp/sdkManaged.ts codex
 
 OpenAI mode uses `OPENAI_API_KEY`. Codex mode uses your Codex login or API key. Substitute `sdkManagedHITL.ts` for approval or `sdkManagedStream.ts` for streaming. To override the model, set `OPENAI_MODEL` or `CODEX_MODEL` for the corresponding provider.
 
-The shared setup has been limiting tools to DeepWiki's `ask_wiki_question`. `MCP_SERVER_URL` has been allowing a self-hosted or local Streamable HTTP endpoint exposing that same tool and compatible input schema. Local endpoints have been receiving calls from your application without requiring public access from the Responses API. Codex has been using a read-only workspace. The SDK has been handling MCP approvals in the application.
+The shared setup exposes only DeepWiki's `ask_wiki_question`. Set `MCP_SERVER_URL` to use a self-hosted or local Streamable HTTP endpoint with that tool and a compatible input schema. The application calls the endpoint, so it does not need to be publicly accessible to the Responses API. Codex uses a read-only workspace, and the SDK handles MCP approvals.
 
 <Code
   lang="typescript"
@@ -212,7 +212,7 @@ The shared setup has been limiting tools to DeepWiki's `ask_wiki_question`. `MCP
   title="SDK-managed repository query"
 />
 
-The approval example has been setting `needsApproval` on the converted function tools. The SDK has been pausing before executing each MCP tool, then resuming from `result.state` after the user's decision. The question has been requesting read-only public repository information; approval has been demonstrating the same pause before tools with side effects.
+The approval example sets `needsApproval` on the converted function tools. The SDK pauses before each MCP tool call, then resumes from `result.state` after your decision. This read-only query demonstrates the same approval mechanism used for tools with side effects.
 
 <Code
   lang="typescript"
@@ -220,7 +220,7 @@ The approval example has been setting `needsApproval` on the converted function 
   title="Human approval for SDK-managed MCP calls"
 />
 
-The streaming companion has been reading SDK `run_item_stream_event` events and awaiting `result.completed` before reading the final answer and closing the connection. The hosted examples above have been showing provider-specific `response.mcp_call.*` events.
+The streaming companion reads SDK `run_item_stream_event` events and awaits `result.completed` before reading the final answer and closing the connection. The hosted examples above use the separate Responses-specific `response.mcp_call.*` events.
 
 <Code
   lang="typescript"
