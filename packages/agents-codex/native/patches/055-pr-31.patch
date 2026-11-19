@@ -342,7 +342,7 @@ index afee936b7813e15c5db9fa06fe31498c5b1462df..70791b39a510dce49a5f9d37f8a02a51
              .unwrap();
          state
 diff --git a/codex-rs/core/src/realtime_conversation/tool_task.rs b/codex-rs/core/src/realtime_conversation/tool_task.rs
-index 2f911d8a8394bf098b4ced4abaf6dae193b5ec9c..fa2d007b6ee635868c90c9371eed67400f953c5b 100644
+index 2f911d8a8394bf098b4ced4abaf6dae193b5ec9c..1057e5b62691ea1181d224a32e77d47b6682de40 100644
 --- a/codex-rs/core/src/realtime_conversation/tool_task.rs
 +++ b/codex-rs/core/src/realtime_conversation/tool_task.rs
 @@ -175,6 +175,24 @@ pub(crate) fn retained_voice_agent_source(
@@ -370,22 +370,20 @@ index 2f911d8a8394bf098b4ced4abaf6dae193b5ec9c..fa2d007b6ee635868c90c9371eed6740
  pub(crate) fn release_voice_agent_sources(session: &Arc<Session>, generation: &str) {
      if let Some(registry) = session
          .services
-@@ -1073,6 +1091,11 @@ impl RealtimeToolTask {
+@@ -1073,13 +1091,27 @@ impl RealtimeToolTask {
          if source.voice_expected.is_some() {
              // These names have already been admitted by this response's exact
              // source. Keep the opening thread policy for every other step.
-+            let admitted_names = self
++            let allowed_tools = self
 +                .calls
 +                .iter()
 +                .map(|call| call.native_name.clone())
-+                .collect::<std::collections::HashSet<_>>();
++                .collect::<Vec<_>>();
              execution.tool_policy = Some(Arc::new(codex_extension_api::ToolPolicy {
-                 allowed_tools: Some(
-                     self.calls
-@@ -1080,6 +1103,20 @@ impl RealtimeToolTask {
-                         .map(|call| call.native_name.clone())
-                         .collect(),
-                 ),
+-                allowed_tools: Some(
+-                    self.calls
+-                        .iter()
+-                        .map(|call| call.native_name.clone())
 +                allowed_mcp_tools: Some(
 +                    execution
 +                        .mcp
@@ -394,12 +392,13 @@ index 2f911d8a8394bf098b4ced4abaf6dae193b5ec9c..fa2d007b6ee635868c90c9371eed6740
 +                        .flat_map(|binding| binding.tools().iter())
 +                        .filter_map(|tool| {
 +                            let name = tool.canonical_tool_name();
-+                            admitted_names.contains(&name).then(|| {
++                            allowed_tools.contains(&name).then(|| {
 +                                (tool.server_name.clone(), tool.tool.name.to_string(), name)
 +                            })
 +                        })
-+                        .collect(),
-+                ),
+                         .collect(),
+                 ),
++                allowed_tools: Some(allowed_tools),
                  ..session.tool_policy.as_ref().clone()
              }));
          }
