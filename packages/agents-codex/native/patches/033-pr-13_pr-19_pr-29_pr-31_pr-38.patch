@@ -9924,12 +9924,12 @@ index 50a9d8d33b1a35ef6a6d9e8f42a2f52955423422..4ada6e46f0aaf135a50443011bdd503b
  
      pub(crate) async fn realtime_sideband_headers(
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 9ad2c5bf41de1af71d68381b7581237b60a7fe30..d8bc923c2e6f6279d74e472193020943ae841cc9 100644
+index 5a5e48a75001ce8803890cf6b2240895ab3de050..b6abbc6b98ec685a00a12a6a1038443f8ae0073d 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
-@@ -2881,3 +2881,111 @@ mod direct_model_http_transport {
-         assert_eq!(constructions.load(Ordering::SeqCst), 1);
-     }
+@@ -2651,3 +2651,111 @@ async fn authentication_recovery_rotates_websocket_credentials() -> anyhow::Resu
+     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+     Ok(())
  }
 +
 +#[test]

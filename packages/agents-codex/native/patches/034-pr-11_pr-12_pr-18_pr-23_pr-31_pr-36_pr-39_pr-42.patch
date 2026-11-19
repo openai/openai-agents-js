@@ -26156,7 +26156,7 @@ index e23385b0c2c145c7a66a45b5a6bee4d137531e3d..ca24c02c8bc660246d4b402ab1728a6a
 +    assert_eq!(prompt.get_formatted_input_for_request(&model), standard);
 +}
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index d8bc923c2e6f6279d74e472193020943ae841cc9..5fb25d222081c310a71ea8356e0b8d43a1aa12bc 100644
+index b6abbc6b98ec685a00a12a6a1038443f8ae0073d..c72e799cf13ad428c6048b9fc4aaf31aea02d67b 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -1622,6 +1622,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
@@ -26200,53 +26200,8 @@ index d8bc923c2e6f6279d74e472193020943ae841cc9..5fb25d222081c310a71ea8356e0b8d43
      );
      let mut delivered = Vec::new();
      while let Some(event) = stream.next().await {
-@@ -2714,7 +2720,13 @@ mod direct_model_http_transport {
-         assert_eq!(requests.load(Ordering::SeqCst), 1);
-         assert_eq!(streams.load(Ordering::SeqCst), 1);
-         // Count the actual constructor site without retaining transport0060's cache.
--        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 0);
-+        assert_eq!(
-+            client
-+                .state
-+                .physical_transport_attempts
-+                .load(Ordering::SeqCst),
-+            0
-+        );
-     }
- 
-     #[tokio::test]
-@@ -2756,7 +2768,13 @@ mod direct_model_http_transport {
-         assert!(error.to_string().contains("prepared admission refused"));
-         assert_eq!(requests.load(Ordering::SeqCst), 1);
-         assert_eq!(streams.load(Ordering::SeqCst), 0);
--        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 1);
-+        assert_eq!(
-+            client
-+                .state
-+                .physical_transport_attempts
-+                .load(Ordering::SeqCst),
-+            1
-+        );
-         // No upstream send occurs: the actual prepared-admission gate refused it.
-         // This proves construction order, not an injected constructor failure.
-     }
-@@ -2787,7 +2805,13 @@ mod direct_model_http_transport {
-         );
-         assert_eq!(requests.load(Ordering::SeqCst), 0);
-         assert_eq!(streams.load(Ordering::SeqCst), 0);
--        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 0);
-+        assert_eq!(
-+            client
-+                .state
-+                .physical_transport_attempts
-+                .load(Ordering::SeqCst),
-+            0
-+        );
-     }
- 
-     #[tokio::test]
-@@ -2882,6 +2906,42 @@ mod direct_model_http_transport {
-     }
+@@ -2652,6 +2658,42 @@ async fn authentication_recovery_rotates_websocket_credentials() -> anyhow::Resu
+     Ok(())
  }
  
 +#[tokio::test]

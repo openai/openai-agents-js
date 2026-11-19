@@ -1,11 +1,11 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeError, NativeProvider } from '../../src';
 import { binding, type JsonObject } from '../../src/runtime/binding';
+import { loopbackTls } from './fixtures/loopback-tls';
 import { ModelServer, message } from './fixtures/model-server';
 
 function responseFrames(
@@ -88,14 +88,6 @@ async function plainWebsocketPeer(
   streamMaxRetries = 0,
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'agents-plain-wss-'));
-  const ca = join(directory, 'ca.pem');
-  const caKey = join(directory, 'ca.key');
-  const cert = join(directory, 'server.pem');
-  const key = join(directory, 'server.key');
-  const csr = join(directory, 'server.csr');
-  const extensions = join(directory, 'extensions');
-  const openssl = (...args: string[]) =>
-    execFileSync('openssl', args, { stdio: 'ignore' });
   const peer = new WebSocketServer({
     noServer: true,
     perMessageDeflate: false,
@@ -107,59 +99,9 @@ async function plainWebsocketPeer(
     );
     await rm(directory, { recursive: true, force: true });
   });
-  openssl(
-    'req',
-    '-x509',
-    '-newkey',
-    'rsa:2048',
-    '-nodes',
-    '-days',
-    '1',
-    '-subj',
-    '/CN=Plain WSS test CA',
-    '-keyout',
-    caKey,
-    '-out',
-    ca,
-  );
-  openssl(
-    'req',
-    '-newkey',
-    'rsa:2048',
-    '-nodes',
-    '-subj',
-    '/CN=localhost',
-    '-keyout',
-    key,
-    '-out',
-    csr,
-  );
-  await writeFile(
-    extensions,
-    'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n',
-  );
-  openssl(
-    'x509',
-    '-req',
-    '-days',
-    '1',
-    '-in',
-    csr,
-    '-CA',
-    ca,
-    '-CAkey',
-    caKey,
-    '-CAcreateserial',
-    '-extfile',
-    extensions,
-    '-out',
-    cert,
-  );
+  const { ca, tls } = await loopbackTls(directory);
   vi.stubEnv('CODEX_CA_CERTIFICATE', ca);
-  const server = new ModelServer([], [], undefined, undefined, undefined, {
-    key: await readFile(key),
-    cert: await readFile(cert),
-  });
+  const server = new ModelServer([], [], undefined, undefined, undefined, tls);
   const generations: {
     request: JsonObject;
     socket: WebSocket;

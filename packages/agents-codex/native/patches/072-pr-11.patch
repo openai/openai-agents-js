@@ -329,26 +329,6 @@ index 0cca60a5e176c7209a9dcbe96fd7420e16f362e6..c1e999b8f3a2f04274ac867ea8d36d9c
                  )
                  .await;
              if let Some(original_item_ids) = original_item_ids {
-diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 318a8b6ec5661d37592caff14abaf8ab1019edfe..e3880c70d02cdefe6ce051af6c44aac87a10ba30 100644
---- a/codex-rs/core/src/client_tests.rs
-+++ b/codex-rs/core/src/client_tests.rs
-@@ -2831,6 +2831,7 @@ mod direct_model_http_transport {
-             http::HeaderValue::from_bytes(b"\xe9").unwrap(),
-         );
-         let transport = super::super::ModelResponsesTransport {
-+            attempts: None,
-             direct: Some(Arc::new(move |request| {
-                 *target.lock().unwrap() = Some(request.headers);
-                 Box::pin(async { Err(TransportError::Build("captured".into())) })
-@@ -2891,6 +2892,7 @@ mod direct_model_http_transport {
-         let physical = codex_client::ReqwestTransport::from_http_client(physical);
-         let constructions = AtomicUsize::new(0);
-         let transport = super::super::ModelResponsesTransport {
-+            attempts: None,
-             direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
-             fallback: || {
-                 constructions.fetch_add(1, Ordering::SeqCst);
 diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
 index 28b5147d4938ad7f1bffb15c720b4cb2f078d8c2..609d5a6b082f0427b04092deddc15a3ec2c3cdb6 100644
 --- a/codex-rs/core/src/codex_delegate.rs

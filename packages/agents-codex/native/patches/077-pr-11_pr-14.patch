@@ -727,19 +727,6 @@ index 5b293d76c2a848ced7251b7e1ebaac79c7555d44..f6860933f13a30a7aaec7b0d26f5b582
  }
  
  fn emit_auth_recovery_event(
-diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index e3880c70d02cdefe6ce051af6c44aac87a10ba30..dffb9efc6a4c41160c4ac9f12bfe6fb4b85b91cc 100644
---- a/codex-rs/core/src/client_tests.rs
-+++ b/codex-rs/core/src/client_tests.rs
-@@ -2691,7 +2691,7 @@ mod direct_model_http_transport {
-                 return None;
-             }
-             let streams = self.streams.clone();
--            Some(Arc::new(move |_| {
-+            Some(Arc::new(move |_, _| {
-                 let streams = streams.clone();
-                 Box::pin(async move {
-                     streams.fetch_add(1, Ordering::SeqCst);
 diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
 index b0bc5c43b302db6d2646329a3d61a790ddcb5a50..3db839417d0776061bd82c041fa00fb6e09f0200 100644
 --- a/codex-rs/core/src/model_request.rs

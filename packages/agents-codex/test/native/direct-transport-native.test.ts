@@ -1,3 +1,9 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -15,6 +21,7 @@ import {
   type JsonObject,
 } from '../../src/runtime/binding';
 import { NativeProviderRoutes } from '../../src/runtime/http-model';
+import { loopbackTls } from './fixtures/loopback-tls';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(async () => {
@@ -335,3 +342,35 @@ it('uses direct HTTP after a native WebSocket upgrade is rejected', async () => 
   expectDirect(counts);
   server.assertExhausted();
 }, 30_000);
+
+it('reads the current CA bundle for a fresh provider before sending requests', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agents-provider-ca-'));
+  async function endpoint(name: string, replies: number) {
+    const { tls } = await loopbackTls(join(dir, name));
+    const server = new ModelServer(
+      Array.from({ length: replies }, () => [message(name)]),
+      [],
+      undefined,
+      undefined,
+      undefined,
+      tls,
+    );
+    return { url: `https://127.0.0.1:${await server.port()}/v1`, server };
+  }
+  try {
+    const a = await endpoint('a', 3);
+    const b = await endpoint('b', 2);
+    // Rust reads the process environment. A Vitest worker's stubEnv cannot set it.
+    const child = fileURLToPath(
+      new URL('./fixtures/direct-ca-session.mjs', import.meta.url),
+    );
+    await promisify(execFile)(process.execPath, [child, dir, a.url, b.url], {
+      env: { ...process.env, CODEX_CA_CERTIFICATE: join(dir, 'active.pem') },
+      timeout: 45_000,
+    });
+    a.server.assertExhausted();
+    b.server.assertExhausted();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
