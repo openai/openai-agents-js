@@ -118,10 +118,10 @@ index abf0bf0d7041d3ce2c5b3e4a5f8f5535e064e31b..fce0f0cdd0ed3af1607e6907653e63d6
  fn map_api_error_details(err: ApiError) -> CodexErr {
 diff --git a/codex-rs/codex-api/src/api_rate_limits.rs b/codex-rs/codex-api/src/api_rate_limits.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7bec674e43676bcc3a77aed1fc50c0785738b9f
+index 0000000000000000000000000000000000000000..01493f5af2bec349fe15c72384b8129c8f793c57
 --- /dev/null
 +++ b/codex-rs/codex-api/src/api_rate_limits.rs
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,111 @@
 +//! Reads only documented API rate-limit and retry fields from a provider response.
 +
 +use codex_http_client::RetryAfter;
@@ -129,7 +129,6 @@ index 0000000000000000000000000000000000000000..a7bec674e43676bcc3a77aed1fc50c07
 +use codex_protocol::protocol::ApiRateLimits;
 +use http::HeaderMap;
 +use regex_lite::Regex;
-+use std::sync::OnceLock;
 +
 +pub(crate) fn parse_api_rate_limits(headers: &HeaderMap) -> Option<ApiRateLimits> {
 +    let snapshot = ApiRateLimits {
@@ -169,13 +168,9 @@ index 0000000000000000000000000000000000000000..a7bec674e43676bcc3a77aed1fc50c07
 +
 +#[expect(clippy::expect_used, reason = "the duration expression is fixed")]
 +fn is_duration(value: &str) -> bool {
-+    static DURATION: OnceLock<Regex> = OnceLock::new();
 +    value.len() <= 64
-+        && DURATION
-+            .get_or_init(|| {
-+                Regex::new(r"\A(?:[0-9]+(?:\.[0-9]+)?(?:ms|us|ns|h|m|s))+\z")
-+                    .expect("valid duration expression")
-+            })
++        && Regex::new(r"\A(?:[0-9]+(?:\.[0-9]+)?(?:ms|us|ns|h|m|s))+\z")
++            .expect("valid duration expression")
 +            .is_match(value)
 +}
 +
