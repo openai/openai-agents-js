@@ -1222,6 +1222,91 @@ describe.runIf(enabled)('portable Rust control', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it.each([262_143, 262_144, 262_145])(
+    'checks the serialized %i-byte request and runs the tool only once on replay',
+    async (bytes) => {
+      const limit = 256 * 1024;
+      const definition = agent();
+      const onError = vi.fn();
+      const frames: { item?: { type: string } }[] = [];
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update') {
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            }
+          },
+          close() {},
+        },
+        { ...definition.options, onError },
+      );
+      const call = { ...item, arguments: JSON.stringify({ value: 'é' }) };
+      const size = () =>
+        Buffer.byteLength(
+          JSON.stringify({
+            namespace: null,
+            call_id: call.call_id,
+            item_id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+            response_id: 'response-1',
+          }),
+        );
+      const padding = bytes - size();
+      call.arguments = JSON.stringify({ value: 'é' + 'x'.repeat(padding) });
+      expect(size()).toBe(bytes);
+      // The callback's output should fit regardless of the input size.
+      definition.execute.mockResolvedValue('ok');
+      try {
+        await session.start();
+        session.receive({
+          type: 'response.created',
+          response: { id: 'response-1' },
+        });
+        session.receive({
+          type: 'response.output_item.done',
+          response_id: 'response-1',
+          item: call,
+        });
+        const completed = {
+          type: 'response.done',
+          response: { id: 'response-1', status: 'completed', output: [call] },
+        };
+        session.receive(completed);
+        session.receive(completed);
+        const results = () =>
+          frames.filter((frame) => frame.item?.type === 'function_call_output');
+        if (bytes <= limit) {
+          await vi.waitFor(() => expect(results()).toHaveLength(1));
+          expect(definition.onApproval).toHaveBeenCalledOnce();
+          expect(definition.execute).toHaveBeenCalledOnce();
+          expect(onError).not.toHaveBeenCalled();
+        } else {
+          await vi.waitFor(() =>
+            expect(onError).toHaveBeenCalledWith(
+              expect.objectContaining({
+                message: 'SDK Realtime function request exceeds capacity',
+              }),
+            ),
+          );
+          expect(definition.onApproval).not.toHaveBeenCalled();
+          expect(definition.execute).not.toHaveBeenCalled();
+          expect(results()).toHaveLength(0);
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it('rejects a changed provider function before invoking the host callback', async () => {
     const definition = agent();
     const onError = vi.fn();

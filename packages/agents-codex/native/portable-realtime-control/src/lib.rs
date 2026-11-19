@@ -1,14 +1,71 @@
 //! Target-neutral Realtime control. Hosts execute effects; they never admit calls.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use shared_realtime_control::{
-    CallClaim, FunctionCall, MAX_CALL_BYTES, ResponseCreateState, contains_expected,
-};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CALLS: usize = 256;
 const MAX_OBSERVED_ITEMS: usize = 4096;
+
+#[path = "../../.upstream/reviewed-codex/codex-rs/codex-api/src/endpoint/realtime_websocket/session_match.rs"]
+mod session_match;
+use session_match::contains_expected;
+
+const MAX_CALL_BYTES: usize = 256 * 1024;
+
+#[derive(Default)]
+struct PendingDefault {
+    sdk_response_id: Option<String>,
+    active_default_response: bool,
+    pending_create: bool,
+}
+
+impl PendingDefault {
+    fn mark_started(&mut self) {
+        self.active_default_response = true;
+    }
+
+    fn raced_active_response(&mut self) {
+        self.mark_started();
+        self.pending_create = true;
+    }
+
+    fn request_create(&mut self) -> bool {
+        self.pending_create = self.active_default_response;
+        !self.pending_create
+    }
+
+    fn finish_and_take_pending(&mut self) -> bool {
+        self.active_default_response = false;
+        std::mem::take(&mut self.pending_create)
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct FunctionCall {
+    namespace: Option<String>,
+    call_id: String,
+    item_id: String,
+    name: String,
+    arguments: String,
+    response_id: Option<String>,
+}
+
+impl FunctionCall {
+    fn validate(&self) -> Result<(), String> {
+        if self.namespace.is_some() {
+            return Err("Namespaced Realtime functions are not supported".into());
+        }
+        if serde_json::to_vec(self)
+            .map_err(|_| "Invalid function request")?
+            .len()
+            > MAX_CALL_BYTES
+        {
+            return Err("SDK Realtime function request exceeds capacity".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -216,9 +273,7 @@ enum CallPhase {
 }
 struct Call {
     request: FunctionCall,
-    fingerprint: [u8; 32],
     phase: CallPhase,
-    claim: CallClaim,
     needs_approval: bool,
     output: Option<String>,
     background: bool,
@@ -308,7 +363,7 @@ pub struct Control {
     detached_guardrails: BTreeMap<String, (String, bool)>,
     last_completed: Option<String>,
     batches: BTreeMap<String, Batch>,
-    responses: ResponseCreateState<()>,
+    responses: PendingDefault,
     next_send: u64,
     next_cancel: u64,
     pending_send: BTreeSet<u64>,
@@ -370,7 +425,7 @@ impl Default for Control {
             detached_guardrails: BTreeMap::new(),
             last_completed: None,
             batches: BTreeMap::new(),
-            responses: ResponseCreateState::default(),
+            responses: PendingDefault::default(),
             next_send: 0,
             next_cancel: 0,
             pending_send: BTreeSet::new(),
@@ -784,7 +839,7 @@ impl Control {
         self.deletion_order.clear();
         self.incoming.clear();
         self.incoming_bytes = 0;
-        self.responses = ResponseCreateState::default();
+        self.responses = PendingDefault::default();
         self.response_tools.clear();
         self.retired_responses.clear();
         self.retired_response_order.clear();
@@ -2052,7 +2107,7 @@ impl Control {
                 .into_iter()
                 .map(|response_id| Effect::Retire { response_id }),
         );
-        self.responses = ResponseCreateState::default();
+        self.responses = PendingDefault::default();
         Ok(())
     }
     fn release_guardrail(&mut self, effects: &mut Vec<Effect>) {
@@ -2669,7 +2724,7 @@ impl Control {
                         false
                     } else {
                         // An automatic response may end before its active-response error arrives.
-                        self.responses.mark_finished().is_some()
+                        self.responses.finish_and_take_pending()
                     }
                 };
                 if !ids.is_empty() || !hosted_ids.is_empty() || self.batches.contains_key(&id) {
@@ -2699,7 +2754,7 @@ impl Control {
                     }
                     for call_id in ids {
                         let call = self.calls.get_mut(&call_id).ok_or("Missing function")?;
-                        if !call.claim.claim() {
+                        if call.phase != CallPhase::Discovered {
                             return Err("Function already admitted".into());
                         }
                         if call.needs_approval {
@@ -2726,7 +2781,7 @@ impl Control {
         Ok(())
     }
     fn discover(&mut self, request: FunctionCall) -> Result<(), String> {
-        let fingerprint = request.fingerprint()?;
+        request.validate()?;
         let tools = if let Some(owner) = request
             .response_id
             .as_ref()
@@ -2750,7 +2805,7 @@ impl Control {
             .needs_approval;
 
         if let Some(old) = self.calls.get(&request.call_id) {
-            if old.fingerprint != fingerprint || old.request.response_id != request.response_id {
+            if old.request != request {
                 return Err("Realtime function identity changed".into());
             }
             return Ok(());
@@ -2762,9 +2817,7 @@ impl Control {
             request.call_id.clone(),
             Call {
                 request,
-                fingerprint,
                 phase: CallPhase::Discovered,
-                claim: CallClaim::default(),
                 needs_approval,
                 output: None,
                 background: false,

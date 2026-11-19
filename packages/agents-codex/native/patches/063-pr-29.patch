@@ -221,10 +221,10 @@ index 7c9fb1c1ee6e8cdb758a666b610a760c389e25c6..ac8d1b02cc34b8e437a2324fcedb7cd6
          handoff_id: call_id.to_string(),
          item_id,
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599a40eaa12 100644
+index ac2d181114fbe72447b179d11b6293ccba6f24f7..b00224ce43fc09218e40e88426c600e660967e87 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-@@ -268,10 +268,12 @@ enum PendingPhase {
+@@ -270,10 +270,12 @@ enum PendingPhase {
  #[derive(Clone)]
  enum ReceiptState {
      Pending,
@@ -237,7 +237,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
      hosted_owned: bool,
      native_source: Option<Arc<dyn RealtimeNativeSource>>,
      caller_managed_functions: Option<Arc<BTreeSet<String>>>,
-@@ -287,10 +289,20 @@ pub struct RealtimeConfigurationReceipt {
+@@ -289,10 +291,20 @@ pub struct RealtimeConfigurationReceipt {
      result: watch::Receiver<ReceiptState>,
  }
  impl RealtimeConfigurationReceipt {
@@ -258,7 +258,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
                  ReceiptState::Accepted(snapshot) => return Ok(snapshot),
                  ReceiptState::Failed(state) => {
                      return Err(invalid(match state {
-@@ -505,6 +517,10 @@ impl RealtimeConfiguration {
+@@ -507,6 +519,10 @@ impl RealtimeConfiguration {
          &self,
          options: &super::settings::RealtimeResponseOptions,
      ) -> Result<(), ApiError> {
@@ -269,7 +269,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
          if options.tools.is_none() && options.tool_choice.is_none() {
              return Ok(());
          }
-@@ -643,6 +659,7 @@ impl RealtimeConfiguration {
+@@ -645,6 +661,7 @@ impl RealtimeConfiguration {
          payload["event_id"] = Value::String(id.clone());
          let (completion, result) = watch::channel(ReceiptState::Pending);
          state.pending = Some(PendingConfiguration {
@@ -277,7 +277,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
              hosted_owned: accepted.hosted_owned
                  || update.settings.hosted_mcp_tools.is_some()
                  || update.raw_tools.is_some(),
-@@ -910,23 +927,26 @@ impl RealtimeConfiguration {
+@@ -912,23 +929,26 @@ impl RealtimeConfiguration {
              .hosted_mcp
              .function_output_sent(call_id);
      }
@@ -307,7 +307,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
      ) -> bool {
          let mut state = self.inner.state.lock().unwrap();
          let request_owner = state
-@@ -968,7 +988,7 @@ impl RealtimeConfiguration {
+@@ -970,7 +990,7 @@ impl RealtimeConfiguration {
              && state.response_contexts.iter().any(|r| {
                  r.id.as_ref() == response_id
                      && (!require_hosted || r.configuration.hosted_owned)
@@ -316,7 +316,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
              })
              && (if require_hosted {
                  state.hosted_mcp.has_calls(response_id)
-@@ -1528,6 +1548,7 @@ impl SessionReadiness {
+@@ -1530,6 +1550,7 @@ impl SessionReadiness {
                          hosted_mcp: Default::default(),
                          accepted: None,
                          pending: Some(PendingConfiguration {
@@ -324,7 +324,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
                              hosted_owned: wait_for_update,
                              native_source,
                              caller_managed_functions: None,
-@@ -1676,6 +1697,37 @@ impl SessionReadiness {
+@@ -1678,6 +1699,37 @@ impl SessionReadiness {
                              .zip(event["error"]["event_id"].as_str())
                              .is_some_and(|(request, referred)| request == referred)
                  });
@@ -362,7 +362,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
                  let failure = if rejected {
                      ReadyState::Rejected
                  } else {
-@@ -1693,19 +1745,18 @@ impl SessionReadiness {
+@@ -1695,19 +1747,18 @@ impl SessionReadiness {
              Some("error") if media && state.accepted.is_some() => {
                  let error = &event["error"];
                  let code = error["code"].as_str();
@@ -388,7 +388,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
                  let rejected_response_create = state.response_create_pending
                      && event_id.is_some()
                      && state.pending_response_event_id.as_deref() == event_id;
-@@ -2178,8 +2229,130 @@ impl SessionReadiness {
+@@ -2180,8 +2231,130 @@ impl SessionReadiness {
      }
  }
  
@@ -519,7 +519,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
      use super::*;
      use serde_json::json;
  
-@@ -2241,6 +2414,90 @@ mod tests {
+@@ -2243,6 +2416,90 @@ mod tests {
          ));
      }
  
@@ -610,7 +610,7 @@ index 040917438967739f2810040399a2a871525a049c..5131e68289aa8401e6562b5ed3f38599
      #[test]
      fn provider_errors_settle_readiness_without_exposing_payload() {
          let (observer, state) = SessionReadiness::channel(Some(json!({})), true);
-@@ -4560,6 +4817,27 @@ mod tests {
+@@ -4562,6 +4819,27 @@ mod tests {
              );
          }
      }
@@ -865,10 +865,10 @@ index 8723be77e3becc1e74fa0264406284c7805f572c..da303f11215ce2865fa7508d3d5f7301
              handoff_id: "call_123".to_string(),
              item_id: "item_123".to_string(),
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c5623bc51a1 100644
+index 12aa9a0b3017c951a67ca784c4dbf4880b45d77c..ee792042b5228453a73a9cb59e710fc1f2b2ba32 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
-@@ -493,6 +493,8 @@ pub(crate) enum SdkRealtimeCommand {
+@@ -510,6 +510,8 @@ pub(crate) enum SdkRealtimeCommand {
          handoff_id: String,
      },
      Interrupt {
@@ -877,7 +877,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          response_id: Option<String>,
          event_id: Option<String>,
          playback: Option<codex_protocol::protocol::RealtimePlaybackPosition>,
-@@ -561,6 +563,8 @@ struct SdkSeenCall {
+@@ -578,6 +580,8 @@ struct SdkSeenCall {
      response_id: Option<String>,
      accepted_configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
      function_fingerprint: Option<[u8; 32]>,
@@ -886,7 +886,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
  }
  
  #[derive(Debug)]
-@@ -770,16 +774,40 @@ impl SdkRealtimeState {
+@@ -787,16 +791,40 @@ impl SdkRealtimeState {
          &self,
          retire_generation: bool,
          response_id: Option<&str>,
@@ -930,7 +930,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          let mut work = SdkToolRetirement {
              retire_generation,
              ..Default::default()
-@@ -795,12 +823,22 @@ impl SdkRealtimeState {
+@@ -812,12 +840,22 @@ impl SdkRealtimeState {
                          .or(call.request.response_id.as_deref())
                          == response_id
              })
@@ -955,7 +955,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      batch.automatic_retired.store(true, Ordering::Release);
                      batch.pending_create.store(false, Ordering::Release);
                      if response_id.is_none() || retire_generation {
-@@ -814,6 +852,65 @@ impl SdkRealtimeState {
+@@ -831,6 +869,65 @@ impl SdkRealtimeState {
          work.roots = candidates;
          work
      }
@@ -973,7 +973,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
 +                    && response_id.is_none_or(|target| call.response_id.as_deref() == Some(target))
 +                    && match calls.get(*id) {
 +                        Some(function) => {
-+                            function.claim.is_claimed() && function.native_turn_id.is_some()
++                            function.claimed && function.native_turn_id.is_some()
 +                        }
 +                        None => {
 +                            call.function_fingerprint.is_none()
@@ -1021,7 +1021,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      async fn eligible_retired_roots(
          &self,
          roots: &std::collections::HashSet<String>,
-@@ -934,6 +1031,8 @@ impl SdkRealtimeState {
+@@ -951,6 +1048,8 @@ impl SdkRealtimeState {
                  response_id: response_id.map(str::to_owned),
                  accepted_configuration: None,
                  function_fingerprint: None,
@@ -1030,7 +1030,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              },
          );
          self.pending.lock().await.insert(id.to_owned(), false);
-@@ -1170,6 +1269,8 @@ struct NativeResponseRequest {
+@@ -1187,6 +1286,8 @@ struct NativeResponseRequest {
      response_id: String,
      call_id: String,
      accepted: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
@@ -1039,7 +1039,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
  }
  
  #[derive(Debug)]
-@@ -1263,6 +1364,7 @@ impl RealtimeResponseCreateQueue {
+@@ -1280,6 +1381,7 @@ impl RealtimeResponseCreateQueue {
          &mut self,
          writer: &RealtimeWebsocketWriter,
          reason: &str,
@@ -1047,16 +1047,16 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      ) -> anyhow::Result<()> {
          if response_create_pending(writer) {
              self.active_default_response = false;
-@@ -1274,7 +1376,7 @@ impl RealtimeResponseCreateQueue {
-             None => Ok(()),
-             Some(codex_realtime_control::CreateIntent::Native(native)) => {
-                 self.active_default_response =
--                    send_native_response_request(writer, &native).await?;
-+                    send_native_response_request(writer, &native, sdk).await?;
-                 if !self.active_default_response
-                     && writer.configuration().is_some_and(|configuration| {
-                         configuration.response_tools_pending(&native.response_id)
-@@ -1456,6 +1558,7 @@ struct ConversationState {
+@@ -1295,7 +1397,7 @@ impl RealtimeResponseCreateQueue {
+         let explicit = self.take_user_request();
+         if !explicit_user_create && let Some(native) = native {
+             self.active_default_response =
+-                send_native_response_request(writer, &native).await?;
++                send_native_response_request(writer, &native, sdk).await?;
+             if !self.active_default_response
+                 && writer.configuration().is_some_and(|configuration| {
+                     configuration.response_tools_pending(&native.response_id)
+@@ -1475,6 +1577,7 @@ struct ConversationState {
  }
  
  struct RealtimeStart {
@@ -1064,7 +1064,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      adapter: Option<Arc<dyn codex_api::RealtimeAdapter>>,
      connection_auth: Option<crate::client::RealtimeConnectionAuth>,
      hosted_mcp_auto_response: bool,
-@@ -1654,6 +1757,7 @@ impl RealtimeConversationManager {
+@@ -1673,6 +1776,7 @@ impl RealtimeConversationManager {
          generation: &str,
          retire_generation: bool,
          response_id: Option<&str>,
@@ -1072,7 +1072,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      ) -> Option<(Arc<SdkRealtimeState>, SdkToolRetirement)> {
          let sdk = self
              .state
-@@ -1666,7 +1770,9 @@ impl RealtimeConversationManager {
+@@ -1685,7 +1789,9 @@ impl RealtimeConversationManager {
              .as_ref()
              .filter(|sdk| sdk.generation == generation)?
              .clone();
@@ -1083,7 +1083,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          Some((sdk, work))
      }
      #[cfg(test)]
-@@ -1677,7 +1783,7 @@ impl RealtimeConversationManager {
+@@ -1696,7 +1802,7 @@ impl RealtimeConversationManager {
          response_id: Option<&str>,
      ) -> Vec<String> {
          match self
@@ -1092,7 +1092,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              .await
          {
              Some((sdk, work)) => {
-@@ -1817,6 +1923,8 @@ impl RealtimeConversationManager {
+@@ -1836,6 +1942,8 @@ impl RealtimeConversationManager {
          }
          drop(calls);
          if let SdkRealtimeCommand::Interrupt {
@@ -1101,7 +1101,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              response_id,
              playback,
              feedback,
-@@ -1830,6 +1938,25 @@ impl RealtimeConversationManager {
+@@ -1849,6 +1957,25 @@ impl RealtimeConversationManager {
                      "Playback and feedback require the RealtimeV2 protocol".into(),
                  ));
              }
@@ -1127,7 +1127,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              if feedback.is_some() && response_id.is_none() {
                  return Err(CodexErr::InvalidRequest(
                      "Guardrail feedback requires an explicit response ID".into(),
-@@ -2363,6 +2490,7 @@ impl RealtimeConversationManager {
+@@ -2382,6 +2509,7 @@ impl RealtimeConversationManager {
          mode_instructions: RealtimeModeInstructions,
      ) -> CodexResult<RealtimeStartOutput> {
          let RealtimeStart {
@@ -1135,7 +1135,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              adapter,
              connection_auth,
              hosted_mcp_auto_response,
-@@ -2450,7 +2578,9 @@ impl RealtimeConversationManager {
+@@ -2469,7 +2597,9 @@ impl RealtimeConversationManager {
              audio_rx,
          };
  
@@ -1146,7 +1146,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          let client = if handoff.sdk.is_some() {
              let client = client.with_bounded_events();
              match native_source {
-@@ -2580,6 +2710,7 @@ impl RealtimeConversationManager {
+@@ -2599,6 +2729,7 @@ impl RealtimeConversationManager {
          } else if let Some(existing_call_id) = existing_call_id {
              call_id = Some(existing_call_id.clone());
              let attaching = existing_call::attach(existing_call::ExistingCallAttachment {
@@ -1154,7 +1154,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                  client,
                  model_client,
                  connection_auth,
-@@ -3508,6 +3639,8 @@ pub(crate) async fn dispatch_interrupt_sdk(
+@@ -3527,6 +3658,8 @@ pub(crate) async fn dispatch_interrupt_sdk(
      event_id: Option<String>,
      playback: Option<codex_protocol::protocol::RealtimePlaybackPosition>,
      feedback: Option<String>,
@@ -1163,7 +1163,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      reply: tokio::sync::oneshot::Sender<
          CodexResult<codex_protocol::protocol::RealtimeInterruptReceipt>,
      >,
-@@ -3519,6 +3652,8 @@ pub(crate) async fn dispatch_interrupt_sdk(
+@@ -3538,6 +3671,8 @@ pub(crate) async fn dispatch_interrupt_sdk(
          .sdk_enqueue(
              &generation,
              SdkRealtimeCommand::Interrupt {
@@ -1172,7 +1172,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                  response_id,
                  event_id,
                  playback,
-@@ -3643,10 +3778,25 @@ async fn cancel_sdk_tool_work(
+@@ -3662,10 +3797,25 @@ async fn cancel_sdk_tool_work(
      generation: &str,
      retire_generation: bool,
      response_id: Option<&str>,
@@ -1199,7 +1199,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          .await
      {
          let _ = work.join(sess, &sdk).await;
-@@ -3654,6 +3804,7 @@ async fn cancel_sdk_tool_work(
+@@ -3673,6 +3823,7 @@ async fn cancel_sdk_tool_work(
  }
  
  struct PreparedRealtimeConversationStart {
@@ -1207,7 +1207,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      connection_auth: Option<crate::client::RealtimeConnectionAuth>,
      hosted_mcp_auto_response: bool,
      provider_event_observation: codex_protocol::protocol::RealtimeProviderEventObservation,
-@@ -3688,7 +3839,8 @@ async fn prepare_realtime_start(
+@@ -3707,7 +3858,8 @@ async fn prepare_realtime_start(
      params: ConversationStartParams,
      sdk_owned: bool,
  ) -> CodexResult<PreparedRealtimeConversationStart> {
@@ -1217,7 +1217,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
  }
  
  async fn prepare_realtime_start_with_source(
-@@ -3697,7 +3849,37 @@ async fn prepare_realtime_start_with_source(
+@@ -3716,7 +3868,37 @@ async fn prepare_realtime_start_with_source(
      sdk_owned: bool,
      frozen: Option<(Arc<Config>, ModelProviderInfo)>,
      api_key: Option<String>,
@@ -1255,7 +1255,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      let frozen_provider = frozen.is_some();
      let (config, current_provider) = match frozen {
          Some(frozen) => frozen,
-@@ -3746,6 +3928,8 @@ async fn prepare_realtime_start_with_source(
+@@ -3765,6 +3947,8 @@ async fn prepare_realtime_start_with_source(
              Some(CodexAuth::from_api_key(&key)),
              config.http_client_factory(),
          )
@@ -1264,7 +1264,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      } else {
          match auth_manager.auth_with_http_client_factory().await {
              Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
-@@ -3852,39 +4036,26 @@ async fn prepare_realtime_start_with_source(
+@@ -3871,39 +4055,26 @@ async fn prepare_realtime_start_with_source(
      let requested_realtime_session_id = session_config.session_id.clone();
      let event_parser = session_config.event_parser;
      let originator = sess.originator().await;
@@ -1323,7 +1323,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      extra_headers.extend(build_session_headers(
          Some(sess.session_id().to_string()),
          Some(sess.thread_id().to_string()),
-@@ -3893,7 +4064,8 @@ async fn prepare_realtime_start_with_source(
+@@ -3912,7 +4083,8 @@ async fn prepare_realtime_start_with_source(
          value.set_sensitive(true);
      }
      // Voice calls can span zero or many backing turns; send only the saved thread source.
@@ -1333,7 +1333,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          && thread_source.as_str().len() <= REALTIME_THREAD_SOURCE_MAX_BYTES
          && let Ok(metadata) = to_ascii_json_string(&json!({ THREAD_SOURCE_KEY: thread_source }))
          && let Ok(metadata) = HeaderValue::from_str(&metadata)
-@@ -3901,6 +4073,7 @@ async fn prepare_realtime_start_with_source(
+@@ -3920,6 +4092,7 @@ async fn prepare_realtime_start_with_source(
          extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, metadata);
      }
      Ok(PreparedRealtimeConversationStart {
@@ -1341,7 +1341,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          connection_auth,
          hosted_mcp_auto_response: true,
          provider_event_observation: Default::default(),
-@@ -4151,6 +4324,7 @@ async fn handle_start_inner_with_adapter(
+@@ -4170,6 +4343,7 @@ async fn handle_start_inner_with_adapter(
      adapter: Option<Arc<dyn codex_api::RealtimeAdapter>>,
  ) -> CodexResult<RealtimeConversationStartResult> {
      let PreparedRealtimeConversationStart {
@@ -1349,7 +1349,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          connection_auth,
          hosted_mcp_auto_response,
          provider_event_observation,
-@@ -4185,6 +4359,7 @@ async fn handle_start_inner_with_adapter(
+@@ -4204,6 +4378,7 @@ async fn handle_start_inner_with_adapter(
      };
      let sdk_owned = sdk_generation.is_some();
      let start = RealtimeStart {
@@ -1357,7 +1357,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          adapter,
          connection_auth,
          hosted_mcp_auto_response,
-@@ -4320,11 +4495,12 @@ async fn handle_start_inner_with_adapter(
+@@ -4339,11 +4514,12 @@ async fn handle_start_inner_with_adapter(
              if sdk_owned {
                  match &event {
                      RealtimeEvent::ResponseCancelled(response) => {
@@ -1371,7 +1371,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                          )
                          .await
                      }
-@@ -5361,31 +5537,94 @@ async fn request_sdk_response_create(
+@@ -5380,31 +5556,94 @@ async fn request_sdk_response_create(
  async fn send_native_response_request(
      writer: &RealtimeWebsocketWriter,
      request: &NativeResponseRequest,
@@ -1479,7 +1479,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      let held = sdk
          .function_calls
          .lock()
-@@ -5422,7 +5661,7 @@ async fn request_sdk_native_response(
+@@ -5441,7 +5680,7 @@ async fn request_sdk_native_response(
          }
          return Ok(());
      }
@@ -1488,7 +1488,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
          responses.active_default_response = true;
          responses.pending_create = false;
          responses.pending_native_create = None;
-@@ -5663,8 +5902,12 @@ async fn handle_sdk_realtime_command(
+@@ -5682,8 +5921,12 @@ async fn handle_sdk_realtime_command(
              delegation,
              mut reply,
          } => {
@@ -1502,7 +1502,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              }
              .await
              {
-@@ -5675,6 +5918,9 @@ async fn handle_sdk_realtime_command(
+@@ -5694,6 +5937,9 @@ async fn handle_sdk_realtime_command(
                              "Realtime settings update was rejected".into(),
                          )));
                      }
@@ -1512,7 +1512,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      return Err(error.into());
                  }
              };
-@@ -5734,6 +5980,8 @@ async fn handle_sdk_realtime_command(
+@@ -5753,6 +5999,8 @@ async fn handle_sdk_realtime_command(
                              response_id: intent.batch.response_id.clone(),
                              call_id: String::new(),
                              accepted: Some(Arc::clone(&accepted)),
@@ -1521,7 +1521,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                          },
                          Some(&intent.batch),
                      )
-@@ -5863,6 +6111,8 @@ async fn handle_sdk_realtime_command(
+@@ -5882,6 +6130,8 @@ async fn handle_sdk_realtime_command(
                          response_id,
                          call_id: handoff_id,
                          accepted,
@@ -1530,7 +1530,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      },
                      None,
                  )
-@@ -5926,8 +6176,10 @@ async fn handle_sdk_realtime_command(
+@@ -5945,8 +6195,10 @@ async fn handle_sdk_realtime_command(
                              response_id,
                              call_id,
                              accepted: None,
@@ -1542,7 +1542,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      )
                      .await?;
                  }
-@@ -5985,13 +6237,17 @@ async fn handle_sdk_realtime_command(
+@@ -6004,13 +6256,17 @@ async fn handle_sdk_realtime_command(
                          response_id,
                          call_id: handoff_id,
                          accepted: None,
@@ -1561,7 +1561,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              response_id,
              event_id,
              playback,
-@@ -5999,6 +6255,14 @@ async fn handle_sdk_realtime_command(
+@@ -6018,6 +6274,14 @@ async fn handle_sdk_realtime_command(
              reply,
          } => {
              let requested = response_id.clone();
@@ -1576,7 +1576,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              let result = if handoff.event_parser == RealtimeEventParser::RealtimeV2 {
                  match writer
                      .interrupt_response(
-@@ -6015,6 +6279,7 @@ async fn handle_sdk_realtime_command(
+@@ -6034,6 +6298,7 @@ async fn handle_sdk_realtime_command(
                  {
                      Ok(result) => Some(result),
                      Err(ApiError::InvalidRequest { message }) => {
@@ -1584,7 +1584,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                          if let Some(reply) = reply.and_then(|reply| reply.lock().unwrap().take()) {
                              let _ = reply.send(Err(CodexErr::InvalidRequest(message)));
                          }
-@@ -6027,6 +6292,11 @@ async fn handle_sdk_realtime_command(
+@@ -6046,6 +6311,11 @@ async fn handle_sdk_realtime_command(
              };
              let receipt = codex_protocol::protocol::RealtimeInterruptReceipt {
                  joined_root_turn_ids: Vec::new(),
@@ -1596,7 +1596,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                  cancelled_response_id: result
                      .as_ref()
                      .and_then(|result| result.cancelled_response_id.clone()),
-@@ -6041,6 +6311,21 @@ async fn handle_sdk_realtime_command(
+@@ -6060,6 +6330,21 @@ async fn handle_sdk_realtime_command(
                  responses.pending_native_create = None;
                  responses.pending_guardrail_response = None;
                  responses.pending_hosted_response = None;
@@ -1618,7 +1618,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              }
              let calls = sdk.function_calls.lock().await;
              let seen = sdk.seen.lock().await;
-@@ -6053,7 +6338,7 @@ async fn handle_sdk_realtime_command(
+@@ -6072,7 +6357,7 @@ async fn handle_sdk_realtime_command(
                          .or_else(|| seen.get(id).and_then(|known| known.response_id.as_deref()))
                          == Some(target)
                  });
@@ -1627,7 +1627,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      if let Some(call) = calls.get(id) {
                          call.cancel.cancel();
                      }
-@@ -6065,7 +6350,9 @@ async fn handle_sdk_realtime_command(
+@@ -6084,7 +6369,9 @@ async fn handle_sdk_realtime_command(
              drop(pending);
              drop(seen);
              drop(calls);
@@ -1638,7 +1638,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              let calls = sdk.function_calls.lock().await;
              let release_user = requested.as_ref().and_then(|_| {
                  calls
-@@ -6211,7 +6498,7 @@ async fn maybe_continue_hosted_mcp(
+@@ -6230,7 +6517,7 @@ async fn maybe_continue_hosted_mcp(
          return Ok(());
      }
      let created = if let Some(request) = &responses.pending_native_create {
@@ -1647,7 +1647,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
      } else if responses.pending_create {
          writer.send_response_create_after_tools(response_id).await?
      } else {
-@@ -6470,12 +6757,13 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6489,12 +6776,13 @@ async fn handle_realtime_server_event_with_configuration(
                      .context("SDK speech event has no accepted configuration")?
                      .interrupts_on_speech_started()
              {
@@ -1662,7 +1662,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                              cancelled_response_id: None,
                              retired_response_ids: Vec::new(),
                          },
-@@ -6548,10 +6836,11 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6567,10 +6855,11 @@ async fn handle_realtime_server_event_with_configuration(
                  return Ok(());
              }
              if let (Some(sdk), Some(id)) = (&handoff_state.sdk, response.response_id.as_deref()) {
@@ -1675,7 +1675,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              }
              defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
              if response.response_id == response_create_queue.sdk_response_id {
-@@ -6562,7 +6851,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6581,7 +6870,7 @@ async fn handle_realtime_server_event_with_configuration(
                  RealtimeSessionKind::V1 => {}
                  RealtimeSessionKind::V2 => {
                      response_create_queue
@@ -1684,7 +1684,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                          .await?;
                  }
              }
-@@ -6672,7 +6961,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6691,7 +6980,7 @@ async fn handle_realtime_server_event_with_configuration(
                  RealtimeSessionKind::V1 => {}
                  RealtimeSessionKind::V2 => {
                      response_create_queue
@@ -1693,7 +1693,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                          .await?;
                  }
              }
-@@ -6925,8 +7214,18 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6944,8 +7233,18 @@ async fn handle_realtime_server_event_with_configuration(
                  {
                      return Ok(());
                  }
@@ -1713,7 +1713,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      .await
                      .context("SDK Realtime event channel closed")?;
                  return Ok(());
-@@ -6994,7 +7293,11 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -7013,7 +7312,11 @@ async fn handle_realtime_server_event_with_configuration(
                  && response_create_queue.sdk_response_id.is_none()
              {
                  response_create_queue
@@ -1726,7 +1726,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
                      .await?;
              }
              false
-@@ -7010,10 +7313,11 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -7029,10 +7332,11 @@ async fn handle_realtime_server_event_with_configuration(
                  _ => None,
              };
              if let (Some(sdk), Some((id, cancelled))) = (&handoff_state.sdk, terminal) {
@@ -1739,7 +1739,7 @@ index b0075a0ba17e85cadc99b0bfc5fe2870bc0f0f2e..cdc7bbfbf2f8c3611e9e87a62bc90c56
              }
              false
          }
-@@ -7055,7 +7359,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -7074,7 +7378,7 @@ async fn handle_realtime_server_event_with_configuration(
      if advances_response_queue && !response_create_pending(writer) {
          if !response_create_queue.active_default_response {
              response_create_queue
@@ -1817,7 +1817,7 @@ index 3f6cffcd42b86aee2bdb9a22439df1a1906bcf65..ce0d8bcbf67f278a8bcc392f99754f67
                      handoff_id: "background-call".into(),
                      item_id: "background-item".into(),
 diff --git a/codex-rs/core/src/realtime_conversation/preparation.rs b/codex-rs/core/src/realtime_conversation/preparation.rs
-index bba5d83d17c3b6181a58bf0e5e3fb4f7fcd7e9dc..e90e602eade3b274058abf0a8ca4dfac2a804cfc 100644
+index 6105958a696aea48c1c57d35a799419309d51a73..731ede5c951cd56365b06f7a2eecbca5c5639cc1 100644
 --- a/codex-rs/core/src/realtime_conversation/preparation.rs
 +++ b/codex-rs/core/src/realtime_conversation/preparation.rs
 @@ -274,6 +274,7 @@ pub(crate) async fn handle_activate_sdk(
@@ -2029,7 +2029,7 @@ index cb2bcca110b02df30a0f262c4ecdeb157675a256..819e3a5bc3308618157764c5446bcb21
          if let Some(value) = fields.get(name) {
              nested(name, value)?;
 diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
-index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4ec0b5075c 100644
+index 6d1574fa7f802fb43dae1cd2cfd5c09139d492a3..6d8da12cf814173e39b7509d8d39f6c9dc829ca0 100644
 --- a/codex-rs/core/src/realtime_conversation_tests.rs
 +++ b/codex-rs/core/src/realtime_conversation_tests.rs
 @@ -32,6 +32,7 @@ use tokio::sync::Mutex;
@@ -2141,7 +2141,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
          response_id: None,
          input_transcript: String::new(),
          active_transcript: vec![],
-@@ -2696,6 +2714,8 @@ async fn sdk_scoped_interrupt_preserves_b_and_uncorrelated_native_work() {
+@@ -2694,6 +2712,8 @@ async fn sdk_scoped_interrupt_preserves_b_and_uncorrelated_native_work() {
          .clone();
      super::handle_sdk_realtime_command(
          Ok(SdkRealtimeCommand::Interrupt {
@@ -2150,7 +2150,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
              event_id: None,
              reply: None,
              response_id: Some("a".into()),
-@@ -2792,7 +2812,13 @@ async fn sdk_response_batch_runs_two_native_calls_under_one_source_without_model
+@@ -2790,7 +2810,13 @@ async fn sdk_response_batch_runs_two_native_calls_under_one_source_without_model
      assert!(
          session
              .conversation
@@ -2165,7 +2165,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
              .await
              .is_err()
      );
-@@ -2946,6 +2972,8 @@ async fn sdk_interrupt_completion_reports_actual_source_after_execution() {
+@@ -2944,6 +2970,8 @@ async fn sdk_interrupt_completion_reports_actual_source_after_execution() {
          .sdk_enqueue(
              "receipt-1",
              SdkRealtimeCommand::Interrupt {
@@ -2174,7 +2174,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
                  event_id: None,
                  response_id: None,
                  playback: None,
-@@ -3565,6 +3593,7 @@ async fn prepared_close_with_provider_credential(missing_env: bool) {
+@@ -3563,6 +3591,7 @@ async fn prepared_close_with_provider_credential(missing_env: bool) {
          Some(codex_protocol::protocol::RealtimeConversationApiKey::new(
              "private-voice-key".into(),
          )),
@@ -2182,7 +2182,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
          reply,
      )
      .await;
-@@ -3619,6 +3648,7 @@ async fn sdk_malformed_credential_fails_before_native_mcp_or_transport_preparati
+@@ -3617,6 +3646,7 @@ async fn sdk_malformed_credential_fails_before_native_mcp_or_transport_preparati
          Some(codex_protocol::protocol::RealtimeConversationApiKey::new(
              "secret\ninvalid".into(),
          )),
@@ -2190,7 +2190,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
          reply,
      )
      .await;
-@@ -4249,6 +4279,8 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
+@@ -4247,6 +4277,8 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
      if interrupt {
          super::handle_sdk_realtime_command(
              Ok(super::SdkRealtimeCommand::Interrupt {
@@ -2199,7 +2199,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
                  event_id: None,
                  response_id: Some("handoff-source".into()),
                  playback: None,
-@@ -4718,6 +4750,7 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
+@@ -4716,6 +4748,7 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
      for index in 0..super::SDK_HANDOFF_LIMIT + 4 {
          let id = format!("terminal-handoff-{index}");
          let request = RealtimeHandoffRequested {
@@ -2207,7 +2207,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
              response_id: Some(format!("response-{index}")),
              handoff_id: id.clone(),
              item_id: format!("item-{index}"),
-@@ -4735,10 +4768,15 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
+@@ -4733,10 +4766,15 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
          )
          .await
          .unwrap();
@@ -2227,7 +2227,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
          // The actual command path marks accepted publication before removing pending.
          sdk.seen.lock().await.get_mut(&id).unwrap().output_published = true;
          sdk.pending.lock().await.remove(&id);
-@@ -4746,6 +4784,7 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
+@@ -4744,6 +4782,7 @@ async fn sdk_terminal_handoff_rollover_preserves_recent_duplicates() {
              let before = sdk.seen.lock().await.keys().cloned().collect::<Vec<_>>();
              super::handle_realtime_server_event(
                  RealtimeEvent::HandoffRequested(RealtimeHandoffRequested {
@@ -2235,7 +2235,7 @@ index 93c3a0ae61512f247cc5abced61abd8a34c3ca72..8aa43a83a5894708db228ec58ea09c4e
                      response_id: Some("response-0".into()),
                      handoff_id: "terminal-handoff-0".into(),
                      item_id: "item-0".into(),
-@@ -5101,3 +5140,289 @@ async fn sdk_sip_config_uses_native_source_and_serializer_without_reserving_voic
+@@ -5099,3 +5138,289 @@ async fn sdk_sip_config_uses_native_source_and_serializer_without_reserving_voic
          .await
          .unwrap();
  }

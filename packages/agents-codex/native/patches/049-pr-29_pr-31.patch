@@ -602,7 +602,7 @@ index f26fe72ba7adec5330842b9c745c0006434e09bc..05fe37f35ce68b7f21830f412411da60
  
  #[derive(Debug, Clone, Serialize)]
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21ff25e55cf 100644
+index 64d7cd5db4eeab7a1ed2ced26f5ed3dfa71e094b..fd029d274c295ebce21e0c4d4b99b4a0141a48cb 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 @@ -1,4 +1,5 @@
@@ -611,15 +611,15 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
  use crate::ApiError;
  use codex_protocol::agent_profile::AgentProfileReceipt;
  use codex_protocol::protocol::{RealtimeAudioFrame, RealtimeOutputGuard};
-@@ -6,6 +7,7 @@ use codex_protocol::realtime_settings::RealtimeAudioFormat;
- use codex_protocol::realtime_settings::RealtimeSessionUpdate;
- use codex_realtime_control::contains_expected;
+@@ -8,6 +9,7 @@ use codex_protocol::realtime_settings::RealtimeSessionUpdate;
+ mod session_match;
+ use session_match::contains_expected;
  use serde_json::Value;
 +use std::collections::BTreeSet;
  use std::collections::VecDeque;
  use std::sync::Arc;
  use std::sync::Mutex;
-@@ -28,15 +30,102 @@ pub trait RealtimeNativeSource: Send + Sync {
+@@ -30,15 +32,102 @@ pub trait RealtimeNativeSource: Send + Sync {
      fn as_any(&self) -> &dyn std::any::Any;
  }
  
@@ -723,7 +723,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      pub fn interrupts_on_speech_started(&self) -> bool {
          match self.contract.pointer("/audio/input/turn_detection") {
              Some(Value::Null) => false,
-@@ -48,10 +137,7 @@ impl RealtimeAcceptedConfiguration {
+@@ -50,10 +139,7 @@ impl RealtimeAcceptedConfiguration {
      }
  
      pub(super) fn hosted_declaration(&self, label: &str) -> Option<&Value> {
@@ -735,7 +735,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              .find(|tool| tool["type"] == "mcp" && tool["server_label"].as_str() == Some(label))
      }
      pub fn hosted_mcp_authority_ready(&self) -> bool {
-@@ -61,11 +147,7 @@ impl RealtimeAcceptedConfiguration {
+@@ -63,11 +149,7 @@ impl RealtimeAcceptedConfiguration {
      pub fn hosted_mcp_tools(
          &self,
      ) -> Vec<codex_protocol::realtime_settings::RealtimeHostedMcpTool> {
@@ -748,7 +748,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              .filter(|tool| tool["type"].as_str() == Some("mcp"))
              .filter_map(|tool| {
                  let mut tool = tool.clone();
-@@ -75,11 +157,7 @@ impl RealtimeAcceptedConfiguration {
+@@ -77,11 +159,7 @@ impl RealtimeAcceptedConfiguration {
              .collect()
      }
      pub fn function_tools(&self) -> Vec<codex_protocol::realtime_settings::RealtimeFunctionTool> {
@@ -761,7 +761,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              .filter_map(|tool| {
                  let name = tool.get("name")?.as_str()?;
                  if matches!(name, "background_agent" | "remain_silent") {
-@@ -129,6 +207,7 @@ enum ReceiptState {
+@@ -131,6 +209,7 @@ enum ReceiptState {
  struct PendingConfiguration {
      hosted_owned: bool,
      native_source: Option<Arc<dyn RealtimeNativeSource>>,
@@ -769,7 +769,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      id: Option<String>,
      contract: Value,
      phase: PendingPhase,
-@@ -166,6 +245,7 @@ impl RealtimeConfigurationReceipt {
+@@ -168,6 +247,7 @@ impl RealtimeConfigurationReceipt {
  pub(super) struct ActiveResponse {
      pub(super) id: Arc<str>,
      pub(super) configuration: Arc<RealtimeAcceptedConfiguration>,
@@ -777,7 +777,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      // Runtime-only lineage: automatic replies inherit, explicit user work replaces.
      request_owner: Arc<()>,
      pub(super) output_guard: RealtimeOutputGuard,
-@@ -175,6 +255,7 @@ pub(super) struct FrameObservation {
+@@ -177,6 +257,7 @@ pub(super) struct FrameObservation {
      pub hosted_mcp_events: Vec<codex_protocol::protocol::RealtimeEvent>,
      pub configuration: Option<Arc<RealtimeAcceptedConfiguration>>,
      pub output_guard: RealtimeOutputGuard,
@@ -785,7 +785,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
  }
  impl Default for FrameObservation {
      fn default() -> Self {
-@@ -182,6 +263,7 @@ impl Default for FrameObservation {
+@@ -184,6 +265,7 @@ impl Default for FrameObservation {
              hosted_mcp_events: Vec::new(),
              configuration: None,
              output_guard: RealtimeOutputGuard::default(),
@@ -793,7 +793,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          }
      }
  }
-@@ -191,6 +273,7 @@ impl FrameObservation {
+@@ -193,6 +275,7 @@ impl FrameObservation {
              hosted_mcp_events: Vec::new(),
              configuration: Some(Arc::clone(&response.configuration)),
              output_guard: response.output_guard.clone(),
@@ -801,7 +801,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          }
      }
      fn suppressed() -> Self {
-@@ -200,13 +283,12 @@ impl FrameObservation {
+@@ -202,13 +285,12 @@ impl FrameObservation {
      }
  }
  struct ReceivedAudio {
@@ -816,7 +816,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
  }
  
  #[derive(Debug)]
-@@ -237,10 +319,12 @@ struct ConfigurationState {
+@@ -239,10 +321,12 @@ struct ConfigurationState {
      pending_create_guard: Option<RealtimeOutputGuard>,
      request_owner: Arc<()>,
      pending_create_owner: Option<Arc<()>>,
@@ -829,7 +829,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      received_audio: VecDeque<ReceivedAudio>,
      audio_input_sources: VecDeque<(String, AudioInputSource)>,
      failure: Option<ReadyState>,
-@@ -325,11 +409,88 @@ impl RealtimeConfiguration {
+@@ -327,11 +411,88 @@ impl RealtimeConfiguration {
          Self::settled(&self.inner.state.lock().unwrap())
      }
  
@@ -919,7 +919,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      }
  
      pub fn reserve_update_with_source(
-@@ -337,19 +498,28 @@ impl RealtimeConfiguration {
+@@ -339,19 +500,28 @@ impl RealtimeConfiguration {
          update: &RealtimeSessionUpdate,
          source: Arc<dyn RealtimeNativeSource>,
      ) -> Result<RealtimeConfigurationReservation, ApiError> {
@@ -950,7 +950,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              let functions = update
                  .function_tools
                  .clone()
-@@ -359,19 +529,31 @@ impl RealtimeConfiguration {
+@@ -361,19 +531,31 @@ impl RealtimeConfiguration {
                  .hosted_mcp_tools
                  .clone()
                  .unwrap_or_else(|| accepted.hosted_mcp_tools());
@@ -987,7 +987,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              id: Some(id.clone()),
              contract,
              phase: PendingPhase::Reserved,
-@@ -386,33 +568,34 @@ impl RealtimeConfiguration {
+@@ -388,33 +570,34 @@ impl RealtimeConfiguration {
          })
      }
  
@@ -1046,7 +1046,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              || frame.sample_rate != format.sample_rate()
              || frame.num_channels != 1
          {
-@@ -420,8 +603,20 @@ impl RealtimeConfiguration {
+@@ -422,8 +605,20 @@ impl RealtimeConfiguration {
                  "Audio frame does not match the accepted input format",
              ));
          }
@@ -1068,7 +1068,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              .map_err(|_| invalid("Audio frame must contain valid base64"))?;
          if format == RealtimeAudioFormat::Pcm24k && bytes.len() % 2 != 0 {
              return Err(invalid("PCM audio requires complete two-byte samples"));
-@@ -464,7 +659,7 @@ impl RealtimeConfiguration {
+@@ -466,7 +661,7 @@ impl RealtimeConfiguration {
              .received_audio
              .iter()
              .find(|record| {
@@ -1077,7 +1077,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                      && record.item_id == position.item_id
                      && record.content_index == position.content_index
              })
-@@ -472,6 +667,7 @@ impl RealtimeConfiguration {
+@@ -474,6 +669,7 @@ impl RealtimeConfiguration {
                  invalid("Playback item is unknown or outside the retained media window")
              })?;
          let rate = record
@@ -1085,7 +1085,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              .configuration
              .output_format
              .ok_or_else(|| invalid("Playback format is unknown"))?
-@@ -490,6 +686,67 @@ impl RealtimeConfiguration {
+@@ -492,6 +688,67 @@ impl RealtimeConfiguration {
          Self::validate_playback_in(&self.inner.state.lock().unwrap(), position)
      }
  
@@ -1153,7 +1153,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      pub(super) fn response_create_for(&self, response_id: &str) -> bool {
          let mut state = self.inner.state.lock().unwrap();
          let request_owner = state
-@@ -572,7 +829,7 @@ impl RealtimeConfiguration {
+@@ -574,7 +831,7 @@ impl RealtimeConfiguration {
              .map(|r| Arc::clone(&r.request_owner));
          let source_matches = state.accepted.as_ref().is_some_and(|current| {
              if let Some(expected) = expected {
@@ -1162,7 +1162,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              }
              state
                  .response_contexts
-@@ -610,6 +867,7 @@ impl RealtimeConfiguration {
+@@ -612,6 +869,7 @@ impl RealtimeConfiguration {
                      .hosted_mcp
                      .native_continuation_available(response_id, call)
              })
@@ -1170,7 +1170,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              && ((native_call.is_some() && !state.hosted_mcp.has_hosted(response_id))
                  || !state.hosted_mcp.pending_for(response_id));
          if ready {
-@@ -624,6 +882,32 @@ impl RealtimeConfiguration {
+@@ -626,6 +884,32 @@ impl RealtimeConfiguration {
          }
          ready
      }
@@ -1203,7 +1203,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      pub(super) fn decide_hosted_mcp(
          &self,
          token: &str,
-@@ -641,17 +925,34 @@ impl RealtimeConfiguration {
+@@ -643,17 +927,34 @@ impl RealtimeConfiguration {
      pub(super) fn observe_user_input(&self) {
          self.inner.state.lock().unwrap().request_owner = Arc::new(());
      }
@@ -1241,7 +1241,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      }
  
      pub(super) fn prepare_interrupt(
-@@ -727,24 +1028,34 @@ impl RealtimeConfiguration {
+@@ -729,24 +1030,34 @@ impl RealtimeConfiguration {
          }
          if let Some(position) = playback {
              if let Some(record) = state.received_audio.iter_mut().find(|record| {
@@ -1280,7 +1280,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                              && Arc::ptr_eq(&response.request_owner, &state.request_owner)
                      })
                      && state.feedback_response_id.as_deref() != Some(id)
-@@ -898,7 +1209,7 @@ fn evict_completed_context(state: &mut ConfigurationState, protected: Option<&st
+@@ -900,7 +1211,7 @@ fn evict_completed_context(state: &mut ConfigurationState, protected: Option<&st
      let expired = state.response_contexts.remove(index).unwrap();
      state
          .received_audio
@@ -1289,7 +1289,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      state.hosted_mcp.remove_response(&expired.id);
      true
  }
-@@ -1004,6 +1315,7 @@ impl SessionReadiness {
+@@ -1006,6 +1317,7 @@ impl SessionReadiness {
                          pending: Some(PendingConfiguration {
                              hosted_owned: wait_for_update,
                              native_source,
@@ -1297,7 +1297,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                              id: None,
                              contract,
                              phase: if wait_for_update {
-@@ -1019,10 +1331,12 @@ impl SessionReadiness {
+@@ -1021,10 +1333,12 @@ impl SessionReadiness {
                          pending_create_guard: None,
                          request_owner: Arc::new(()),
                          pending_create_owner: None,
@@ -1310,7 +1310,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                          received_audio: VecDeque::new(),
                          audio_input_sources: VecDeque::new(),
                          failure: None,
-@@ -1066,7 +1380,7 @@ impl SessionReadiness {
+@@ -1068,7 +1382,7 @@ impl SessionReadiness {
          if let Some(accepted) = state.accepted.clone() {
              state.hosted_mcp.invalidate(&accepted);
          }
@@ -1319,7 +1319,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              return observation;
          }
          let Ok(event) = serde_json::from_str::<Value>(text) else {
-@@ -1149,7 +1463,7 @@ impl SessionReadiness {
+@@ -1151,7 +1465,7 @@ impl SessionReadiness {
                      for record in state.received_audio.iter_mut().filter(|record| {
                          record.item_id == item && u64::from(record.content_index) == index
                      }) {
@@ -1328,7 +1328,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                              record.samples = record
                                  .samples
                                  .min(end_ms.saturating_mul(u64::from(format.sample_rate())) / 1000);
-@@ -1189,9 +1503,12 @@ impl SessionReadiness {
+@@ -1191,9 +1505,12 @@ impl SessionReadiness {
                          let accepted = Arc::new(RealtimeAcceptedConfiguration {
                              hosted_owned: pending.hosted_owned,
                              native_source: pending.native_source,
@@ -1342,7 +1342,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                          });
                          state.accepted = Some(Arc::clone(&accepted));
                          if let Some(completion) = pending.completion {
-@@ -1236,7 +1553,13 @@ impl SessionReadiness {
+@@ -1238,7 +1555,13 @@ impl SessionReadiness {
          let response_id = event
              .get("response_id")
              .and_then(Value::as_str)
@@ -1357,7 +1357,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          match kind {
              // Interrupting speech and committed audio start a new user request.
              // Provider echoes of our owned outgoing items do not change ownership.
-@@ -1281,16 +1604,26 @@ impl SessionReadiness {
+@@ -1283,16 +1606,26 @@ impl SessionReadiness {
                          if active.id.as_ref() == id {
                              return FrameObservation::response(active);
                          }
@@ -1385,7 +1385,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                                  request_owner: state
                                      .pending_create_owner
                                      .take()
-@@ -1356,7 +1689,7 @@ impl SessionReadiness {
+@@ -1358,7 +1691,7 @@ impl SessionReadiness {
                          };
                          if bytes.len() % sample_bytes == 0 {
                              if let Some(record) = state.received_audio.iter_mut().find(|record| {
@@ -1394,7 +1394,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                                      && record.item_id == item_id
                                      && record.content_index == content
                              }) {
-@@ -1369,13 +1702,12 @@ impl SessionReadiness {
+@@ -1371,13 +1704,12 @@ impl SessionReadiness {
                                  }
                              } else if retain_metadata_room(&mut state, item_id.len(), false) {
                                  state.received_audio.push_back(ReceivedAudio {
@@ -1409,7 +1409,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                                  });
                              } else {
                                  state.failure = Some(ReadyState::Mismatch);
-@@ -1406,15 +1738,55 @@ impl SessionReadiness {
+@@ -1408,15 +1740,55 @@ impl SessionReadiness {
                          .map(|active| FrameObservation::response(&active))
                          .unwrap_or_default();
                  }
@@ -1466,7 +1466,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                          Some(
                              "response.output_audio_transcript.delta"
                              | "response.output_audio_transcript.done"
-@@ -1746,6 +2118,38 @@ mod tests {
+@@ -1748,6 +2120,38 @@ mod tests {
          assert!(configuration.validate_audio(&frame).is_err());
      }
  
@@ -1505,7 +1505,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      #[test]
      fn active_response_keeps_accepted_codec_across_update_and_matching_terminal() {
          let observer = accepted_observer();
-@@ -2028,7 +2432,7 @@ mod tests {
+@@ -2030,7 +2434,7 @@ mod tests {
              done(&observer, "a");
              match boundary {
                  "user" => configuration.observe_user_input(),
@@ -1514,7 +1514,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                  "speech" => {
                      observer.observe_frame(
                          r#"{"type":"input_audio_buffer.speech_started","item_id":"new-vad-input"}"#,
-@@ -2072,7 +2476,7 @@ mod tests {
+@@ -2074,7 +2478,7 @@ mod tests {
              );
              match boundary {
                  "user" => configuration.observe_user_input(),
@@ -1523,7 +1523,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                  "speech" => {
                      observer.observe_frame(
                          r#"{"type":"input_audio_buffer.speech_started","item_id":"new-vad-input"}"#,
-@@ -2104,7 +2508,7 @@ mod tests {
+@@ -2106,7 +2510,7 @@ mod tests {
              .unwrap();
          assert!(repeated.payloads.is_empty());
          done(&observer, "a");
@@ -1532,7 +1532,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          assert!(!configuration.response_create_for("a"));
          assert!(
              !configuration
-@@ -2340,7 +2744,7 @@ mod tests {
+@@ -2342,7 +2746,7 @@ mod tests {
      fn pending_response_create_guard_is_retired_before_its_id_is_observed() {
          let observer = accepted_observer();
          let configuration = observer.configuration();
@@ -1541,7 +1541,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          configuration
              .prepare_interrupt(None, None, None, false)
              .unwrap();
-@@ -2577,6 +2981,81 @@ mod tests {
+@@ -2579,6 +2983,81 @@ mod tests {
          };
          request
      }
@@ -1623,7 +1623,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
      #[test]
      fn hosted_receipt_uses_actual_membership_survives_done_and_is_single_use() {
          let observer = accepted_hosted_observer();
-@@ -3046,7 +3525,22 @@ mod tests {
+@@ -3048,7 +3527,22 @@ mod tests {
              let observer = accepted_hosted_observer();
              let request = issue_hosted(&observer);
              done(&observer, "r");
@@ -1646,7 +1646,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              let events = hosted_event(
                  &observer,
                  "conversation.item.done",
-@@ -3172,7 +3666,7 @@ mod tests {
+@@ -3174,7 +3668,7 @@ mod tests {
              match boundary {
                  "user" => config.observe_user_input(),
                  "manual" => {
@@ -1655,7 +1655,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
                  }
                  "speech" => {
                      observer.observe_frame(
-@@ -3197,7 +3691,7 @@ mod tests {
+@@ -3199,7 +3693,7 @@ mod tests {
          assert!(config.function_response_create("a", "one"));
          config.observe_user_input();
          assert!(
@@ -1664,7 +1664,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
              "do not overwrite outstanding automatic create"
          );
          created(&observer, "b");
-@@ -3211,7 +3705,7 @@ mod tests {
+@@ -3213,7 +3707,7 @@ mod tests {
              !config.function_response_create("b", "b-call"),
              "late automatic B must not gain newer user owner"
          );
@@ -1673,7 +1673,7 @@ index 5856051952a5c8a985442dd9ce669c77e018d071..a90e501ee9d8d2cbdf2807376a1df21f
          created(&observer, "new-user");
          done(&observer, "new-user");
          assert!(!observer.mismatched());
-@@ -3221,7 +3715,7 @@ mod tests {
+@@ -3223,7 +3717,7 @@ mod tests {
          let observer = accepted_hosted_observer();
          let config = observer.configuration();
          config.observe_user_input();
@@ -1884,7 +1884,7 @@ index 47660592adedfbf1b1a9907862229d0516949bf6..c00c45d0d9479f28b5bbdbc2b54b04b1
  pub use crate::endpoint::RealtimeHostedMcpAllowedTools;
  pub use crate::endpoint::RealtimeHostedMcpApproval;
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300c9f989cb 100644
+index cf29bfc812ddbcebbda6699e568970acdb62a7b2..462c0f0774f50172f55bb221662b40ffb0cfeeeb 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -1,11 +1,14 @@
@@ -1902,32 +1902,37 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
  mod tool_task;
  use crate::client::ModelClient;
  use crate::client::RealtimeCallLease;
-@@ -372,8 +375,22 @@ enum RealtimeSessionKind {
- const SDK_HANDOFF_LIMIT: usize = 1024;
+@@ -374,8 +377,27 @@ const SDK_HANDOFF_LIMIT: usize = 1024;
  const SDK_FUNCTION_CALL_LIMIT: usize = 256;
+ const SDK_FUNCTION_CALL_MAX_BYTES: usize = 256 * 1024;
  
 -pub(crate) type SdkHostedMcpReply =
 -    Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<CodexResult<()>>>>>;
 +fn sdk_function_fingerprint(
 +    request: &codex_protocol::protocol::RealtimeFunctionCallRequested,
 +) -> anyhow::Result<[u8; 32]> {
-+    codex_realtime_control::FunctionCall {
-+        namespace: request.namespace.clone(),
-+        call_id: request.call_id.clone(),
-+        item_id: request.item_id.clone(),
-+        name: request.name.clone(),
-+        arguments: request.arguments.clone(),
-+        response_id: request.response_id.clone(),
++    if request.namespace.is_some() {
++        anyhow::bail!("Namespaced Realtime functions are not supported");
 +    }
-+    .fingerprint()
-+    .map_err(anyhow::Error::msg)
++    if serde_json::to_vec(&request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
++        anyhow::bail!("SDK Realtime function request exceeds capacity");
++    }
++    let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&(
++        &request.namespace,
++        &request.call_id,
++        &request.item_id,
++        &request.name,
++        &request.arguments,
++    ))?)
++    .into();
++    Ok(fingerprint)
 +}
 +
 +type SdkControlReply = Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<CodexResult<()>>>>>;
  
  pub(crate) type SdkInterruptReply = Arc<
      std::sync::Mutex<
-@@ -393,18 +410,45 @@ pub(crate) type SdkInterruptReply = Arc<
+@@ -395,18 +417,45 @@ pub(crate) type SdkInterruptReply = Arc<
  pub(crate) enum SdkRealtimeCommand {
      History(provider_history::Request),
      HistoryAdvance,
@@ -1975,7 +1980,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
      Input(ConversationInputParams),
      RequestResponse(RealtimeResponseOptions),
      Text(ConversationTextParams),
-@@ -412,6 +456,7 @@ pub(crate) enum SdkRealtimeCommand {
+@@ -414,6 +463,7 @@ pub(crate) enum SdkRealtimeCommand {
      Update(RealtimeSessionUpdate),
      OwnedUpdate {
          update: RealtimeSessionUpdate,
@@ -1983,7 +1988,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          profile: Option<SdkProfileUpdate>,
          reply: SdkUpdateReply,
      },
-@@ -438,6 +483,7 @@ pub(crate) enum SdkRealtimeCommand {
+@@ -440,6 +490,7 @@ pub(crate) enum SdkRealtimeCommand {
      },
      Interrupt {
          response_id: Option<String>,
@@ -1991,7 +1996,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          playback: Option<codex_protocol::protocol::RealtimePlaybackPosition>,
          feedback: Option<String>,
          reply: Option<SdkInterruptReply>,
-@@ -696,6 +742,17 @@ impl SdkRealtimeState {
+@@ -698,6 +749,17 @@ impl SdkRealtimeState {
          Ok(())
      }
  
@@ -2009,7 +2014,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
      async fn retire_tool_work(
          &self,
          retire_generation: bool,
-@@ -704,6 +761,10 @@ impl SdkRealtimeState {
+@@ -706,6 +768,10 @@ impl SdkRealtimeState {
          if retire_generation {
              self.active.store(false, Ordering::Release);
          }
@@ -2020,7 +2025,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          let mut calls = self.function_calls.lock().await;
          let mut pending = self.pending.lock().await;
          let mut work = SdkToolRetirement {
-@@ -1238,10 +1299,25 @@ struct RealtimeTranscriptTailFlush {
+@@ -1242,10 +1308,25 @@ struct RealtimeTranscriptTailFlush {
      tx: Sender<String>,
  }
  
@@ -2047,7 +2052,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
  }
  
  struct RealtimeInputChannels {
-@@ -1523,14 +1599,18 @@ impl RealtimeConversationManager {
+@@ -1527,14 +1608,18 @@ impl RealtimeConversationManager {
                  "Provider history replacement is pending".into(),
              ));
          }
@@ -2068,7 +2073,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                  | SdkRealtimeCommand::Input(_)
                  | SdkRealtimeCommand::RequestResponse(_)
          ) {
-@@ -1539,24 +1619,26 @@ impl RealtimeConversationManager {
+@@ -1543,24 +1628,26 @@ impl RealtimeConversationManager {
                      "Public input controls require Realtime V2".into(),
                  ));
              }
@@ -2108,7 +2113,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              }
              if let SdkRealtimeCommand::Input(params) = &command {
                  if params.content.is_empty()
-@@ -1584,7 +1666,7 @@ impl RealtimeConversationManager {
+@@ -1588,7 +1675,7 @@ impl RealtimeConversationManager {
                      "Item deletion requires RealtimeV2".into(),
                  ));
              }
@@ -2117,7 +2122,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          }
          let is_update = matches!(&command, SdkRealtimeCommand::OwnedUpdate { .. });
          #[cfg(test)]
-@@ -1678,10 +1760,45 @@ impl RealtimeConversationManager {
+@@ -1682,10 +1769,45 @@ impl RealtimeConversationManager {
                          )
                      });
              }
@@ -2165,7 +2170,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                      .map_err(|_| {
                          CodexErr::InvalidRequest(
                              "SDK Realtime media queue is full or closed".into(),
-@@ -1709,6 +1826,7 @@ impl RealtimeConversationManager {
+@@ -1713,6 +1835,7 @@ impl RealtimeConversationManager {
              }
              SdkRealtimeCommand::OwnedUpdate {
                  mut update,
@@ -2173,7 +2178,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                  profile,
                  mut reply,
              } => {
-@@ -1821,6 +1939,16 @@ impl RealtimeConversationManager {
+@@ -1825,6 +1948,16 @@ impl RealtimeConversationManager {
                                  source: profile.source,
                              }),
                          )))
@@ -2190,7 +2195,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                      } else {
                          if let Some(tools) = update.function_tools.take() {
                              let accepted = configuration
-@@ -1830,7 +1958,7 @@ impl RealtimeConversationManager {
+@@ -1834,7 +1967,7 @@ impl RealtimeConversationManager {
                                  Some(tool_task::select_accepted_tools(&accepted, tools)?);
                          }
                          let reservation = configuration
@@ -2199,7 +2204,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                              .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
                          Ok(Some((reservation, None, None)))
                      }
-@@ -2987,19 +3115,36 @@ pub(crate) async fn dispatch_audio_commit_sdk(
+@@ -2991,19 +3124,36 @@ pub(crate) async fn dispatch_audio_commit_sdk(
      sess: &Arc<Session>,
      generation: String,
      reply: tokio::sync::oneshot::Sender<CodexResult<()>>,
@@ -2243,7 +2248,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
      }
  }
  
-@@ -3048,12 +3193,30 @@ async fn run_history_action(
+@@ -3052,12 +3202,30 @@ async fn run_history_action(
      action: Option<provider_history::Action>,
  ) -> anyhow::Result<()> {
      let result = match action {
@@ -2278,7 +2283,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          }
          Some(provider_history::Action::Delete(id)) => {
              // Validate the complete pending deletion plan before its first remote edit.
-@@ -3067,19 +3230,26 @@ async fn run_history_action(
+@@ -3071,19 +3239,26 @@ async fn run_history_action(
                  sdk.history.lock().unwrap().fail(error);
                  return Ok(());
              }
@@ -2312,7 +2317,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          }
          None => return Ok(()),
      };
-@@ -3095,6 +3265,7 @@ pub(crate) async fn handle_delete_item_sdk(
+@@ -3099,6 +3274,7 @@ pub(crate) async fn handle_delete_item_sdk(
      sess: &Arc<Session>,
      generation: String,
      item_id: String,
@@ -2320,7 +2325,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
      reply: tokio::sync::oneshot::Sender<CodexResult<()>>,
  ) {
      let mut owned = item_deletion::DeleteReply::new(reply);
-@@ -3104,6 +3275,7 @@ pub(crate) async fn handle_delete_item_sdk(
+@@ -3108,6 +3284,7 @@ pub(crate) async fn handle_delete_item_sdk(
              &generation,
              SdkRealtimeCommand::DeleteItem {
                  item_id,
@@ -2328,7 +2333,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                  reply: owned.clone(),
              },
          )
-@@ -3113,6 +3285,38 @@ pub(crate) async fn handle_delete_item_sdk(
+@@ -3117,6 +3294,38 @@ pub(crate) async fn handle_delete_item_sdk(
      }
  }
  
@@ -2367,7 +2372,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
  pub(crate) async fn handle_update_sdk(
      sess: &Arc<Session>,
      generation: String,
-@@ -3120,7 +3324,7 @@ pub(crate) async fn handle_update_sdk(
+@@ -3124,7 +3333,7 @@ pub(crate) async fn handle_update_sdk(
      profile: Option<codex_protocol::realtime_settings::RealtimeToolProfileUpdate>,
      reply: tokio::sync::oneshot::Sender<CodexResult<()>>,
  ) {
@@ -2376,7 +2381,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
  }
  
  pub(crate) async fn handle_tool_sdk(
-@@ -3932,15 +4136,18 @@ async fn handle_start_inner_with_adapter(
+@@ -3936,15 +4145,18 @@ async fn handle_start_inner_with_adapter(
                                  .err()
                                  .map(|error| error.to_string())
                                  .unwrap_or_else(|| "Realtime generation retired".into());
@@ -2399,7 +2404,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                      // The existing native call ledger retains exact completion
                      // proof even when its provider call item was deleted/evicted.
                      let settled_output_call =
-@@ -3965,8 +4172,8 @@ async fn handle_start_inner_with_adapter(
+@@ -3969,8 +4181,8 @@ async fn handle_start_inner_with_adapter(
                      let observed = {
                          let mut state = sdk.item_deletion.lock().unwrap();
                          let observed = state.observe(&event);
@@ -2410,7 +2415,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                          }
                          observed
                      };
-@@ -5035,17 +5242,66 @@ async fn handle_sdk_realtime_command(
+@@ -5039,17 +5251,66 @@ async fn handle_sdk_realtime_command(
                  &request,
                  &sdk.item_deletion.lock().unwrap(),
              );
@@ -2478,7 +2483,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              } else {
                  let action = sdk.history.lock().unwrap().start(request);
                  match action {
-@@ -5061,20 +5317,57 @@ async fn handle_sdk_realtime_command(
+@@ -5065,20 +5326,57 @@ async fn handle_sdk_realtime_command(
                  Err(error) => sdk.history.lock().unwrap().fail(error),
              }
          }
@@ -2538,7 +2543,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                      sdk.item_deletion
                          .lock()
                          .unwrap()
-@@ -5083,6 +5376,36 @@ async fn handle_sdk_realtime_command(
+@@ -5087,6 +5385,36 @@ async fn handle_sdk_realtime_command(
                  }
              }
          }
@@ -2575,7 +2580,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          SdkRealtimeCommand::HostedMcpApproval {
              approval_id,
              approve,
-@@ -5223,7 +5546,32 @@ async fn handle_sdk_realtime_command(
+@@ -5227,7 +5555,32 @@ async fn handle_sdk_realtime_command(
                  .await
                  .context("SDK batch status route closed")?;
          }
@@ -2609,7 +2614,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
          SdkRealtimeCommand::Input(params) => {
              writer.send_user_input(params.content).await?;
              if params.trigger_response {
-@@ -5408,6 +5756,7 @@ async fn handle_sdk_realtime_command(
+@@ -5412,6 +5765,7 @@ async fn handle_sdk_realtime_command(
          }
          SdkRealtimeCommand::Interrupt {
              response_id,
@@ -2617,7 +2622,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              playback,
              feedback,
              reply,
-@@ -5417,6 +5766,7 @@ async fn handle_sdk_realtime_command(
+@@ -5421,6 +5775,7 @@ async fn handle_sdk_realtime_command(
                  match writer
                      .interrupt_response(
                          response_id,
@@ -2625,7 +2630,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                          playback,
                          if responses.pending_create {
                              None
-@@ -5643,10 +5993,51 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5647,10 +6002,51 @@ async fn handle_realtime_server_event_with_configuration(
      response_create_queue: &mut RealtimeResponseCreateQueue,
      configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  ) -> anyhow::Result<()> {
@@ -2678,7 +2683,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              }
              RealtimeEvent::ConversationItemAdded {
                  item,
-@@ -5832,6 +6223,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5836,6 +6232,12 @@ async fn handle_realtime_server_event_with_configuration(
              {
                  return Ok(());
              }
@@ -2691,7 +2696,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
-@@ -5967,24 +6364,95 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5971,28 +6373,95 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -2726,6 +2731,8 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
                  return Ok(());
              };
              let mut request = request.clone();
+-            if request.namespace.is_some() {
+-                anyhow::bail!("Namespaced Realtime functions are not supported");
 +            let fingerprint = sdk_function_fingerprint(&request)?;
 +            if configuration
 +                .as_ref()
@@ -2780,24 +2787,25 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
 +                .is_caller_call(&request.call_id, None)
 +            {
 +                anyhow::bail!("Native function reused a caller-managed call ID");
-+            }
+             }
              if let Some(configuration) = &configuration {
                  tool_task::captured_definition(configuration, &request.name)?;
              }
--            let fingerprint = codex_realtime_control::FunctionCall {
--                namespace: request.namespace.clone(),
--                call_id: request.call_id.clone(),
--                item_id: request.item_id.clone(),
--                name: request.name.clone(),
--                arguments: request.arguments.clone(),
--                response_id: request.response_id.clone(),
--            }
--            .fingerprint()
--            .map_err(anyhow::Error::msg)?;
+-                if serde_json::to_vec(&request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
+-                    anyhow::bail!("SDK Realtime function request exceeds capacity");
+-                }
+-                let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&(
+-                    &request.namespace,
+-                    &request.call_id,
+-                    &request.item_id,
+-                    &request.name,
+-                    &request.arguments,
+-                ))?)
+-                .into();
              sdk.reclaim_terminal_calls(&request.call_id).await;
              let mut calls = sdk.function_calls.lock().await;
              if let Some(previous) = calls.get_mut(&request.call_id) {
-@@ -6057,6 +6525,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6065,6 +6534,12 @@ async fn handle_realtime_server_event_with_configuration(
              return Ok(());
          }
          RealtimeEvent::HandoffRequested(handoff) => {
@@ -2810,7 +2818,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              if let Some(sdk) = &handoff_state.sdk {
                  sdk.reclaim_terminal_calls(&handoff.handoff_id).await;
                  if !sdk
-@@ -6107,6 +6581,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6115,6 +6590,12 @@ async fn handle_realtime_server_event_with_configuration(
              false
          }
          RealtimeEvent::NoopRequested(noop) => {
@@ -2823,7 +2831,7 @@ index 098abdacac1d421253cf79eace5142635a5444af..4ef486124c3ec891e70bf8e3a97ac300
              *output_audio_state = None;
  
              match session_kind {
-@@ -6165,24 +6645,46 @@ async fn handle_user_audio_input(
+@@ -6173,24 +6654,46 @@ async fn handle_user_audio_input(
  ) -> anyhow::Result<()> {
      match input.context("user audio input channel closed")? {
          RealtimeAudioInput::Frame(frame) => writer.send_audio_frame(frame).await?,
@@ -2960,7 +2968,7 @@ index 97cb28ea2bd3deeae323d533d9dd520df9648eb8..298f20f0188d91375ee2c5dd21afcfac
          assert!(state.acknowledge("editable"));
          assert!(state.pending_matches("editable"));
 diff --git a/codex-rs/core/src/realtime_conversation/preparation.rs b/codex-rs/core/src/realtime_conversation/preparation.rs
-index 325da380c7a96807e85a159b91f46e4df4a697aa..18745d7085bc062474c8616d88d49849c4de567c 100644
+index cc19e0ce9ff103b580006e45c16d3f3cd852fb6b..59760c9c964593562fc119ef42d9bc418c372a81 100644
 --- a/codex-rs/core/src/realtime_conversation/preparation.rs
 +++ b/codex-rs/core/src/realtime_conversation/preparation.rs
 @@ -652,6 +652,7 @@ pub(crate) async fn dispatch_update_sdk(
@@ -5732,7 +5740,7 @@ index 895f7f1094f038da581b022b42a7c3b939788454..c99f983a387b08693e77937827b3c487
      source: &Arc<dyn codex_api::RealtimeNativeSource>,
  ) -> codex_protocol::error::Result<Option<String>> {
 diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
-index 7027e8eb9956346a5d4657ef0e595da8cafc0457..a76295d39f57d15bf4e88a423220d842c79ccf4e 100644
+index be1ba85773d5765cee3bb5630c22af28e0a555f6..829819d7189a82c1ae3963831906d2958241aa99 100644
 --- a/codex-rs/core/src/realtime_conversation_tests.rs
 +++ b/codex-rs/core/src/realtime_conversation_tests.rs
 @@ -472,6 +472,7 @@ async fn sdk_full_command_queue_does_not_consume_a_handoff() {
@@ -5775,7 +5783,7 @@ index 7027e8eb9956346a5d4657ef0e595da8cafc0457..a76295d39f57d15bf4e88a423220d842
                  reply: None,
                  playback: None,
                  feedback: None,
-@@ -2689,6 +2694,7 @@ async fn sdk_scoped_interrupt_preserves_b_and_uncorrelated_native_work() {
+@@ -2687,6 +2692,7 @@ async fn sdk_scoped_interrupt_preserves_b_and_uncorrelated_native_work() {
          .clone();
      super::handle_sdk_realtime_command(
          Ok(SdkRealtimeCommand::Interrupt {
@@ -5783,7 +5791,7 @@ index 7027e8eb9956346a5d4657ef0e595da8cafc0457..a76295d39f57d15bf4e88a423220d842
              reply: None,
              response_id: Some("a".into()),
              playback: None,
-@@ -2938,6 +2944,7 @@ async fn sdk_interrupt_completion_reports_actual_source_after_execution() {
+@@ -2936,6 +2942,7 @@ async fn sdk_interrupt_completion_reports_actual_source_after_execution() {
          .sdk_enqueue(
              "receipt-1",
              SdkRealtimeCommand::Interrupt {
@@ -5791,7 +5799,7 @@ index 7027e8eb9956346a5d4657ef0e595da8cafc0457..a76295d39f57d15bf4e88a423220d842
                  response_id: None,
                  playback: None,
                  feedback: None,
-@@ -3256,12 +3263,11 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -3254,12 +3261,11 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
              order: responses.latest_user_create,
              options: Default::default(),
          };
@@ -5807,7 +5815,7 @@ index 7027e8eb9956346a5d4657ef0e595da8cafc0457..a76295d39f57d15bf4e88a423220d842
          super::request_sdk_response_create(
              &sdk,
              &writer,
-@@ -4235,6 +4241,7 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
+@@ -4233,6 +4239,7 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
      if interrupt {
          super::handle_sdk_realtime_command(
              Ok(super::SdkRealtimeCommand::Interrupt {

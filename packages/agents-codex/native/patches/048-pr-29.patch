@@ -1,27 +1,3 @@
-diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 37584c7bf9ba2597b04155191f10ac73d45f3203..9913a3665a421fdb5594421225564b63d04cb405 100644
---- a/codex-rs/Cargo.lock
-+++ b/codex-rs/Cargo.lock
-@@ -2046,6 +2046,7 @@ dependencies = [
-  "codex-client",
-  "codex-http-client",
-  "codex-protocol",
-+ "codex-realtime-control",
-  "codex-utils-rustls-provider",
-  "codex-websocket-client",
-  "eventsource-stream",
-diff --git a/codex-rs/codex-api/Cargo.toml b/codex-rs/codex-api/Cargo.toml
-index 40297b15ff3f0377cd573c8f15d4dde667bc13cb..d1ecc0a9b394c51f3acfe1a148a61a6eeecc0dae 100644
---- a/codex-rs/codex-api/Cargo.toml
-+++ b/codex-rs/codex-api/Cargo.toml
-@@ -5,6 +5,7 @@ edition.workspace = true
- license.workspace = true
- 
- [dependencies]
-+codex-realtime-control = { path = "../realtime-control" }
- async-channel = { workspace = true }
- async-stream = { workspace = true }
- base64 = { workspace = true }
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 index 5eb8244dfe71920b5bbbfccbc2e174a9784238ed..d215fcad8198ac205fbe8e947df4d380954b2161 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
@@ -53,18 +29,20 @@ index 5eb8244dfe71920b5bbbfccbc2e174a9784238ed..d215fcad8198ac205fbe8e947df4d380
      pub async fn send_session_patch(
          &self,
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-index 8210a45e9fd7a0a9b6fcb3b1aa4326682de9619b..5856051952a5c8a985442dd9ce669c77e018d071 100644
+index 8210a45e9fd7a0a9b6fcb3b1aa4326682de9619b..64d7cd5db4eeab7a1ed2ced26f5ed3dfa71e094b 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-@@ -4,6 +4,7 @@ use codex_protocol::agent_profile::AgentProfileReceipt;
+@@ -4,6 +4,9 @@ use codex_protocol::agent_profile::AgentProfileReceipt;
  use codex_protocol::protocol::{RealtimeAudioFrame, RealtimeOutputGuard};
  use codex_protocol::realtime_settings::RealtimeAudioFormat;
  use codex_protocol::realtime_settings::RealtimeSessionUpdate;
-+use codex_realtime_control::contains_expected;
++#[path = "session_match.rs"]
++mod session_match;
++use session_match::contains_expected;
  use serde_json::Value;
  use std::collections::VecDeque;
  use std::sync::Arc;
-@@ -1433,79 +1434,6 @@ impl SessionReadiness {
+@@ -1433,79 +1436,6 @@ impl SessionReadiness {
      }
  }
  
@@ -144,6 +122,109 @@ index 8210a45e9fd7a0a9b6fcb3b1aa4326682de9619b..5856051952a5c8a985442dd9ce669c77
  #[cfg(test)]
  mod tests {
      use super::*;
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/session_match.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/session_match.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c04f1d81d155fd15ccf41e19b1f32c670c5be128
+--- /dev/null
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/session_match.rs
+@@ -0,0 +1,97 @@
++use serde_json::Value;
++
++// Provider-added defaults are allowed. Caller-supplied values must be retained;
++// map keys and positional array values retain their actual schema meanings.
++pub(super) fn contains_expected(accepted: &Value, expected: &Value) -> bool {
++    contains_expected_at(accepted, expected, MatchSite::Session)
++}
++#[derive(Clone, Copy, PartialEq)]
++enum MatchSite {
++    Session,
++    Tools,
++    HostedTool,
++    Value,
++}
++fn contains_expected_at(accepted: &Value, expected: &Value, site: MatchSite) -> bool {
++    match (accepted, expected) {
++        (Value::Object(accepted), Value::Object(expected)) => {
++            let hosted = site == MatchSite::HostedTool;
++            expected.iter().all(|(key, value)| {
++                // Credential values are write-only provider inputs. The ordered
++                // ACK accepts our request; it does not disclose those secrets.
++                if hosted && matches!(key.as_str(), "authorization" | "headers") {
++                    return true;
++                }
++                accepted.get(key).is_some_and(|accepted| {
++                    contains_expected_at(
++                        accepted,
++                        value,
++                        if site == MatchSite::Session && key == "tools" {
++                            MatchSite::Tools
++                        } else {
++                            MatchSite::Value
++                        },
++                    )
++                })
++            })
++        }
++        (Value::Array(accepted), Value::Array(expected)) => {
++            accepted.len() == expected.len()
++                && accepted.iter().zip(expected).all(|(accepted, expected)| {
++                    contains_expected_at(
++                        accepted,
++                        expected,
++                        if site == MatchSite::Tools && expected["type"] == "mcp" {
++                            MatchSite::HostedTool
++                        } else {
++                            MatchSite::Value
++                        },
++                    )
++                })
++        }
++        (Value::Number(accepted), Value::Number(expected)) => {
++            // Tolerate integer/float spelling only where neither side can lose
++            // integer precision. Large metadata integers must still match exactly.
++            let lossless = |number: &serde_json::Number| {
++                const EXACT_INTEGER_LIMIT: u64 = 1 << 53;
++                if let Some(value) = number.as_i64() {
++                    value.unsigned_abs() <= EXACT_INTEGER_LIMIT
++                } else if let Some(value) = number.as_u64() {
++                    value <= EXACT_INTEGER_LIMIT
++                } else {
++                    number
++                        .as_f64()
++                        .is_some_and(|value| value.abs() <= EXACT_INTEGER_LIMIT as f64)
++                }
++            };
++            accepted == expected
++                || (lossless(accepted)
++                    && lossless(expected)
++                    && accepted.as_f64() == expected.as_f64())
++        }
++        _ => accepted == expected,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    #[test]
++    fn shared_contract_matcher_keeps_defaults_numeric_aliases_and_schema_values() {
++        assert!(contains_expected(
++            &json!({"speed":1.0,"default":true}),
++            &json!({"speed":1})
++        ));
++        assert!(!contains_expected(
++            &json!({"metadata":{"id":9007199254740993u64}}),
++            &json!({"metadata":{"id":9007199254740992u64}})
++        ));
++        assert!(!contains_expected(
++            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"number"}}}}]}),
++            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"string"}}}}]})
++        ));
++    }
++
++}
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
 index b53b711c9afe961d9d2119a3fd01f0a2a5bd90db..bd626c869213a2a59a746fed4b8f7299ce94549c 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
@@ -220,7 +301,7 @@ index b53b711c9afe961d9d2119a3fd01f0a2a5bd90db..bd626c869213a2a59a746fed4b8f7299
                          create_response: None,
                          interrupt_response: None,
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace5142635a5444af 100644
+index e9f183750c1ed4b76cef74e3a48548eb03bc614d..cf29bfc812ddbcebbda6699e568970acdb62a7b2 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -77,6 +77,7 @@ use codex_protocol::protocol::RealtimeOutputModality;
@@ -231,7 +312,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
  use codex_utils_output_truncation::approx_bytes_for_tokens;
  use codex_utils_string::approx_token_count;
  use codex_utils_string::take_bytes_at_char_boundary;
-@@ -405,7 +406,7 @@ pub(crate) enum SdkRealtimeCommand {
+@@ -407,7 +408,7 @@ pub(crate) enum SdkRealtimeCommand {
      Audio(RealtimeAudioFrame),
      CommitAudio(SdkHostedMcpReply),
      Input(ConversationInputParams),
@@ -240,7 +321,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
      Text(ConversationTextParams),
      #[cfg(test)]
      Update(RealtimeSessionUpdate),
-@@ -515,7 +516,7 @@ struct RealtimeFunctionBatch {
+@@ -517,7 +518,7 @@ struct RealtimeFunctionBatch {
      handoff_pending: AtomicBool,
      handoff_accepted: AtomicBool,
      pending_create: AtomicBool,
@@ -249,7 +330,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
      automatic_retired: AtomicBool,
      committed_target: std::sync::Mutex<Option<codex_protocol::agent_profile::AgentProfileReceipt>>,
      update_reserved: AtomicBool,
-@@ -729,7 +730,7 @@ impl SdkRealtimeState {
+@@ -731,7 +732,7 @@ impl SdkRealtimeState {
                      batch.automatic_retired.store(true, Ordering::Release);
                      batch.pending_create.store(false, Ordering::Release);
                      if response_id.is_none() || retire_generation {
@@ -258,7 +339,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                      }
                  }
                  call.cancel.cancel();
-@@ -1097,36 +1098,70 @@ struct NativeResponseRequest {
+@@ -1099,6 +1100,12 @@ struct NativeResponseRequest {
      accepted: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  }
  
@@ -269,26 +350,14 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
 +}
 +
  #[derive(Default)]
--struct RealtimeResponseCreateQueue(
--    codex_realtime_control::ResponseCreateState<NativeResponseRequest>,
--);
-+struct RealtimeResponseCreateQueue {
-+    state: codex_realtime_control::ResponseCreateState<NativeResponseRequest>,
+ struct RealtimeResponseCreateQueue {
+     sdk_response_id: Option<String>,
+@@ -1108,24 +1115,51 @@ struct RealtimeResponseCreateQueue {
+     pending_user_create: bool,
+     pending_native_create: Option<NativeResponseRequest>,
+     pending_guardrail_response: Option<String>,
 +    pending_user_request: Option<PendingUserResponse>,
 +    latest_user_create: u64,
-+}
- impl std::ops::Deref for RealtimeResponseCreateQueue {
-     type Target = codex_realtime_control::ResponseCreateState<NativeResponseRequest>;
-     fn deref(&self) -> &Self::Target {
--        &self.0
-+        &self.state
-     }
- }
- impl std::ops::DerefMut for RealtimeResponseCreateQueue {
-     fn deref_mut(&mut self) -> &mut Self::Target {
--        &mut self.0
-+        &mut self.state
-     }
  }
  
  impl RealtimeResponseCreateQueue {
@@ -318,46 +387,55 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          reason: &str,
 +        explicit: Option<PendingUserResponse>,
      ) -> anyhow::Result<()> {
--        if !self.0.request_create() {
 +        if explicit.is_some() {
 +            self.retain_user_request(explicit);
 +            self.pending_native_create = None;
 +        }
-+        if !self.state.request_create() {
+         self.pending_guardrail_response = None;
+         if self.active_default_response {
+             self.pending_create = true;
              return Ok(());
          }
+-        // This foreground request consumes the coalesced pending intent.
+         self.pending_create = false;
+         self.pending_user_create = false;
+         self.pending_native_create = None;
 -        self.send_create_now(writer, reason).await
 +        let explicit = self.take_user_request();
 +        self.send_create_now(writer, reason, explicit).await
      }
  
      fn mark_started(&mut self) {
--        self.0.mark_started();
-+        self.state.mark_started();
+@@ -1142,32 +1176,44 @@ impl RealtimeResponseCreateQueue {
+             return Ok(());
+         }
+         self.pending_create = false;
+-        let explicit = std::mem::take(&mut self.pending_user_create);
++        let explicit_user_create = std::mem::take(&mut self.pending_user_create);
+         let native = self.pending_native_create.take();
+-        if !explicit && let Some(native) = native {
+-            self.active_default_response = send_native_response_request(writer, &native).await?;
+-            return Ok(());
+-        }
+-        if let Some(response_id) = self.pending_guardrail_response.take() {
++        let explicit = self.take_user_request();
++        if !explicit_user_create && let Some(native) = native {
++            self.active_default_response =
++                send_native_response_request(writer, &native).await?;
++            Ok(())
++        } else if let Some(response_id) = self.pending_guardrail_response.take() {
+             self.active_default_response = writer
+                 .send_response_create_for_response(&response_id)
+                 .await?;
+-            return Ok(());
++            Ok(())
++        } else {
++            self.send_create_now(writer, reason, explicit).await
+         }
+-        self.send_create_now(writer, reason).await
      }
  
-     async fn mark_finished(
-@@ -1134,7 +1169,9 @@ impl RealtimeResponseCreateQueue {
-         writer: &RealtimeWebsocketWriter,
-         reason: &str,
-     ) -> anyhow::Result<()> {
--        match self.0.mark_finished() {
-+        let intent = self.state.mark_finished();
-+        let explicit = intent.as_ref().and_then(|_| self.take_user_request());
-+        match intent {
-             None => Ok(()),
-             Some(codex_realtime_control::CreateIntent::Native(native)) => {
-                 self.active_default_response =
-@@ -1148,7 +1185,7 @@ impl RealtimeResponseCreateQueue {
-                 Ok(())
-             }
-             Some(codex_realtime_control::CreateIntent::Default) => {
--                self.send_create_now(writer, reason).await
-+                self.send_create_now(writer, reason, explicit).await
-             }
-         }
-     }
-@@ -1157,12 +1194,22 @@ impl RealtimeResponseCreateQueue {
+     async fn send_create_now(
          &mut self,
          writer: &RealtimeWebsocketWriter,
          reason: &str,
@@ -376,13 +454,13 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
              if matches!(&err, ApiError::Stream(message) if message.starts_with(REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX))
              {
                  warn!("realtime response.create raced an active response; deferring");
--                self.0.raced_active_response();
-+                self.state.raced_active_response();
+                 self.active_default_response = true;
+                 self.pending_create = true;
 +                self.retain_user_request(explicit);
                  return Ok(());
              }
              warn!("failed to send {reason} response.create: {err}");
-@@ -1485,7 +1532,7 @@ impl RealtimeConversationManager {
+@@ -1490,7 +1536,7 @@ impl RealtimeConversationManager {
              &command,
              SdkRealtimeCommand::CommitAudio(_)
                  | SdkRealtimeCommand::Input(_)
@@ -391,7 +469,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          ) {
              if state.handoff.event_parser != RealtimeEventParser::RealtimeV2 {
                  return Err(CodexErr::InvalidRequest(
-@@ -1501,6 +1548,16 @@ impl RealtimeConversationManager {
+@@ -1506,6 +1552,16 @@ impl RealtimeConversationManager {
                  })?
                  .accepted()
                  .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
@@ -408,7 +486,18 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
              if let SdkRealtimeCommand::Input(params) = &command {
                  if params.content.is_empty()
                      || params.content.iter().any(|item| match item {
-@@ -4755,7 +4812,7 @@ async fn handle_handoff_output(
+@@ -1554,7 +1610,9 @@ impl RealtimeConversationManager {
+                 ));
+             }
+             SdkRealtimeCommand::Fail { handoff_id }
+-                if calls.get(handoff_id).is_some_and(|call| call.claimed) =>
++                if calls
++                    .get(handoff_id)
++                    .is_some_and(|call| call.claimed) =>
+             {
+                 return Err(CodexErr::InvalidRequest(
+                     "An admitted native function is owned by its task".into(),
+@@ -4758,7 +4816,7 @@ async fn handle_handoff_output(
                      Err(err)
                  } else {
                      return response_create_queue
@@ -417,7 +506,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                          .await;
                  }
              }
-@@ -4767,7 +4824,7 @@ async fn handle_handoff_output(
+@@ -4770,7 +4828,7 @@ async fn handle_handoff_output(
                      Err(err)
                  } else {
                      return response_create_queue
@@ -426,7 +515,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                          .await;
                  }
              }
-@@ -4808,7 +4865,7 @@ async fn handle_handoff_output(
+@@ -4811,7 +4869,7 @@ async fn handle_handoff_output(
                      Err(err)
                  } else {
                      return response_create_queue
@@ -435,7 +524,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                          .await;
                  }
              }
-@@ -4836,10 +4893,10 @@ async fn request_sdk_response_create(
+@@ -4839,10 +4897,10 @@ async fn request_sdk_response_create(
      writer: &RealtimeWebsocketWriter,
      responses: &mut RealtimeResponseCreateQueue,
      reason: &str,
@@ -449,7 +538,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          return Ok(());
      }
      let hold = sdk
-@@ -4857,21 +4914,16 @@ async fn request_sdk_response_create(
+@@ -4860,21 +4918,16 @@ async fn request_sdk_response_create(
          })
          .cloned();
      if let Some(batch) = hold {
@@ -478,7 +567,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
  }
  
  async fn send_native_response_request(
-@@ -4924,7 +4976,7 @@ async fn request_sdk_native_response(
+@@ -4927,7 +4980,7 @@ async fn request_sdk_native_response(
          return Ok(());
      }
      // A queued explicit request owns the coalesced response and its new input.
@@ -487,7 +576,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          return Ok(());
      }
      let pending = writer.configuration().is_some_and(|configuration| {
-@@ -5111,15 +5163,14 @@ async fn handle_sdk_realtime_command(
+@@ -5114,15 +5167,14 @@ async fn handle_sdk_realtime_command(
                      .handoff_accepted
                      .store(false, Ordering::Release);
                  let automatic = intent.batch.pending_create.swap(false, Ordering::AcqRel);
@@ -506,7 +595,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                      )
                      .await?;
                  } else if automatic {
-@@ -5149,15 +5200,14 @@ async fn handle_sdk_realtime_command(
+@@ -5152,15 +5204,14 @@ async fn handle_sdk_realtime_command(
                  batch.handoff_pending.store(false, Ordering::Release);
                  batch.continued.store(true, Ordering::Release);
                  let automatic = batch.pending_create.swap(false, Ordering::AcqRel);
@@ -525,7 +614,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                      )
                      .await?;
                  } else if automatic && let Some(request) = responses.pending_native_create.take() {
-@@ -5177,28 +5227,23 @@ async fn handle_sdk_realtime_command(
+@@ -5180,28 +5231,23 @@ async fn handle_sdk_realtime_command(
          SdkRealtimeCommand::Input(params) => {
              writer.send_user_input(params.content).await?;
              if params.trigger_response {
@@ -562,7 +651,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
              }
          }
          SdkRealtimeCommand::Complete { handoff_id, text } => {
-@@ -5405,7 +5450,7 @@ async fn handle_sdk_realtime_command(
+@@ -5408,7 +5454,7 @@ async fn handle_sdk_realtime_command(
              };
              if requested.is_none() {
                  responses.pending_create = false;
@@ -571,7 +660,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                  responses.pending_native_create = None;
                  responses.pending_guardrail_response = None;
              }
-@@ -5434,26 +5479,25 @@ async fn handle_sdk_realtime_command(
+@@ -5437,26 +5483,25 @@ async fn handle_sdk_realtime_command(
              drop(calls);
              let work = sdk.retire_tool_work(false, requested.as_deref()).await;
              let calls = sdk.function_calls.lock().await;
@@ -605,7 +694,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                  )
                  .await?;
              }
-@@ -5548,13 +5592,12 @@ async fn defer_sdk_create_until_handoff(
+@@ -5551,13 +5596,12 @@ async fn defer_sdk_create_until_handoff(
          })
          .cloned();
      if let Some(batch) = held {
@@ -621,7 +710,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
      }
  }
  
-@@ -5567,9 +5610,8 @@ async fn maybe_continue_hosted_mcp(
+@@ -5570,9 +5614,8 @@ async fn maybe_continue_hosted_mcp(
      if !sdk.hosted_mcp_auto_response && !responses.pending_create {
          return Ok(());
      }
@@ -633,7 +722,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          return Ok(());
      }
      let created = if let Some(request) = &responses.pending_native_create {
-@@ -5584,7 +5626,7 @@ async fn maybe_continue_hosted_mcp(
+@@ -5587,7 +5630,7 @@ async fn maybe_continue_hosted_mcp(
      if created {
          responses.active_default_response = true;
          responses.pending_create = false;
@@ -642,7 +731,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
          responses.pending_native_create = None;
          responses.pending_guardrail_response = None;
      }
-@@ -5773,7 +5815,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5776,7 +5819,7 @@ async fn handle_realtime_server_event_with_configuration(
              if response_create_queue.pending_guardrail_response.is_some() {
                  response_create_queue.pending_guardrail_response = None;
                  response_create_queue.pending_create = false;
@@ -651,7 +740,7 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
              }
              response_create_queue.sdk_response_id = response.response_id.clone();
              response_create_queue.sdk_cancelled_response = None;
-@@ -5861,7 +5903,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5864,7 +5907,7 @@ async fn handle_realtime_server_event_with_configuration(
                      handoff_pending: AtomicBool::new(false),
                      handoff_accepted: AtomicBool::new(false),
                      pending_create: AtomicBool::new(false),
@@ -660,7 +749,36 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                      automatic_retired: AtomicBool::new(false),
                      committed_target: std::sync::Mutex::new(None),
                      update_reserved: AtomicBool::new(false),
-@@ -6052,7 +6094,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5939,17 +5982,17 @@ async fn handle_realtime_server_event_with_configuration(
+             if let Some(configuration) = &configuration {
+                 tool_task::captured_definition(configuration, &request.name)?;
+             }
+-            if serde_json::to_vec(&request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
+-                anyhow::bail!("SDK Realtime function request exceeds capacity");
+-            }
+-            let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&(
+-                &request.namespace,
+-                &request.call_id,
+-                &request.item_id,
+-                &request.name,
+-                &request.arguments,
+-            ))?)
+-            .into();
++                if serde_json::to_vec(&request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
++                    anyhow::bail!("SDK Realtime function request exceeds capacity");
++                }
++                let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&(
++                    &request.namespace,
++                    &request.call_id,
++                    &request.item_id,
++                    &request.name,
++                    &request.arguments,
++                ))?)
++                .into();
+             sdk.reclaim_terminal_calls(&request.call_id).await;
+             let mut calls = sdk.function_calls.lock().await;
+             if let Some(previous) = calls.get_mut(&request.call_id) {
+@@ -6059,7 +6102,7 @@ async fn handle_realtime_server_event_with_configuration(
                                  return Err(err.into());
                              }
                              response_create_queue
@@ -670,10 +788,34 @@ index a09bde26d3d3f5462807d1d0d35dea48e807e627..098abdacac1d421253cf79eace514263
                          }
                          None => {
 diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
-index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8cafc0457 100644
+index fba8d5369822560eeec47e629c61cd186d277fda..be1ba85773d5765cee3bb5630c22af28e0a555f6 100644
 --- a/codex-rs/core/src/realtime_conversation_tests.rs
 +++ b/codex-rs/core/src/realtime_conversation_tests.rs
-@@ -3113,7 +3113,7 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -2098,7 +2098,10 @@ async fn sdk_function_busy_admission_preserves_root_and_can_settle_unclaimed_fai
+             .sub_id,
+         "native-tool-turn"
+     );
+-    assert!(!sdk.function_calls.lock().await["second-provider-call"].claimed);
++    assert!(
++        !sdk.function_calls.lock().await["second-provider-call"]
++            .claimed
++    );
+     assert!(
+         session
+             .conversation
+@@ -2157,7 +2160,10 @@ async fn sdk_function_does_not_acknowledge_a_task_rejected_by_tree_shutdown() {
+     .await;
+     assert!(result.is_err());
+     assert!(session.active_turn.lock().await.is_none());
+-    assert!(!sdk.function_calls.lock().await["provider-call"].claimed);
++    assert!(
++        !sdk.function_calls.lock().await["provider-call"]
++            .claimed
++    );
+     assert!(http.received_requests().await.unwrap().is_empty());
+     super::handle_close_sdk(&session, "tools-generation".into())
+         .await
+@@ -3105,7 +3111,7 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
          handoff_pending: AtomicBool::new(false),
          handoff_accepted: AtomicBool::new(true),
          pending_create: AtomicBool::new(true),
@@ -682,7 +824,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
          automatic_retired: AtomicBool::new(false),
          committed_target: std::sync::Mutex::new(Some(target.clone())),
          update_reserved: AtomicBool::new(true),
-@@ -3222,7 +3222,11 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -3214,7 +3220,11 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
              wire.recv().await.unwrap()["type"],
              "conversation.item.create"
          );
@@ -695,7 +837,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
          batch.handoff_accepted.store(true, Ordering::Release);
          let stale = codex_api::RealtimeEvent::ResponseDone(
              codex_protocol::protocol::RealtimeResponseDone {
-@@ -3242,8 +3246,40 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -3234,8 +3244,40 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
          )
          .await
          .unwrap();
@@ -738,7 +880,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
          control.send(SdkWireControl::Event(serde_json::json!({"type":"response.done","response":{"id":"live-response","status":"completed","output":[]}}))).unwrap();
          let done = loop {
              if let Some(event @ codex_api::RealtimeEvent::ResponseDone(_)) =
-@@ -3263,8 +3299,12 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -3255,8 +3297,12 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
          )
          .await
          .unwrap();
@@ -753,7 +895,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
      }
      let (receipt_tx, receipt_rx) = tokio::sync::oneshot::channel();
      control
-@@ -3338,18 +3378,25 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+@@ -3330,18 +3376,25 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
      if interrupt && !queued_user {
          assert!(wire.try_recv().is_err());
          // A new explicit request uses the accepted B configuration.
@@ -782,7 +924,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
      assert!(wire.try_recv().is_err());
      connection.close().await.unwrap();
      server.await.unwrap();
-@@ -4127,7 +4174,7 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
+@@ -4119,7 +4172,7 @@ async fn sdk_wire_pending_handoff_case(interrupt: bool, full_terminal_queue: boo
                  batch
                      .handoff_pending
                      .load(std::sync::atomic::Ordering::Acquire)
@@ -791,7 +933,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
              })
          }));
          while sdk
-@@ -4561,7 +4608,7 @@ async fn sdk_scoped_batch_interrupt_joins_its_policy_while_later_batch_executes(
+@@ -4553,7 +4606,7 @@ async fn sdk_scoped_batch_interrupt_joins_its_policy_while_later_batch_executes(
              response_id: response.into(), call_ids: vec![id.into()],
              configuration: configuration.clone(), completed: std::sync::OnceLock::new(), root_dispatch: std::sync::OnceLock::new(),
              handoff_pending: AtomicBool::new(false), handoff_accepted: AtomicBool::new(false),
@@ -800,7 +942,7 @@ index 40af166a0e6048ce31d6f0f2fd23d193ab78ed25..7027e8eb9956346a5d4657ef0e595da8
              automatic_retired: AtomicBool::new(false), committed_target: Default::default(),
              update_reserved: AtomicBool::new(false), continued: AtomicBool::new(false),
          });
-@@ -4877,7 +4924,7 @@ async fn sdk_terminal_reclamation_keeps_pending_physical_preparation_and_handoff
+@@ -4869,7 +4922,7 @@ async fn sdk_terminal_reclamation_keeps_pending_physical_preparation_and_handoff
          handoff_pending: AtomicBool::new(true),
          handoff_accepted: AtomicBool::new(false),
          pending_create: AtomicBool::new(true),
@@ -887,108 +1029,3 @@ index 22418d10e76253fae0d14dc29eb3388419fb07cf..546528348012dc947018b29a64494735
          #[serde(default, skip_serializing_if = "Option::is_none")]
          create_response: Option<bool>,
          #[serde(default, skip_serializing_if = "Option::is_none")]
-diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index 1fbf2380f357a1af07ff0b70a6c82aa04be68f70..a4ea6b4c936dad6e7f46c08ae3d50ebaa0a00b50 100644
---- a/codex-rs/realtime-control/src/lib.rs
-+++ b/codex-rs/realtime-control/src/lib.rs
-@@ -134,11 +134,100 @@ impl FunctionCall {
-     }
- }
- 
-+// Provider-added defaults are allowed. Caller-supplied values must be retained;
-+// map keys and positional array values retain their actual schema meanings.
-+pub fn contains_expected(accepted: &Value, expected: &Value) -> bool {
-+    contains_expected_at(accepted, expected, MatchSite::Session)
-+}
-+#[derive(Clone, Copy, PartialEq)]
-+enum MatchSite {
-+    Session,
-+    Tools,
-+    HostedTool,
-+    Value,
-+}
-+fn contains_expected_at(accepted: &Value, expected: &Value, site: MatchSite) -> bool {
-+    match (accepted, expected) {
-+        (Value::Object(accepted), Value::Object(expected)) => {
-+            let hosted = site == MatchSite::HostedTool;
-+            expected.iter().all(|(key, value)| {
-+                // Credential values are write-only provider inputs. The ordered
-+                // ACK accepts our request; it does not disclose those secrets.
-+                if hosted && matches!(key.as_str(), "authorization" | "headers") {
-+                    return true;
-+                }
-+                accepted.get(key).is_some_and(|accepted| {
-+                    contains_expected_at(
-+                        accepted,
-+                        value,
-+                        if site == MatchSite::Session && key == "tools" {
-+                            MatchSite::Tools
-+                        } else {
-+                            MatchSite::Value
-+                        },
-+                    )
-+                })
-+            })
-+        }
-+        (Value::Array(accepted), Value::Array(expected)) => {
-+            accepted.len() == expected.len()
-+                && accepted.iter().zip(expected).all(|(accepted, expected)| {
-+                    contains_expected_at(
-+                        accepted,
-+                        expected,
-+                        if site == MatchSite::Tools && expected["type"] == "mcp" {
-+                            MatchSite::HostedTool
-+                        } else {
-+                            MatchSite::Value
-+                        },
-+                    )
-+                })
-+        }
-+        (Value::Number(accepted), Value::Number(expected)) => {
-+            // Tolerate integer/float spelling only where neither side can lose
-+            // integer precision. Large metadata integers must still match exactly.
-+            let lossless = |number: &serde_json::Number| {
-+                const EXACT_INTEGER_LIMIT: u64 = 1 << 53;
-+                if let Some(value) = number.as_i64() {
-+                    value.unsigned_abs() <= EXACT_INTEGER_LIMIT
-+                } else if let Some(value) = number.as_u64() {
-+                    value <= EXACT_INTEGER_LIMIT
-+                } else {
-+                    number
-+                        .as_f64()
-+                        .is_some_and(|value| value.abs() <= EXACT_INTEGER_LIMIT as f64)
-+                }
-+            };
-+            accepted == expected
-+                || (lossless(accepted)
-+                    && lossless(expected)
-+                    && accepted.as_f64() == expected.as_f64())
-+        }
-+        _ => accepted == expected,
-+    }
-+}
-+
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use serde_json::json;
- 
-+    #[test]
-+    fn shared_contract_matcher_keeps_defaults_numeric_aliases_and_schema_values() {
-+        assert!(contains_expected(
-+            &json!({"speed":1.0,"default":true}),
-+            &json!({"speed":1})
-+        ));
-+        assert!(!contains_expected(
-+            &json!({"metadata":{"id":9007199254740993u64}}),
-+            &json!({"metadata":{"id":9007199254740992u64}})
-+        ));
-+        assert!(!contains_expected(
-+            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"number"}}}}]}),
-+            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"string"}}}}]})
-+        ));
-+    }
-+
-     #[test]
-     fn shared_response_state_coalesces_and_preserves_native_and_guardrail_intents() {
-         let mut q = ResponseCreateState::default();
