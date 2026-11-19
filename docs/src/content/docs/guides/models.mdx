@@ -106,7 +106,7 @@ You can instead pass `codexOptions: { apiKey: process.env.OPENAI_API_KEY }` to t
 
 ### Run the same agent with either provider
 
-Save this code in an application that uses your branch checkout. Run it from a Git repository. Set `USE_CODEX=1` to choose Codex; omit the variable to use the default OpenAI provider and `OPENAI_API_KEY`.
+Save this code as `examples/tools/codex-switch.ts` in the checkout. That workspace already depends on the local SDK packages.
 
 ```ts
 import { Agent, Runner, tool } from '@openai/agents';
@@ -137,6 +137,15 @@ const runner = new Runner({
 const result = await runner.run(agent, 'What is the status of order A123?');
 console.log(result.finalOutput);
 ```
+
+Run both commands from the repository root:
+
+```sh
+pnpm -F tools exec tsx codex-switch.ts
+USE_CODEX=1 pnpm -F tools exec tsx codex-switch.ts
+```
+
+The first command uses the default OpenAI provider and needs `OPENAI_API_KEY`. The second runs the same agent through Codex.
 
 The example disables SDK tracing so a saved Codex login is sufficient for Codex mode. SDK trace export needs separate OpenAI credentials; enable tracing when those credentials are configured.
 

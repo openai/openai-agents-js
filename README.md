@@ -20,6 +20,8 @@ The OpenAI Agents SDK is a lightweight yet powerful framework for building multi
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
+On the experimental `feat/simple-codex` branch, you can [run the same agent with or without Codex](docs/src/content/docs/guides/models.mdx#experimental-codex-provider). The guide shows both commands and explains which features still need the default provider.
+
 ## Get started
 
 ### Supported environments
