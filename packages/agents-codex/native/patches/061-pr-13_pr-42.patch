@@ -522,7 +522,7 @@ index 74c3a0dfadb50c5860b938dd4d72cbc5dcdcf5ee..0276240d8be86eb8e802b849eba66922
                      tool_choice: None,
                      disabled_plugin_ids: Vec::new(),
 diff --git a/codex-rs/state/src/runtime/threads.rs b/codex-rs/state/src/runtime/threads.rs
-index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc4914cd71e02 100644
+index c72213e81b328f1f157812a0eb7e02458bd02d42..207d44d1c5a27a0d6d92544bba8306658c809eba 100644
 --- a/codex-rs/state/src/runtime/threads.rs
 +++ b/codex-rs/state/src/runtime/threads.rs
 @@ -502,7 +502,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
@@ -554,7 +554,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
              .await
      }
  
-@@ -537,11 +548,22 @@ ON CONFLICT(child_thread_id) DO NOTHING
+@@ -537,11 +548,18 @@ ON CONFLICT(child_thread_id) DO NOTHING
          page_size: usize,
          filters: ThreadFilterOptions<'_>,
          relation_filter: Option<crate::ThreadRelationFilter>,
@@ -564,21 +564,17 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
  
          let mut builder = QueryBuilder::<Sqlite>::new("");
 -        push_list_threads_query(&mut builder, filters, relation_filter, limit);
-+        if include_empty_preview {
-+            push_list_threads_query_with_preview(
-+                &mut builder,
-+                filters,
-+                relation_filter,
-+                limit,
-+                true,
-+            );
-+        } else {
-+            push_list_threads_query(&mut builder, filters, relation_filter, limit);
-+        }
++        push_list_threads_query_with_preview(
++            &mut builder,
++            filters,
++            relation_filter,
++            limit,
++            include_empty_preview,
++        );
  
          let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
          let mut items = Vec::with_capacity(rows.len());
-@@ -562,7 +584,11 @@ ON CONFLICT(child_thread_id) DO NOTHING
+@@ -562,7 +580,11 @@ ON CONFLICT(child_thread_id) DO NOTHING
                  parent_thread_ids.remove(&overflow_item.id);
              }
              items.last().and_then(|item| {
@@ -591,7 +587,13 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
              })
          } else {
              None
-@@ -1262,6 +1288,16 @@ fn push_list_threads_query(
+@@ -1257,11 +1279,22 @@ fn one_thread_id_from_rows(
+     }
+ }
+ 
++#[cfg(test)]
+ fn push_list_threads_query(
+     builder: &mut QueryBuilder<Sqlite>,
      filters: ThreadFilterOptions<'_>,
      relation_filter: Option<crate::ThreadRelationFilter>,
      limit: usize,
@@ -608,7 +610,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
  ) {
      if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
          builder.push(
-@@ -1295,7 +1331,8 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
+@@ -1295,7 +1328,8 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
          ),
          None => builder.push(" FROM threads"),
      };
@@ -618,7 +620,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
          || matches!(
              filters.sort_key,
              SortKey::RecencyAt | SortKey::SectionPosition
-@@ -1304,7 +1341,7 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
+@@ -1304,7 +1338,7 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
          builder,
          filters,
          include_thread_id_tiebreaker,
@@ -627,7 +629,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
      );
      match relation_filter {
          Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
-@@ -1787,6 +1824,27 @@ mod tests {
+@@ -1787,6 +1821,27 @@ mod tests {
              .await
              .unwrap();
          assert!(active.items.is_empty());
@@ -655,7 +657,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
  
          runtime
              .mark_archived(thread_id, &metadata.rollout_path, Utc::now())
-@@ -1812,6 +1870,72 @@ mod tests {
+@@ -1812,6 +1867,72 @@ mod tests {
          assert!(active.items.is_empty());
      }
  
@@ -729,7 +731,7 @@ index c72213e81b328f1f157812a0eb7e02458bd02d42..89d4f759f675e9f91767bf32407dc491
      async fn list_threads_filters_sections_before_recency_pagination_and_uses_index() {
          let codex_home = unique_temp_dir();
 diff --git a/codex-rs/thread-store/src/local/list_threads.rs b/codex-rs/thread-store/src/local/list_threads.rs
-index f459911c999a299a713e8535fc5ab8af27132a77..bad31214d3b2dba6cbf9683f45720b4db2c3ba7d 100644
+index f459911c999a299a713e8535fc5ab8af27132a77..a2451bfd9500bd1e578aef1301ecac0f58f30201 100644
 --- a/codex-rs/thread-store/src/local/list_threads.rs
 +++ b/codex-rs/thread-store/src/local/list_threads.rs
 @@ -24,9 +24,24 @@ use crate::ThreadStoreResult;
@@ -758,15 +760,6 @@ index f459911c999a299a713e8535fc5ab8af27132a77..bad31214d3b2dba6cbf9683f45720b4d
      }
      let cursor = params
          .cursor
-@@ -55,7 +70,7 @@ pub(super) async fn list_threads(
-         model_provider_id: store.config.default_model_provider_id.clone(),
-         generate_memories: false,
-     };
--    let page = list_rollout_threads(
-+    let page = list_rollout_threads_with_preview(
-         state_db.clone(),
-         &rollout_config,
-         store.config.default_model_provider_id.as_str(),
 @@ -63,6 +78,7 @@ pub(super) async fn list_threads(
          cursor.as_ref(),
          sort_key,
@@ -783,7 +776,7 @@ index f459911c999a299a713e8535fc5ab8af27132a77..bad31214d3b2dba6cbf9683f45720b4d
  ) -> ThreadStoreResult<ThreadPage> {
      let section = params
          .section
-@@ -206,26 +223,40 @@ async fn list_section_threads(
+@@ -206,26 +223,17 @@ async fn list_section_threads(
          },
          search_term: params.search_term.as_deref(),
      };
@@ -805,84 +798,57 @@ index f459911c999a299a713e8535fc5ab8af27132a77..bad31214d3b2dba6cbf9683f45720b4d
 -                    filters,
 -                )
 -                .await
+-        }
+-        None => state_db.list_threads(params.page_size, filters).await,
++    let relation = params.relation_filter.map(state_relation_filter);
 +    let page = if include_empty_preview {
-+        let relation = params.relation_filter.map(|relation| match relation {
-+            ThreadRelationFilter::DirectChildrenOf(id) => {
-+                codex_state::ThreadRelationFilter::DirectChildrenOf(id)
-+            }
-+            ThreadRelationFilter::DescendantsOf(id) => {
-+                codex_state::ThreadRelationFilter::DescendantsOf(id)
-+            }
-+        });
 +        state_db
 +            .list_threads_including_empty_preview(params.page_size, filters, relation)
 +            .await
++    } else if let Some(relation) = relation {
++        state_db
++            .list_threads_by_relation(params.page_size, relation, filters)
++            .await
 +    } else {
-+        match params.relation_filter {
-+            Some(ThreadRelationFilter::DirectChildrenOf(thread_id)) => {
-+                state_db
-+                    .list_threads_by_relation(
-+                        params.page_size,
-+                        codex_state::ThreadRelationFilter::DirectChildrenOf(thread_id),
-+                        filters,
-+                    )
-+                    .await
-+            }
-+            Some(ThreadRelationFilter::DescendantsOf(thread_id)) => {
-+                state_db
-+                    .list_threads_by_relation(
-+                        params.page_size,
-+                        codex_state::ThreadRelationFilter::DescendantsOf(thread_id),
-+                        filters,
-+                    )
-+                    .await
-+            }
-+            None => state_db.list_threads(params.page_size, filters).await,
-         }
--        None => state_db.list_threads(params.page_size, filters).await,
++        state_db.list_threads(params.page_size, filters).await
      }
      .map_err(|err| ThreadStoreError::Internal {
          message: format!("failed to list section-ordered threads: {err}"),
-@@ -262,7 +293,34 @@ pub(super) async fn list_rollout_threads(
-     sort_key: codex_rollout::ThreadSortKey,
-     sort_direction: codex_rollout::SortDirection,
- ) -> ThreadStoreResult<codex_rollout::ThreadsPage> {
--    if params.relation_filter.is_some() || params.section.is_some() || params.project_id.is_some() {
-+    list_rollout_threads_with_preview(
-+        state_db,
-+        config,
-+        default_model_provider_id,
-+        params,
-+        cursor,
-+        sort_key,
-+        sort_direction,
-+        false,
-+    )
-+    .await
+@@ -253,6 +261,17 @@ async fn list_section_threads(
+     Ok(ThreadPage { items, next_cursor })
+ }
+ 
++fn state_relation_filter(relation: ThreadRelationFilter) -> codex_state::ThreadRelationFilter {
++    match relation {
++        ThreadRelationFilter::DirectChildrenOf(id) => {
++            codex_state::ThreadRelationFilter::DirectChildrenOf(id)
++        }
++        ThreadRelationFilter::DescendantsOf(id) => {
++            codex_state::ThreadRelationFilter::DescendantsOf(id)
++        }
++    }
 +}
 +
-+async fn list_rollout_threads_with_preview(
-+    state_db: Option<codex_rollout::StateDbHandle>,
-+    config: &RolloutConfig,
-+    default_model_provider_id: &str,
-+    params: &ListThreadsParams,
-+    cursor: Option<&codex_rollout::Cursor>,
-+    sort_key: codex_rollout::ThreadSortKey,
-+    sort_direction: codex_rollout::SortDirection,
+ pub(super) async fn list_rollout_threads(
+     state_db: Option<codex_rollout::StateDbHandle>,
+     config: &RolloutConfig,
+@@ -261,35 +280,51 @@ pub(super) async fn list_rollout_threads(
+     cursor: Option<&codex_rollout::Cursor>,
+     sort_key: codex_rollout::ThreadSortKey,
+     sort_direction: codex_rollout::SortDirection,
 +    include_empty_preview: bool,
-+) -> ThreadStoreResult<codex_rollout::ThreadsPage> {
-+    if include_empty_preview
-+        || params.relation_filter.is_some()
-+        || params.section.is_some()
-+        || params.project_id.is_some()
-+    {
-         let relation_filter = params
-             .relation_filter
-             .map(|relation_filter| match relation_filter {
-@@ -273,23 +331,43 @@ pub(super) async fn list_rollout_threads(
-                     codex_state::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)
-                 }
-             });
+ ) -> ThreadStoreResult<codex_rollout::ThreadsPage> {
+-    if params.relation_filter.is_some() || params.section.is_some() || params.project_id.is_some() {
+-        let relation_filter = params
+-            .relation_filter
+-            .map(|relation_filter| match relation_filter {
+-                ThreadRelationFilter::DirectChildrenOf(parent_thread_id) => {
+-                    codex_state::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)
+-                }
+-                ThreadRelationFilter::DescendantsOf(ancestor_thread_id) => {
+-                    codex_state::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)
+-                }
+-            });
 -        let page = codex_rollout::state_db::list_threads_db(
 -            state_db.as_deref(),
 -            &config.sqlite,
@@ -900,6 +866,12 @@ index f459911c999a299a713e8535fc5ab8af27132a77..bad31214d3b2dba6cbf9683f45720b4d
 -            params.search_term.as_deref(),
 -        )
 -        .await
++    if include_empty_preview
++        || params.relation_filter.is_some()
++        || params.section.is_some()
++        || params.project_id.is_some()
++    {
++        let relation_filter = params.relation_filter.map(state_relation_filter);
 +        let page = if include_empty_preview {
 +            codex_rollout::state_db::list_threads_db_including_empty_preview(
 +                state_db.as_deref(),
@@ -958,3 +930,15 @@ index 9809aef566cce3532fdac37c89ac9b550bd2607a..3812ac1d8ab87a5a327d3d30de73bd23
 +        list_threads::list_threads_including_empty_preview(self, params).await
 +    }
 +}
+diff --git a/codex-rs/thread-store/src/local/search_threads.rs b/codex-rs/thread-store/src/local/search_threads.rs
+index 7e8401aa036e168c595a4e1aee2018ffcd37a9d1..4726c75c5a85d040f03770a560f090ffcd1e1944 100644
+--- a/codex-rs/thread-store/src/local/search_threads.rs
++++ b/codex-rs/thread-store/src/local/search_threads.rs
+@@ -123,6 +123,7 @@ pub(super) async fn search_threads(
+             page_cursor.as_ref(),
+             sort_key,
+             sort_direction,
++            /*include_empty_preview*/ false,
+         )
+         .await?;
+         for item in page.items {
