@@ -894,10 +894,10 @@ index 6eee4d39396ade3b4b6a5f66ebfabde35355ab19..099b7979996fae35b15de5abb9798b55
              turn: Arc::clone(&turn_context),
              step_context,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619afabdc6db 100644
+index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..cfc4db3c82863f3d7ba522ba1f11a7e4fa94e135 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -4528,6 +4528,213 @@ fn assign_missing_streamed_response_item_id(
+@@ -4528,6 +4528,192 @@
      Session::assign_missing_response_item_id(item);
  }
  
@@ -905,34 +905,9 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
 +// Bound provider program admission independently at the same capacity.
 +const MAX_HOSTED_PROGRAM_CALL_IDS_PER_RESPONSE: usize = 256;
 +
-+fn retained_hosted_program_calls(prompt: &Prompt) -> HashMap<String, bool> {
-+    let mut retained = HashMap::new();
-+    for item in prompt.input.iter() {
-+        match item {
-+            ResponseItem::Program { call_id, .. } => {
-+                retained.insert(call_id.clone(), false);
-+            }
-+            ResponseItem::ProgramOutput {
-+                call_id, status, ..
-+            } => {
-+                retained.insert(
-+                    call_id.clone(),
-+                    matches!(
-+                        status,
-+                        codex_protocol::models::ProgramOutputStatus::Completed
-+                    ),
-+                );
-+            }
-+            _ => {}
-+        }
-+    }
-+    retained
-+}
-+
 +fn admit_hosted_program_item(
 +    prompt: &Prompt,
 +    calls: &mut HashMap<String, bool>,
-+    retained_calls: &mut Option<HashMap<String, bool>>,
 +    item: &ResponseItem,
 +) -> CodexResult<()> {
 +    let opaque_prompt_catalog = prompt.tools.is_empty()
@@ -977,12 +952,14 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
 +                ));
 +            }
 +            let prior = calls.entry(call_id.clone()).or_insert_with(|| {
-+                // The retained prompt is immutable for this response. Index its latest state once.
-+                retained_calls
-+                    .get_or_insert_with(|| retained_hosted_program_calls(prompt))
-+                    .get(call_id)
-+                    .copied()
-+                    .unwrap_or(true)
++                // The last matching history item owns the initial state.
++                prompt.input.iter().rev().find_map(|item| match item {
++                    ResponseItem::Program { call_id: id, .. } if id == call_id => Some(false),
++                    ResponseItem::ProgramOutput { call_id: id, status, .. } if id == call_id => {
++                        Some(matches!(status, codex_protocol::models::ProgramOutputStatus::Completed))
++                    }
++                    _ => None,
++                }).unwrap_or(true)
 +            });
 +            if *prior {
 +                return Err(CodexErr::InvalidRequest(
@@ -1028,54 +1005,50 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
 +    }
 +
 +    #[test]
-+    fn retained_program_index_keeps_latest_state_and_current_response_ownership() {
++    fn latest_history_state_and_current_response_ownership_are_both_enforced() {
 +        let prompt = prompt(vec![program("closed"), output("closed"), program("open")]);
 +        let mut calls = HashMap::new();
-+        let mut retained = None;
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("closed"))
++            admit_hosted_program_item(&prompt, &mut calls, &output("closed"))
 +                .is_err()
 +        );
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("open")).is_ok()
++            admit_hosted_program_item(&prompt, &mut calls, &output("open")).is_ok()
 +        );
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("open")).is_err()
++            admit_hosted_program_item(&prompt, &mut calls, &output("open")).is_err()
 +        );
 +        let mut calls = HashMap::new();
-+        let mut retained = None;
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &program("closed"))
++            admit_hosted_program_item(&prompt, &mut calls, &program("closed"))
 +                .is_ok()
 +        );
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("closed"))
++            admit_hosted_program_item(&prompt, &mut calls, &output("closed"))
 +                .is_ok()
 +        );
 +    }
 +
 +    #[test]
-+    fn many_retained_programs_share_one_index_without_a_lifetime_call_limit() {
++    fn response_limit_does_not_cap_retained_history() {
 +        let input = (0..4096)
 +            .map(|index| program(&format!("retained-{index}")))
 +            .collect::<Vec<_>>();
 +        let prompt = prompt(input);
 +        let before = serde_json::to_value(&*prompt.input).unwrap();
 +        let mut calls = HashMap::new();
-+        let mut retained = None;
 +        for index in 0..MAX_HOSTED_PROGRAM_CALL_IDS_PER_RESPONSE {
 +            admit_hosted_program_item(
 +                &prompt,
 +                &mut calls,
-+                &mut retained,
 +                &output(&format!("retained-{index}")),
 +            )
 +            .unwrap();
 +        }
-+        assert_eq!(retained.as_ref().unwrap().len(), 4096);
++        assert!(calls.values().all(|completed| *completed));
 +        assert_eq!(calls.len(), MAX_HOSTED_PROGRAM_CALL_IDS_PER_RESPONSE);
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("retained-256"))
++            admit_hosted_program_item(&prompt, &mut calls, &output("retained-256"))
 +                .is_err()
 +        );
 +        assert_eq!(serde_json::to_value(&*prompt.input).unwrap(), before);
@@ -1085,33 +1058,39 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
 +    fn response_program_limit_rejects_another_call_before_growing_the_ledger() {
 +        let prompt = prompt(vec![]);
 +        let mut calls = HashMap::new();
-+        let mut retained = None;
 +        for index in 0..MAX_HOSTED_PROGRAM_CALL_IDS_PER_RESPONSE {
 +            admit_hosted_program_item(
 +                &prompt,
 +                &mut calls,
-+                &mut retained,
 +                &program(&format!("current-{index}")),
 +            )
 +            .unwrap();
 +        }
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &program("too-many"))
++            admit_hosted_program_item(&prompt, &mut calls, &program("too-many"))
 +                .is_err()
 +        );
 +        assert_eq!(calls.len(), MAX_HOSTED_PROGRAM_CALL_IDS_PER_RESPONSE);
 +        assert!(
-+            admit_hosted_program_item(&prompt, &mut calls, &mut retained, &output("current-0"))
++            admit_hosted_program_item(&prompt, &mut calls, &output("current-0"))
 +                .is_ok()
 +        );
-+        assert!(retained.is_none());
++        assert_eq!(calls.get("current-0"), Some(&true));
++    }
++    #[test]
++    fn later_history_start_reopens_an_id_but_only_once() {
++        let prompt = prompt(vec![program("p"), output("p"), program("p")]);
++        let mut calls = HashMap::new();
++        assert!(admit_hosted_program_item(&prompt, &mut calls, &output("missing")).is_err());
++        assert!(admit_hosted_program_item(&prompt, &mut calls, &output("p")).is_ok());
++        assert!(admit_hosted_program_item(&prompt, &mut calls, &output("p")).is_err());
 +    }
 +}
 +
  // Provider actions have no local accepted-call deduplication owner. Unknown
  // output has lost its raw type, so its replay safety cannot be established.
  fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
-@@ -4539,6 +4746,8 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
+@@ -4539,6 +4725,8 @@
                  | ResponseItem::ShellCall { .. }
                  | ResponseItem::ShellCallOutput { .. }
                  | ResponseItem::McpCall { .. }
@@ -1120,18 +1099,17 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
                  | ResponseItem::Other
          ),
          ResponseEvent::HostedToolCallProgress(progress) => progress
-@@ -4759,6 +4968,10 @@ async fn try_run_sampling_request(
+@@ -4759,6 +4947,9 @@
          let mut response_fact_budget =
              codex_protocol::response_facts::ResponseFactBudget::default();
          let mut response_fact_response_id: Option<String> = None;
 +        let mut pending_provider_agent: Option<codex_protocol::response_facts::ResponseFactRecord> = None;
 +        // Admission is local to the provider request; nothing here executes its program.
 +        let mut program_calls = HashMap::new();
-+        let mut retained_program_calls = None;
          loop {
              let handle_responses = trace_span!(
                  parent: &receiving_span,
-@@ -4864,7 +5077,12 @@ async fn try_run_sampling_request(
+@@ -4864,7 +5055,12 @@
                          )
                          .await
                      {
@@ -1145,7 +1123,7 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
                          Err(error) => {
                              tool_cancellation.cancel();
                              drop(stream);
-@@ -4888,6 +5106,28 @@ async fn try_run_sampling_request(
+@@ -4888,6 +5084,27 @@
                      }
                  }
                  ResponseEvent::OutputItemDone(mut item) => {
@@ -1164,7 +1142,6 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
 +                        admit_hosted_program_item(
 +                            prompt,
 +                            &mut program_calls,
-+                            &mut retained_program_calls,
 +                            &item,
 +                        )?;
 +                        if let Some(attempt) = &model_attempt {
@@ -1174,7 +1151,7 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
                      let provider_metadata = if let Some(metadata) = prompt
                          .tool_admission
                          .as_ref()
-@@ -5019,6 +5259,8 @@ async fn try_run_sampling_request(
+@@ -5019,6 +5236,8 @@
                          | ResponseItem::CompactionTrigger { .. }
                          | ResponseItem::ContextCompaction { .. }
                          | ResponseItem::ItemReference { .. }
@@ -1183,7 +1160,7 @@ index b8b4cd12c109caa9b67deb9a4e4e65418c52a607..e090eda34abcd9e1defdffa234a4619a
                          | ResponseItem::Other => false,
                      };
  
-@@ -5027,6 +5269,7 @@ async fn try_run_sampling_request(
+@@ -5027,6 +5246,7 @@
                          &mut ctx,
                          item,
                          previously_streamed_item,
