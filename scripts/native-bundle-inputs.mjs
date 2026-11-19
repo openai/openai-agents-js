@@ -18,6 +18,7 @@ export const nativeInputPaths = [
   'scripts/install-linux-native-build-tools.sh',
   'scripts/native-bundle-inputs.mjs',
   'scripts/restore-native-bundle.mjs',
+  'scripts/sdk-build-bundle.mjs',
   'scripts/restore-windows-native-parts.mjs',
   'scripts/verified-native-bundle.mjs',
   'scripts/select-native-bundles.mjs',
