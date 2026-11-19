@@ -157,6 +157,13 @@ export function installStdioGuard({
         typeof encoding === 'string' ? (encoding as BufferEncoding) : undefined;
 
       try {
+        // Node forwards an empty stderr buffer after successful execFileSync calls.
+        if (
+          (typeof chunk === 'string' && chunk.length === 0) ||
+          (chunk instanceof Uint8Array && chunk.byteLength === 0)
+        ) {
+          return true;
+        }
         report({
           kind,
           source: 'stream',
