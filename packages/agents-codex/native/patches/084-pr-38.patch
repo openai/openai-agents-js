@@ -2567,7 +2567,7 @@ index c1425a4e0c01cf0a35517460e62620c2db3883be..2a9e533dabf8e83f8f8b912a18822f32
  pub use turn_lifecycle::CapturedAgentProfile;
  pub use turn_lifecycle::HeldToolCompletionResults;
 diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-index e24d2b593b0020ce09a9b10b57d017402d70088e..04b8afc79926df96b2375993001415f41e5add43 100644
+index e24d2b593b0020ce09a9b10b57d017402d70088e..5e40249bcad638ec93cc5ad51d0f43f35c1385c8 100644
 --- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
 +++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
 @@ -214,6 +214,25 @@ impl AgentProfileModelSettings {
@@ -2596,7 +2596,7 @@ index e24d2b593b0020ce09a9b10b57d017402d70088e..04b8afc79926df96b2375993001415f4
  /// Immutable in-process profile supplied by an admitted host roster.
  #[derive(Clone)]
  pub struct AgentProfile {
-@@ -232,6 +251,29 @@ impl std::fmt::Debug for AgentProfile {
+@@ -232,6 +251,32 @@ impl std::fmt::Debug for AgentProfile {
      }
  }
  
@@ -2613,13 +2613,16 @@ index e24d2b593b0020ce09a9b10b57d017402d70088e..04b8afc79926df96b2375993001415f4
 +}
 +
 +impl AgentProfileExecutorTools {
-+    pub fn permits(&self, tool: &codex_tools::ToolName) -> bool {
-+        !tool.is_default_namespace()
-+            || !matches!(
++    pub fn is_executor_tool(tool: &codex_tools::ToolName) -> bool {
++        tool.is_default_namespace()
++            && matches!(
 +                tool.name.as_str(),
 +                "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
 +            )
-+            || self.allowed.contains(tool.name.as_str())
++    }
++
++    pub fn permits(&self, tool: &codex_tools::ToolName) -> bool {
++        !Self::is_executor_tool(tool) || self.allowed.contains(tool.name.as_str())
 +    }
 +}
 +
@@ -2767,3 +2770,25 @@ index 6fb4c2d2f8bb9fcd8c5f8563cbb41af9537e2c00..5339e989e748501ce0a96e1c25384280
 +    pub handoff: AgentProfileHandoff,
 +    pub restored: bool,
 +}
+diff --git a/codex-rs/core/src/tools/builtin_result_policy.rs b/codex-rs/core/src/tools/builtin_result_policy.rs
+index 6f343adf349cc8b277f45adc17d2e49cd1b812ea..9a6be61d0753ae7effa114c4bd1b36e3b69b47ef 100644
+--- a/codex-rs/core/src/tools/builtin_result_policy.rs
++++ b/codex-rs/core/src/tools/builtin_result_policy.rs
+@@ -1,4 +1,4 @@
+-//! Whole-result policy for the three native Environment tools only.
++//! Whole-result policy for native executor tools.
+ use crate::function_tool::FunctionCallError;
+ use crate::tools::context::ToolInvocation;
+ use crate::unified_exec::PendingLocalExec;
+@@ -39,10 +39,5 @@
+ pub(crate) fn capture(invocation: &ToolInvocation) -> Option<Arc<dyn ToolLifecycleContributor>> {
+-    if !invocation.tool_name.is_default_namespace()
+-        || !matches!(
+-            invocation.tool_name.name.as_str(),
+-            "exec_command" | "write_stdin" | "apply_patch"
+-        )
+-    {
++    if !codex_extension_api::AgentProfileExecutorTools::is_executor_tool(&invocation.tool_name) {
+         return None;
+     }
+     let owner = invocation
