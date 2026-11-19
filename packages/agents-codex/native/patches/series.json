@@ -6,7 +6,7 @@
     },
     {
       "path": "002-pr-19.patch",
-      "sha256": "f567cfc5eddebc7f842a931875d89a3424d27b9aacda90912211c72b8c44ac7a"
+      "sha256": "7a013b8bea881cc13c9272f5fe1fa581b4bbcb82b890da3539dc1481f8191870"
     },
     {
       "path": "003-pr-42.patch",
@@ -53,10 +53,6 @@
       "sha256": "b6ce8cde0a13bd0133f0bddc239c3b483da870d4fb41e9d2ec4aa8780970bc26"
     },
     {
-      "path": "015-sdk-04.patch",
-      "sha256": "caf2730cd496fcf4df8eb3c410f7ea4802f1ad0e82bf629b860d3f6c423eaa89"
-    },
-    {
       "path": "016-pr-23.patch",
       "sha256": "7027aff94b9472b41575587d1877a0d5fc457edf9d000cdf47d9fa650d30284e"
     },
@@ -87,10 +83,6 @@
     {
       "path": "023-pr-11.patch",
       "sha256": "c48d79ade393c2d4d310499a34466b5cb5e329c2b59aa5d406945eb66362c9e4"
-    },
-    {
-      "path": "024-pr-23.patch",
-      "sha256": "6fd0040bccea9719a06762247482524af960eb4f4ae111cbaa04b7b90e2df9cf"
     },
     {
       "path": "025-pr-29.patch",
@@ -330,7 +322,7 @@
     },
     {
       "path": "084-pr-38.patch",
-      "sha256": "56a7ac8aa1720996cc367de4e0325debdbbd58def50658ba81426148a1993ac7"
+      "sha256": "1cf166bbace7716e2370fb6504934884964e408253b2ca1167bae7cadc1a928a"
     },
     {
       "path": "085-pr-37.patch",
@@ -401,5 +393,5 @@
       "sha256": "a6d2a9091cc518ed0a5d1fa1846bf26275ff76463849f0ff17333be41265e722"
     }
   ],
-  "result_tree": "13cadb95bbce516726c43e4ae0af6a0e4c494ead"
+  "result_tree": "f566e64cf3d857ba63f4ce4a9fcf12e3582c8595"
 }

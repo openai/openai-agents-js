@@ -1509,12 +1509,7 @@ impl Control {
     }
 
     fn builtin_controls(&self, name: &ToolName) -> (bool, bool) {
-        if !name.is_default_namespace()
-            || !matches!(
-                name.name.as_str(),
-                "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
-            )
-        {
+        if !codex_extension_api::AgentProfileExecutorTools::is_executor_tool(name) {
             return (false, false);
         }
         let state = self

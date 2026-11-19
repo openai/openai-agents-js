@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-Use the upstream TLS certificate loader. Building a new HTTP client can take longer with a large custom CA bundle. Reusing an existing connection avoids that cost.
+fix: Use the upstream custom CA loader, share the executor tool check, and build MCP tool discovery with Rust's default recursion limit. Each new HTTP client parses the configured CA bundle and may repeat notices about ignored revocation lists.
