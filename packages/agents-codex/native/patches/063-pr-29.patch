@@ -2029,7 +2029,7 @@ index cb2bcca110b02df30a0f262c4ecdeb157675a256..819e3a5bc3308618157764c5446bcb21
          if let Some(value) = fields.get(name) {
              nested(name, value)?;
 diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
-index 6d1574fa7f802fb43dae1cd2cfd5c09139d492a3..6d8da12cf814173e39b7509d8d39f6c9dc829ca0 100644
+index 6d1574fa7f802fb43dae1cd2cfd5c09139d492a3..59f9bd4a91afcbaf5fb9e2cdabc5e47573e9a77b 100644
 --- a/codex-rs/core/src/realtime_conversation_tests.rs
 +++ b/codex-rs/core/src/realtime_conversation_tests.rs
 @@ -32,6 +32,7 @@ use tokio::sync::Mutex;
@@ -2264,7 +2264,7 @@ index 6d1574fa7f802fb43dae1cd2cfd5c09139d492a3..6d8da12cf814173e39b7509d8d39f6c9
 +                arguments: "{}".into(),
 +                response_id: Some(response.into()),
 +            },
-+            claim: claimed.into(),
++            claimed,
 +            native_turn_id: root.map(str::to_owned),
 +            cancel: tokio_util::sync::CancellationToken::new(),
 +            completed: tokio_util::sync::CancellationToken::new(),
