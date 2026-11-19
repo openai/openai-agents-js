@@ -153,7 +153,7 @@ class CodexModel implements Model {
       signal: request.signal,
     });
     let threadId: string;
-    let usage = new Usage();
+    let usage = new Usage({ requests: 1 });
     let rawUsage: Record<string, unknown> | undefined;
     const reasoningSummaries: string[] = [];
     const output = new Map<string, CodexOutputItem>();

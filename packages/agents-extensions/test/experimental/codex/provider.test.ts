@@ -502,6 +502,7 @@ test('lets Runner execute a function tool and replays its exact call ID into a f
   ]);
 
   expect(result.finalOutput).toBe('Account found.');
+  expect(result.state.usage.requests).toBe(2);
   expect(result.newItems.map((item) => item.rawItem)).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ role: 'assistant', phase: 'commentary' }),

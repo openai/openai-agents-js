@@ -4,8 +4,4 @@
 '@openai/agents-openai': patch
 ---
 
-feat: add an experimental stock Codex provider with streaming, structured output, local images, SDK tools, handoffs, deferred tool discovery, local executors, compaction and reasoning replay, and SDK-managed sandbox tools and memory while preserving codexTool support for @openai/codex-sdk >=0.86.0.
-
-Applications have been able to supply their own OpenAI 7.2 or later client even when the Agents SDK has been installing a different 7.x version. Codex has also been supporting `toolChoice: 'required'` for SDK tools and handoffs. On required turns, the provider has been disabling Codex's own shell and image viewer and raising a `UserError` if Codex finishes without requesting an SDK tool.
-
-fix: preserve the full exported OpenAIClient type and the client resources exposed by default provider and session options while accepting compatible application-owned clients at injection boundaries.
+Add an experimental `CodexProvider` to run an agent through the stock Codex CLI with SDK tools, handoffs, streaming, and structured output. Existing `codexTool()` users can stay on `@openai/codex-sdk` 0.86.0, and applications can keep their own compatible OpenAI 7.x client.
