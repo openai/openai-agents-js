@@ -116,7 +116,7 @@ jobs:
       contents: read
       actions: read
     # Fork-owned repositories retain access to standard GitHub-hosted runners.
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 25
     env:
       NODE_OPTIONS: '--max_old_space_size=6144'
@@ -215,7 +215,7 @@ jobs:
   windows-sandbox-paths:
     needs: changes
     # Fork-owned repositories retain access to standard GitHub-hosted runners.
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || '"windows-latest"') }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '{"group":"codex-runners","labels":"codex-windows-x64"}' || '"windows-latest"') }}
     timeout-minutes: 15
     env:
       CI: '1'
@@ -333,7 +333,7 @@ jobs:
   coverage:
     needs: changes
     # Fork-owned repositories retain access to standard GitHub-hosted runners.
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 15
     env:
       NODE_OPTIONS: '--max_old_space_size=6144'
