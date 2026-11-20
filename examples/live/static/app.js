@@ -132,9 +132,13 @@ function appendTimeline(source, content) {
     entry.dataset.source = source;
     const label = document.createElement('h3');
     label.textContent = timelineLabels[source];
-    const body = isText ? document.createElement('pre') : content;
-    if (isText) body.textContent = content;
-    entry.append(label, body);
+    if (isText) {
+      const body = document.createElement('pre');
+      body.textContent = content;
+      entry.append(label, body);
+    } else {
+      entry.append(label, content);
+    }
     timeline.append(entry);
   }
 
