@@ -58,7 +58,8 @@ export class DelegationHandler {
       calls.set(event.item.call_id, event.item);
       this.calls.set(key, calls);
     } else if (event.type === 'response.completed') {
-      const completedKey = JSON.stringify([delegationId, event.response.id]);
+      const sourceResponseId = event.response.id;
+      const completedKey = JSON.stringify([delegationId, sourceResponseId]);
       if (this.completed.has(completedKey)) return;
       this.completed.add(completedKey);
       const calls = [...(this.calls.get(completedKey)?.values() ?? [])].filter(
@@ -100,9 +101,10 @@ export class DelegationHandler {
               }
             }
             if (signal.aborted) return;
+            const itemEventId = randomUUID();
             this.send({
               type: 'response.item.create',
-              event_id: randomUUID(),
+              event_id: itemEventId,
               item: {
                 type: 'function_call_output',
                 call_id: call.call_id,
@@ -112,17 +114,22 @@ export class DelegationHandler {
             this.notify({
               type: 'backend',
               status: 'result_submitted',
+              event_id: itemEventId,
+              delegation_id: delegationId,
+              source_response_id: sourceResponseId,
               call_id: call.call_id,
               result: output,
             });
           }
           if (signal.aborted) return;
-          this.send({ type: 'response.create', event_id: randomUUID() });
+          const continuationEventId = randomUUID();
+          this.send({ type: 'response.create', event_id: continuationEventId });
           this.notify({
             type: 'backend',
             status: 'continued',
+            event_id: continuationEventId,
             delegation_id: delegationId,
-            response_id: event.response.id,
+            source_response_id: sourceResponseId,
           });
         })
         .catch(() => {
