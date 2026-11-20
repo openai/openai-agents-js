@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.22.1
+
+### Patch Changes
+
+- 31ca2f0: fix(tracing): keep logging valid spans when the console exporter skips an unserializable span (#2383)
+- efe1bde: Update compatible dependencies and preserve nested response usage details with the existing bounded schema.
+- 90a6b52: fix: preserve sandbox permission checks in macOS test fixtures.
+- ad5567d: fix(core): preserve completed sibling results and callback values on approval resume (#2267)
+- f096f03: fix: Stream function-tool input to AI SDK UI as arguments arrive (#2317).
+- 624e535: Preserve permission checks in macOS test fixtures.
+
 ## 0.22.0
 
 ### Minor Changes

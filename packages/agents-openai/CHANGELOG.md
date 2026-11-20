@@ -1,5 +1,21 @@
 # @openai/agents-openai
 
+## 0.22.1
+
+### Patch Changes
+
+- efe1bde: Update compatible dependencies and preserve nested response usage details with the existing bounded schema.
+- ad5567d: fix(core): preserve completed sibling results and callback values on approval resume (#2267)
+- f096f03: fix: Stream function-tool input to AI SDK UI as arguments arrive (#2317).
+- f53216e: fix: Preserve current hosted MCP tool output when replaying Responses history.
+- Updated dependencies [31ca2f0]
+- Updated dependencies [efe1bde]
+- Updated dependencies [90a6b52]
+- Updated dependencies [ad5567d]
+- Updated dependencies [f096f03]
+- Updated dependencies [624e535]
+  - @openai/agents-core@0.22.1
+
 ## 0.22.0
 
 ### Patch Changes
