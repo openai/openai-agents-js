@@ -54,11 +54,19 @@ export async function askOrderAgent(
 
 export function sessionConfig(backendModel = 'gpt-5.6-luna') {
   return {
-    model: 'gpt-live-1',
+    model: 'gpt-live-1.1',
+    wake_policy: { type: 'speech' },
+    idle_timeout_s: 20,
     instructions:
-      'Help with fictional demo orders. Delegate order questions to the backend. ' +
-      'Keep spoken replies brief. Ask for missing information. ' +
-      'If the user corrects an order ID, ask the backend about the corrected order.',
+      "Help with fictional demo orders and questions that need web search. Keep replies brief and use the caller's language unless they request another one.\n\n" +
+      'Backchannel policy: Acknowledge naturally without speaking over the caller.\n\n' +
+      'Interruption policy: Stop speaking when the caller interrupts and listen.\n\n' +
+      'Delegation policy: The backend can look up order status but cannot change orders. ' +
+      'Delegate order status questions and corrections that change the order ID. ' +
+      'Use the earlier ID to resolve partial corrections when clear, and ask for clarification before delegating if the order ID is unclear. ' +
+      'Wait for the backend result before reporting order status. ' +
+      'Also delegate explicit web search requests and questions that need current public information. ' +
+      'Wait for the search result before answering them.',
     delegation: {
       type: 'responses',
       responses: {
@@ -66,7 +74,9 @@ export function sessionConfig(backendModel = 'gpt-5.6-luna') {
         instructions:
           'Use ask_order_agent for order questions. Include the order ID, relevant context, ' +
           'and latest corrections in a self-contained request. Use the returned facts without ' +
-          "inventing an order status. Associate results with their order IDs and the user's latest request.",
+          "inventing an order status. Associate results with their order IDs and the user's latest request. " +
+          'Use web_search for explicit search requests and current public information. ' +
+          'Cite the web sources you use in search answers.',
         parallel_tool_calls: false,
         tools: [
           {
@@ -77,6 +87,7 @@ export function sessionConfig(backendModel = 'gpt-5.6-luna') {
             parameters: z.toJSONSchema(orderRequest),
             strict: true,
           },
+          { type: 'web_search' },
         ],
       },
     },

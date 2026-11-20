@@ -1,6 +1,6 @@
-# GPT Live with an Agents SDK specialist
+# GPT-Live with an Agents SDK specialist
 
-This local browser example connects GPT Live to an ordinary Agents SDK Agent through Responses delegation. GPT Live handles speech; its managed Responses backend calls `ask_order_agent`; the Node.js server runs the order specialist with `run()` and returns a function result.
+This local browser example uses GPT-Live 1.1, an Agents SDK order specialist, and hosted Web Search to demonstrate speech-triggered Standby, multilingual conversation, and Responses delegation. The managed Responses backend calls `ask_order_agent` for order questions. The Node.js server runs the specialist with `run()` and returns the result.
 
 ## When to use this pattern
 
@@ -39,22 +39,28 @@ pnpm build
 pnpm -F live start
 ```
 
-Open [http://localhost:8000](http://localhost:8000), select **Start conversation**, and grant microphone permission. Ask "What is the status of order A0042?" Then try "Actually, please check A0043." These are fictional records: A0042 is shipped with an expected September 15 delivery; A0043 is processing without a confirmed shipping date.
+Open [http://localhost:8000](http://localhost:8000), select **Connect**, and grant microphone permission. Try this sequence in one call.
 
-If autoplay is blocked, select play in the audio controls. **Mute microphone** controls local capture without stopping backend work. **End conversation** aborts application-owned Agent runs and suppresses late results, requests Live finalization, and then releases the microphone and connections.
+1. When the demo is waiting for speech, ask "What's the status of order A zero zero four two?" To try a language switch, ask for the reply in Japanese. The fictional order A0042 has shipped and is expected September 15.
+2. After the assistant finishes speaking, stay quiet until the inference panel shows **Standby**. Inference pauses after 20 seconds without an input or output transcript. The same call and conversation history stay available.
+3. Say "Actually, the last digit is three. Could you tell me the status in English?" Speech resumes inference. The specialist checks order A0043, which is processing with no shipping date confirmed.
 
-The example uses the documented Live HTTP and WebSocket endpoints because the repository's OpenAI JS SDK 7.2.0 does not expose Live resource helpers. Its dependencies reuse existing workspace versions; the Agents SDK packages are unchanged. GPT Live voice duration and both backend models can incur usage charges.
+If the browser blocks autoplay, select **Play assistant audio**. The microphone button mutes local capture while backend work continues. **Disconnect** aborts application-owned Agent runs, requests Live finalization, and releases the microphone and connections.
+
+To try hosted Web Search, say "Search the web for the latest OpenAI API news." When the backend cites sources, their links appear in the conversation timeline. Turn on **Debug events** to see the last call's event trace beside the timeline on wider screens and below it on smaller screens. The trace records browser and sideband timing and command identifiers without including raw event payloads.
+
+The example uses the Live HTTP and WebSocket endpoints. Active and Standby time have [different rates](https://developers.openai.com/api/docs/models/gpt-live-1.1). The app shows their durations after disconnection when Live reports both. Both backend models can incur separate usage charges.
 
 ## How it works
 
 1. The browser creates a WebRTC offer and sends it over an application WebSocket.
-2. The server creates a Live session with Responses delegation and attaches a sideband before returning the SDP answer. Audio travels between the browser and OpenAI; the sideband carries server events and commands.
+2. The server creates a Live session with speech wake and Responses delegation and attaches a sideband before returning the SDP answer. Audio travels between the browser and OpenAI. The sideband forwards `session.paused` and `session.resumed` so the browser can display the inference state.
 3. The managed Responses model turns the conversation into a self-contained `ask_order_agent(request)` function call.
 4. The server collects completed function items from nested `response.output_item.done` events. It does not read pending calls from the empty terminal `response.output` snapshot.
 5. A promise queue runs the specialist while the receiver continues processing Live events. The specialist uses a read-only `lookup_order` tool.
 6. The worker submits every required `function_call_output` for a completed response before sending one `response.create` continuation.
 
-The browser never executes functions. Transcript fragments are appended exactly as received, separately for each speaker; they are not authoritative completed turns. Specialist output appears in its own panel because result submission does not establish that GPT Live spoke it or that the listener heard it.
+The server executes the specialist function. The managed Responses backend runs [hosted Web Search](https://developers.openai.com/api/docs/guides/live-delegation#add-hosted-tools) and the server extracts citations from completed backend message items. The browser timeline displays transcript fragments, specialist updates, and source links in arrival order. It preserves transcript fragments verbatim and groups adjacent updates from the same speaker or the specialist. Listen to the call for the assistant's spoken reply.
 
 ### What the specialist knows on each call
 
@@ -89,5 +95,6 @@ From the repository root, run `pnpm exec vitest run examples/live` for delegatio
 ## References
 
 - [Live delegation and tools](https://developers.openai.com/api/docs/guides/live-delegation)
+- [Live Standby configuration](https://developers.openai.com/api/docs/guides/live-conversations#configure-standby)
 - [Live WebRTC connections](https://developers.openai.com/api/docs/guides/voice-webrtc?api=live)
 - [Live server-side controls](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live)

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import OpenAI from 'openai';
+import type { ResponseOutputItem } from 'openai/resources/responses/responses';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import { createOrderAgent, sessionConfig } from './agent';
@@ -20,6 +21,51 @@ const offerSchema = z.strictObject({
     .refine((sdp) => sdp.trim().length > 0),
 });
 const closeTimeout = 15_000;
+
+function diagnosticFields(fields: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(fields).filter(
+      ([, value]) =>
+        typeof value === 'string' &&
+        /^[A-Za-z0-9_.-]{1,128}$/.test(value) &&
+        !/^sk[-_]/i.test(value),
+    ),
+  );
+}
+
+function webSearchSources(item: ResponseOutputItem) {
+  if (item.type !== 'message') return [];
+
+  const sources: { url: string; title: string }[] = [];
+  const seen = new Set<string>();
+  for (const content of item.content) {
+    if (content.type !== 'output_text') continue;
+    for (const annotation of content.annotations) {
+      if (annotation.type !== 'url_citation') continue;
+      const { url, title } = annotation;
+      if (
+        url.length > 2048 ||
+        seen.has(url) ||
+        /[\s\\\p{Cc}]/u.test(url) ||
+        !/^https?:\/\/[^/?#@]+(?=[/?#]|$)/i.test(url)
+      ) {
+        continue;
+      }
+      try {
+        const target = new URL(url);
+        sources.push({
+          url,
+          title: (title.trim() || target.hostname).slice(0, 256),
+        });
+        seen.add(url);
+        if (sources.length === 12) return sources;
+      } catch {
+        // Skip malformed citation URLs.
+      }
+    }
+  }
+  return sources;
+}
 
 // Only operational metadata may cross into browser UI or terminal diagnostics.
 function sessionFailure(stage: string, error: unknown): string {
@@ -82,6 +128,27 @@ export function relay(
   const done = new Promise<boolean>((resolve) => {
     resolveDone = resolve;
   });
+  const startedAt = performance.now();
+  const diagnostics: Record<string, unknown>[] = [];
+  const notifyWithDiagnostics = (event: Record<string, unknown>) => {
+    notify(
+      diagnostics.length
+        ? { ...event, diagnostics: diagnostics.splice(0) }
+        : event,
+    );
+  };
+  const recordDiagnostic = (
+    name: string,
+    sidebandMs: number,
+    fields: Record<string, unknown>,
+  ) => {
+    diagnostics.push({
+      name,
+      sideband_ms: sidebandMs,
+      ...diagnosticFields(fields),
+    });
+    if (diagnostics.length > 64) diagnostics.shift();
+  };
   const send = (event: Record<string, unknown>) => {
     if (connection.readyState !== WebSocket.OPEN)
       throw new Error('Sideband is not open.');
@@ -89,10 +156,28 @@ export function relay(
       if (error) finish();
     });
   };
-  const handler = new DelegationHandler(agent, send, notify, () => stop());
+  const handler = new DelegationHandler(
+    agent,
+    send,
+    ({ call_id, delegation_id, source_response_id, ...event }) => {
+      notifyWithDiagnostics({
+        ...event,
+        ...diagnosticFields({ call_id, delegation_id, source_response_id }),
+      });
+    },
+    () => stop(),
+  );
   function finish() {
+    stopping = true;
     handler.stop();
     clearTimeout(timer);
+    if (diagnostics.length) {
+      try {
+        notifyWithDiagnostics({ type: 'diagnostics' });
+      } catch {
+        // A lost browser does not prevent sideband cleanup.
+      }
+    }
     connection.terminate();
     resolveDone(finalized);
   }
@@ -117,35 +202,82 @@ export function relay(
       return;
     }
     try {
-      notify({ type: 'answer', sdp: answer.sdp });
+      notifyWithDiagnostics({ type: 'answer', sdp: answer.sdp });
     } catch {
       stop();
     }
   });
   connection.on('message', (raw) => {
     try {
-      const event = JSON.parse(raw.toString());
+      const { diagnostics: _diagnostics, ...event } = JSON.parse(
+        raw.toString(),
+      );
+      const sidebandMs = Math.floor(performance.now() - startedAt);
       if (event.type === 'session.closed') {
         finalized = true;
         handler.stop();
         try {
-          notify({ type: 'closed', reason: event.reason, usage: event.usage });
+          notifyWithDiagnostics({
+            type: 'closed',
+            reason: event.reason,
+            usage: event.usage,
+          });
         } finally {
           finish();
         }
       } else if (event.type === 'error') {
+        recordDiagnostic('error', sidebandMs, {
+          code: event.error?.code,
+          client_event_id:
+            event.error?.client_event_id || event.client_event_id,
+        });
         stop();
-      } else if (!stopping && event.type === 'response.event') {
-        handler.receive(event as ResponseEnvelope);
+      } else if (stopping) {
+        return;
+      } else if (event.type === 'session.delegation.created') {
+        recordDiagnostic(event.type, sidebandMs, {
+          delegation_id: event.delegation?.id,
+          response_id: event.delegation?.response_id,
+          client_event_id: event.client_event_id,
+        });
+      } else if (event.type === 'response.event') {
+        const envelope = event as ResponseEnvelope;
+        const nested = envelope.event;
+        switch (nested.type) {
+          case 'response.created':
+          case 'response.completed':
+          case 'response.failed':
+          case 'response.incomplete':
+            recordDiagnostic(nested.type, sidebandMs, {
+              delegation_id: envelope.delegation_id,
+              response_id: nested.response.id,
+              client_event_id: event.client_event_id,
+            });
+        }
+        handler.receive(envelope);
+        if (nested.type === 'response.output_item.done') {
+          const sources = webSearchSources(nested.item);
+          if (sources.length) {
+            notifyWithDiagnostics({ type: 'web_search_sources', sources });
+          }
+        }
       } else if (
-        !stopping &&
+        event.type === 'session.paused' ||
+        event.type === 'session.resumed'
+      ) {
+        notifyWithDiagnostics({
+          type: event.type,
+          ...diagnosticFields({ event_id: event.event_id }),
+          sideband_ms: sidebandMs,
+        });
+      } else if (
         [
           'session.input_transcript.delta',
           'session.output_transcript.delta',
           'session.usage.updated',
         ].includes(event.type)
       ) {
-        notify(event);
+        notifyWithDiagnostics(event);
       }
     } catch {
       stop();
@@ -266,6 +398,7 @@ export function buildServer(client: OpenAI) {
   const files: Record<string, [string, string]> = {
     '/': ['index.html', 'text/html'],
     '/static/app.js': ['app.js', 'text/javascript'],
+    '/static/style.css': ['style.css', 'text/css'],
   };
   const server = createServer(async (request, response) => {
     const file = files[request.url ?? ''];

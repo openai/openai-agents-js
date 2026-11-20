@@ -110,11 +110,12 @@ it('runs the specialist tool, deduplicates calls, and continues after all result
     modelResponse([assistantMessage('A0043 is processing.')]),
   ]);
   const send = vi.fn();
+  const notify = vi.fn();
   const error = vi.fn();
   const handler = new DelegationHandler(
     createOrderAgent(model),
     send,
-    vi.fn(),
+    notify,
     error,
   );
   const events = responseEvents(['call_1', 'call_2']);
@@ -130,6 +131,33 @@ it('runs the specialist tool, deduplicates calls, and continues after all result
     call_id: 'call_1',
     output: expect.stringContaining('A0042 is shipped'),
   });
+  expect(send.mock.calls[1][0].item.call_id).toBe('call_2');
+  const submitted = notify.mock.calls
+    .map(([event]) => event)
+    .filter((event) => event.status !== 'working');
+  expect(submitted).toEqual([
+    expect.objectContaining({
+      status: 'result_submitted',
+      event_id: send.mock.calls[0][0].event_id,
+      delegation_id: 'delegation_1',
+      source_response_id: 'response_1',
+      call_id: 'call_1',
+    }),
+    expect.objectContaining({
+      status: 'result_submitted',
+      event_id: send.mock.calls[1][0].event_id,
+      delegation_id: 'delegation_1',
+      source_response_id: 'response_1',
+      call_id: 'call_2',
+    }),
+    {
+      type: 'backend',
+      status: 'continued',
+      event_id: send.mock.calls[2][0].event_id,
+      delegation_id: 'delegation_1',
+      source_response_id: 'response_1',
+    },
+  ]);
   expect(model.calls[1].request.input).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -249,6 +277,175 @@ it('stops on managed response failure without running collected function calls',
   expect(model.calls).toHaveLength(0);
   socket.close();
   expect(await session.done).toBe(false);
+});
+
+it('relays speech wake and standby on the same call before reporting final usage', async () => {
+  let now = 100;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const socket = new Socket();
+  const notify = vi.fn();
+  const session = relay(socket.asWebSocket(), notify, { sdp: 'answer' });
+  socket.open();
+  const states = [
+    { type: 'session.resumed', event_id: 'first_wake', sideband_ms: 1 },
+    { type: 'session.paused', event_id: 'idle', sideband_ms: 5 },
+    { type: 'session.resumed', event_id: 'second_wake', sideband_ms: 9 },
+  ];
+  for (const state of states) {
+    now = 100 + state.sideband_ms;
+    socket.message({
+      ...state,
+      sideband_ms: 999,
+      diagnostics: [{ name: 'untrusted' }],
+    });
+  }
+  expect(socket.readyState).toBe(WebSocket.OPEN);
+  expect(socket.sent).toEqual([]);
+  const usage = { seconds: 15, active_seconds: 6, paused_seconds: 9 };
+  socket.message({ type: 'session.closed', reason: 'expired', usage });
+  expect(await session.done).toBe(true);
+  expect(notify.mock.calls.map(([event]) => event)).toEqual([
+    { type: 'answer', sdp: 'answer' },
+    ...states,
+    { type: 'closed', reason: 'expired', usage },
+  ]);
+});
+
+it('relays safe hosted search citations without executing a local function', async () => {
+  const socket = new Socket();
+  const notify = vi.fn();
+  const model = new ScriptedModel([]);
+  const session = relay(
+    socket.asWebSocket(),
+    notify,
+    { sdp: 'answer' },
+    createOrderAgent(model),
+  );
+  socket.open();
+  const [created, , completed] = responseEvents();
+  socket.message(created);
+  socket.message({
+    ...created,
+    event: {
+      type: 'response.output_item.done',
+      item: {
+        type: 'web_search_call',
+        action: { type: 'search', query: 'private-search-query' },
+      },
+    },
+  });
+  socket.message({
+    ...created,
+    event: {
+      type: 'response.output_item.done',
+      item: {
+        type: 'message',
+        content: [
+          {
+            type: 'output_text',
+            text: 'private-backend-answer',
+            annotations: [
+              {
+                type: 'url_citation',
+                url: 'https://example.com/report',
+                title: ' Annual report ',
+              },
+              {
+                type: 'url_citation',
+                url: 'https://example.com/report',
+                title: 'Duplicate',
+              },
+              { type: 'url_citation', url: 'http://example.org/', title: '' },
+              { type: 'url_citation', url: 'ftp://example.org/', title: 'FTP' },
+              {
+                type: 'url_citation',
+                url: 'https://example.org@other.example/',
+                title: 'Invalid credentials',
+              },
+              {
+                type: 'url_citation',
+                url: 'https:///example.net/',
+                title: 'Missing authority',
+              },
+              { type: 'file_citation', file_id: 'private-file-id' },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  socket.message(completed);
+  socket.message({ type: 'session.closed', reason: 'expired' });
+  expect(await session.done).toBe(true);
+  expect(notify.mock.calls.map(([event]) => event.type)).toEqual([
+    'answer',
+    'web_search_sources',
+    'closed',
+  ]);
+  expect(notify.mock.calls[1][0].sources).toEqual([
+    { url: 'https://example.com/report', title: 'Annual report' },
+    { url: 'http://example.org/', title: 'example.org' },
+  ]);
+  expect(JSON.stringify(notify.mock.calls)).not.toContain('private-');
+  expect(socket.sent).toEqual([]);
+  expect(model.calls).toHaveLength(0);
+});
+
+it('buffers bounded diagnostics and flushes only operational metadata after a fatal error', async () => {
+  let now = 100;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const socket = new Socket();
+  const notify = vi.fn();
+  const session = relay(socket.asWebSocket(), notify, { sdp: 'answer' });
+  socket.open();
+  for (let index = 0; index <= 64; index++) {
+    now++;
+    socket.message({
+      type: 'response.event',
+      delegation_id: 'delegation_1',
+      client_event_id: 'invalid event ID',
+      event: {
+        type: 'response.created',
+        response: { id: `response_${index}`, input: 'private-provider-input' },
+      },
+    });
+  }
+  expect(notify).toHaveBeenCalledTimes(1);
+  socket.message({
+    type: 'session.paused',
+    diagnostics: [{ name: 'private-provider-override' }],
+  });
+  expect(notify.mock.calls[1][0]).toEqual({
+    type: 'session.paused',
+    sideband_ms: 65,
+    diagnostics: Array.from({ length: 64 }, (_, index) => ({
+      name: 'response.created',
+      sideband_ms: index + 2,
+      delegation_id: 'delegation_1',
+      response_id: `response_${index + 1}`,
+    })),
+  });
+  now++;
+  socket.message({
+    type: 'error',
+    error: {
+      code: 'sk-synthetic-only',
+      client_event_id: 'app_command_1',
+      message: 'private-provider-error',
+    },
+  });
+  expect(socket.sent).toEqual([{ type: 'session.close' }]);
+  socket.close();
+  expect(await session.done).toBe(false);
+  expect(notify).toHaveBeenLastCalledWith({
+    type: 'diagnostics',
+    diagnostics: [
+      { name: 'error', sideband_ms: 66, client_event_id: 'app_command_1' },
+    ],
+  });
+  expect(JSON.stringify(notify.mock.calls)).not.toMatch(
+    /private-|sk-synthetic/,
+  );
 });
 
 it('rejects browser-controlled tool messages before session creation', async () => {
@@ -441,7 +638,7 @@ it('identifies an invalid browser offer before making an API request', async () 
   expect(console.error).toHaveBeenCalledExactlyOnceWith(message);
 });
 
-it('forwards the browser SDP unchanged, including its final CRLF', async () => {
+it('creates a speech-wake session with both tools and forwards the SDP unchanged', async () => {
   const browser = new Socket();
   browser.open();
   const client = new OpenAI({ apiKey: 'synthetic-test-key' });
@@ -464,7 +661,33 @@ it('forwards the browser SDP unchanged, including its final CRLF', async () => {
   expect(post).toHaveBeenCalledWith(
     '/live/sessions',
     expect.objectContaining({
-      body: expect.objectContaining({ transport: { type: 'webrtc', sdp } }),
+      body: expect.objectContaining({
+        transport: { type: 'webrtc', sdp },
+        session: expect.objectContaining({
+          model: 'gpt-live-1.1',
+          wake_policy: { type: 'speech' },
+          idle_timeout_s: 20,
+          delegation: {
+            type: 'responses',
+            responses: expect.objectContaining({
+              model: 'gpt-5.6-luna',
+              parallel_tool_calls: false,
+              tools: [
+                expect.objectContaining({
+                  type: 'function',
+                  name: 'ask_order_agent',
+                  strict: true,
+                  parameters: expect.objectContaining({
+                    required: ['request'],
+                    additionalProperties: false,
+                  }),
+                }),
+                { type: 'web_search' },
+              ],
+            }),
+          },
+        }),
+      }),
     }),
   );
   sidebands[0].open();
