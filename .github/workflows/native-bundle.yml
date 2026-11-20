@@ -151,7 +151,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
         run: |
           native_host=$(rustc -vV | sed -n 's/^host: //p')
-          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
+          cargo test --locked --release --target "$native_host" -p codex-exec-server-project-search-tests --lib invalid_filename -- --nocapture
       - name: Audit the reviewed native source
         run: node packages/agents-codex/scripts/native.mjs audit
       - name: Build the Windows helpers and executor fixture
