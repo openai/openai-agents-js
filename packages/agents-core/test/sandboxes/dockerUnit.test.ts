@@ -1491,6 +1491,117 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
+  it('does not create host directories through an ancestor replaced during mount application', async () => {
+    const outside = await mkdtemp(
+      join(tmpdir(), 'agents-core-docker-outside-'),
+    );
+    const ancestor = join(rootDir, 'ancestor');
+    await mkdir(ancestor);
+    const session = new DockerSandboxSession({
+      state: {
+        manifest: new Manifest({
+          entries: {
+            seed: {
+              type: 's3_mount',
+              bucket: 'seed',
+              mountStrategy: inContainerMountStrategy(),
+            },
+          },
+        }),
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+        containerId: 'container-swapped-mount',
+        image: 'test:image',
+      },
+    });
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command, args) => {
+        if (args[0] === 'exec') {
+          await rm(ancestor, { recursive: true });
+          await symlink(outside, ancestor);
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() => dockerSpawnResult({}));
+
+    try {
+      await session.applyManifest(
+        new Manifest({
+          users: [{ name: 'sandbox-user' }],
+          entries: {
+            remote: {
+              type: 's3_mount',
+              bucket: 'public-test-bucket',
+              mountPath: 'ancestor/new-mount',
+              mountStrategy: inContainerMountStrategy(),
+            },
+          },
+        }),
+      );
+      await expect(lstat(join(outside, 'new-mount'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(
+        childProcessMocks.spawn.mock.calls.some(([, args]) =>
+          (args as string[]).join(' ').includes('mkdir -p --'),
+        ),
+      ).toBe(true);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a mount path already resolving outside the host workspace', async () => {
+    const outside = await mkdtemp(
+      join(tmpdir(), 'agents-core-docker-outside-'),
+    );
+    await symlink(outside, join(rootDir, 'ancestor'));
+    const session = new DockerSandboxSession({
+      state: {
+        manifest: new Manifest({
+          entries: {
+            seed: {
+              type: 's3_mount',
+              bucket: 'seed',
+              mountStrategy: inContainerMountStrategy(),
+            },
+          },
+        }),
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+        containerId: 'container-escaping-mount',
+        image: 'test:image',
+      },
+    });
+
+    try {
+      await expect(
+        session.applyManifest(
+          new Manifest({
+            entries: {
+              remote: {
+                type: 's3_mount',
+                bucket: 'public-test-bucket',
+                mountPath: 'ancestor/new-mount',
+                mountStrategy: inContainerMountStrategy(),
+              },
+            },
+          }),
+        ),
+      ).rejects.toThrow(/resolves outside the sandbox workspace/u);
+      await expect(lstat(join(outside, 'new-mount'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('revalidates effective mount paths before Docker credential effects', async () => {
     const session = new DockerSandboxSession({
       state: {
