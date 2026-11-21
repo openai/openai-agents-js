@@ -2857,6 +2857,49 @@ describe('DaytonaSandboxClient', () => {
     );
   });
 
+  test('rejects tar hydration before clearing a writable cloud mount', async () => {
+    const session = await new DaytonaSandboxClient().create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            readOnly: false,
+            mountPath: 'mounted/logs',
+            mountStrategy: new DaytonaCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+    );
+    uploadFileMock.mockClear();
+    executeCommandMock.mockClear();
+
+    await expect(session.hydrateWorkspace(makeTarArchive([]))).rejects.toThrow(
+      'cannot hydrate a tar workspace while mounts are active',
+    );
+    expect(uploadFileMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
+  });
+
+  test('hydrates an ordinary tar workspace without mounts', async () => {
+    const session = await new DaytonaSandboxClient().create(new Manifest());
+    uploadFileMock.mockClear();
+    executeCommandMock.mockClear();
+
+    await session.hydrateWorkspace(
+      makeTarArchive([{ name: 'keep.txt', content: 'keep' }]),
+    );
+
+    expect(uploadFileMock).toHaveBeenCalled();
+    expect(
+      executeCommandMock.mock.calls.some(([command]) =>
+        String(command).includes('tar -C'),
+      ),
+    ).toBe(true);
+  });
+
   test('resolves mount credential files without the configured PATH', async () => {
     const client = new DaytonaSandboxClient({
       env: {

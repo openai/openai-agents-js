@@ -23,11 +23,14 @@ import {
   type SandboxSessionLifecycleOptions,
   type SandboxSessionState,
   type TypedMount,
+  type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
   type WriteStdinArgs,
 } from '@openai/agents-core/sandbox';
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
+  assertNoWorkspaceMountsForTarHydration,
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
   isRemoteSandboxSessionStateUnsafe,
@@ -75,6 +78,7 @@ import {
   configuredMountCredentialFields,
   validateMountCredentialBoundaries,
   BOUNDED_FILE_READ_STATUS_BYTES,
+  withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
 import { Buffer } from 'node:buffer';
 import { validateRemoteSandboxPathForManifest } from '../shared/paths';
@@ -503,6 +507,21 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       this.state.pauseOnExit &&
       this.ownsSandbox
     );
+  }
+
+  protected override async hydrateWorkspaceTar(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertNoWorkspaceMountsForTarHydration(
+        'BlaxelSandboxClient',
+        this.state.manifest,
+        this.activeFuseMountPaths.size > 0 ||
+          this.activeDriveMountPaths.size > 0,
+      );
+      await super.hydrateWorkspaceTar(data, options);
+    });
   }
 
   async rehydrateActiveMountPathsFromManifest(): Promise<void> {

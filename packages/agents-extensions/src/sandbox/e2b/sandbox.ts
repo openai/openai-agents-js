@@ -1,5 +1,8 @@
 import { UserError } from '@openai/agents-core';
-import { BOUNDED_FILE_READ_STATUS_BYTES } from '@openai/agents-core/sandbox/internal';
+import {
+  BOUNDED_FILE_READ_STATUS_BYTES,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
 import {
   Manifest,
   SandboxProviderError,
@@ -28,6 +31,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
+  assertNoWorkspaceMountsForTarHydration,
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
   isRemoteSandboxSessionStateUnsafe,
@@ -482,7 +486,14 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         this.state.workspacePersistence,
       );
     }
-    await this.hydrateWorkspaceTar(data, options);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertNoWorkspaceMountsForTarHydration(
+        'E2BSandboxClient',
+        this.state.manifest,
+        this.activeMountPaths.size > 0,
+      );
+      await this.hydrateWorkspaceTar(data, options);
+    });
   }
 
   private async persistWorkspaceViaNativeSnapshot(): Promise<

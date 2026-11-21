@@ -45,6 +45,7 @@ import {
 } from '@openai/agents-core/sandbox/internal';
 import {
   appendPtyOutput,
+  assertNoWorkspaceMountsForTarHydration,
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
   assertRemoteSandboxSessionStateUsable,
@@ -881,15 +882,22 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   ): Promise<void> {
     this.assertSessionUsable();
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
-    await hydrateRemoteWorkspaceTar({
-      providerName: 'DaytonaSandboxClient',
-      manifest: this.state.manifest,
-      io: this.archiveIo(),
-      data,
-      archiveLimits:
-        options.archiveLimits === undefined
-          ? this.archiveLimits
-          : options.archiveLimits,
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertNoWorkspaceMountsForTarHydration(
+        'DaytonaSandboxClient',
+        this.state.manifest,
+        this.activeMountPaths.size > 0,
+      );
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'DaytonaSandboxClient',
+        manifest: this.state.manifest,
+        io: this.archiveIo(),
+        data,
+        archiveLimits:
+          options.archiveLimits === undefined
+            ? this.archiveLimits
+            : options.archiveLimits,
+      });
     });
   }
 
