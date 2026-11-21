@@ -31,6 +31,48 @@ async function withSessionFile<T>(
 }
 
 describe('FileSession', () => {
+  it('rejects session IDs that can select paths outside the session directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agents-file-session-'));
+    const dir = join(root, 'sessions');
+    const outsideFile = join(root, 'outside.json');
+    const outsideData = JSON.stringify([userItem('outside')]);
+    await writeFile(outsideFile, outsideData, 'utf8');
+
+    try {
+      for (const sessionId of [
+        '../outside',
+        '..\\outside',
+        'outside:alternate',
+        '.',
+        '..',
+      ]) {
+        expect(() => new FileSession({ dir, sessionId })).toThrow(
+          'Invalid session ID',
+        );
+      }
+
+      expect(await readFile(outsideFile, 'utf8')).toBe(outsideData);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates and reopens a generated session ID', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agents-file-session-'));
+    try {
+      const session = new FileSession({ dir });
+      const sessionId = await session.getSessionId();
+      await session.addItems([userItem('saved')]);
+
+      const reopened = new FileSession({ dir, sessionId });
+      expect(
+        (await reopened.getItems()).map((item) => (item as any).content),
+      ).toEqual(['saved']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('skips corrupt records when reading items', async () => {
     await withSessionFile(
       [userItem('valid'), 'not valid json {{{'],
