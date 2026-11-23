@@ -1,7 +1,15 @@
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {
   Agent,
   run,
@@ -31,7 +39,7 @@ export class WorkspaceEditor implements Editor {
   private readonly root: string;
 
   constructor(root: string) {
-    this.root = root;
+    this.root = path.resolve(root);
   }
 
   async createFile(
@@ -77,7 +85,23 @@ export class WorkspaceEditor implements Editor {
     ) {
       throw new Error(`Operation outside workspace: ${relativePath}`);
     }
-    return resolved;
+    const root = await realpath(this.root);
+    let current = root;
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      const entry = await lstat(current).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        },
+      );
+      if (!entry) break;
+      // Reject links, including dangling links, before any file operation.
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Operation outside workspace: ${relativePath}`);
+      }
+    }
+    return path.resolve(root, relative);
   }
 }
 

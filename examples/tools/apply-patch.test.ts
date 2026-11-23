@@ -4,6 +4,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -44,6 +45,66 @@ describe('apply-patch workspace editor', () => {
       code: 'ENOENT',
     });
   });
+
+  it.each(['create_file', 'update_file', 'delete_file'] as const)(
+    'rejects %s through a directory symlink before changing outside files',
+    async (type) => {
+      const outside = path.join(parent, 'outside');
+      await mkdir(outside);
+      await writeFile(path.join(outside, 'existing.txt'), 'original\n');
+      await symlink(outside, path.join(root, 'linked'), 'dir');
+      const operationPath =
+        type === 'create_file'
+          ? 'linked/nested/new.txt'
+          : 'linked/existing.txt';
+      const result =
+        type === 'create_file'
+          ? editor.createFile({ type, path: operationPath, diff: '+new\n+' })
+          : type === 'update_file'
+            ? editor.updateFile({
+                type,
+                path: operationPath,
+                diff: '@@\n-original\n+changed',
+              })
+            : editor.deleteFile({ type, path: operationPath });
+
+      await expect(result).rejects.toThrow('Operation outside workspace:');
+      expect(await readFile(path.join(outside, 'existing.txt'), 'utf8')).toBe(
+        'original\n',
+      );
+      await expect(stat(path.join(outside, 'nested'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    },
+  );
+
+  it.each(['create_file', 'update_file', 'dangling'] as const)(
+    'rejects %s through a final symlink before writing outside files',
+    async (type) => {
+      const target = path.join(parent, 'outside.txt');
+      if (type !== 'dangling') await writeFile(target, 'original\n');
+      await symlink(target, path.join(root, 'linked.txt'));
+      const result =
+        type === 'update_file'
+          ? editor.updateFile({
+              type,
+              path: 'linked.txt',
+              diff: '@@\n-original\n+changed',
+            })
+          : editor.createFile({
+              type: 'create_file',
+              path: 'linked.txt',
+              diff: '+new\n+',
+            });
+
+      await expect(result).rejects.toThrow('Operation outside workspace:');
+      if (type === 'dangling') {
+        await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect(await readFile(target, 'utf8')).toBe('original\n');
+      }
+    },
+  );
 
   it.each(['update_file', 'delete_file'] as const)(
     'rejects sibling-prefix %s without changing the existing file',
