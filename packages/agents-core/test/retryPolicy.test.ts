@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
+  hostedMcpTool,
   InputGuardrailTripwireTriggered,
   MemorySession,
   ModelTimeoutError,
@@ -18,7 +19,7 @@ import type {
   RetryPolicy,
   RetryPolicyContext,
 } from '../src/model';
-import type { StreamEvent } from '../src/types/protocol';
+import type { HostedToolCallItem, StreamEvent } from '../src/types/protocol';
 import { RequestUsage, Usage } from '../src/usage';
 import {
   getResponseWithRetry,
@@ -90,6 +91,184 @@ beforeAll(() => {
 });
 
 describe('retry policies', () => {
+  describe.each([false, true])('hosted MCP replay (stream=%s)', (stream) => {
+    it('does not replay an approved call after an ambiguous provider failure', async () => {
+      const failure = errorWith('Connection lost after approval', {
+        statusCode: 503,
+      });
+      const approvalRequest: HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        name: 'mcp_approval_request',
+        id: 'approval_write',
+        providerData: {
+          type: 'mcp_approval_request',
+          id: 'approval_write',
+          server_label: 'records',
+          name: 'write_record',
+          arguments: '{}',
+        },
+      };
+      const model = new ScriptedModel([
+        modelResponse([approvalRequest]),
+        modelError(failure, { suggested: true }),
+        textResponse('Unexpected replay'),
+      ]);
+      const onApproval = vi.fn(async () => ({ approve: true }));
+      const agent = new Agent({
+        name: 'ApprovedMcpAgent',
+        model,
+        tools: [
+          hostedMcpTool({
+            serverLabel: 'records',
+            serverUrl: 'https://mcp.example.test',
+            requireApproval: 'always',
+            onApproval,
+          }),
+        ],
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: retryPolicies.any(
+              retryPolicies.httpStatus([503]),
+              retryPolicies.providerSuggested(),
+            ),
+          },
+        },
+      });
+
+      const attempt = async () => {
+        if (stream) {
+          const result = await run(agent, 'Write the approved record', {
+            stream: true,
+          });
+          for await (const _event of result) {
+            // Consume until the approved request fails.
+          }
+        } else {
+          await run(agent, 'Write the approved record');
+        }
+      };
+
+      await expect(attempt()).rejects.toBe(failure);
+      expect(onApproval).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(2);
+      expect(model.calls[1].request.previousResponseId).toBeUndefined();
+      expect(model.calls[1].request.conversationId).toBeUndefined();
+      expect(model.calls[1].request.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'hosted_tool_call',
+            name: 'mcp_approval_response',
+            providerData: expect.objectContaining({
+              approve: true,
+              approval_request_id: 'approval_write',
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it.each([
+      {
+        type: 'hosted_tool_call' as const,
+        name: 'mcp_approval_response',
+        providerData: { approve: true, approval_request_id: 'approval_write' },
+      },
+      {
+        type: 'hosted_tool_call' as const,
+        name: 'write_record',
+        providerData: {
+          type: 'mcp_approval_response',
+          approve: true,
+          approval_request_id: 'approval_write',
+        },
+      },
+      {
+        type: 'unknown' as const,
+        providerData: {
+          type: 'mcp_approval_response',
+          approve: true,
+          approval_request_id: 'approval_write',
+        },
+      },
+    ])('protects approval history encoded as $type / $name', async (input) => {
+      const failure = new Error('Approval request may have been accepted');
+      const model = new ScriptedModel([
+        modelError(failure),
+        textResponse('Unexpected replay'),
+      ]);
+      const agent = new Agent({
+        name: 'ApprovalHistoryAgent',
+        model,
+        modelSettings: {
+          retry: { maxRetries: 1, policy: () => true },
+        },
+      });
+
+      const attempt = async () => {
+        if (stream) {
+          const result = await run(agent, [input], { stream: true });
+          for await (const _event of result) {
+            // Consume until the history request fails.
+          }
+        } else {
+          await run(agent, [input]);
+        }
+      };
+
+      await expect(attempt()).rejects.toBe(failure);
+      expect(model.calls).toHaveLength(1);
+    });
+
+    it.each([undefined, 'safe'] as const)(
+      'requires explicit safety for hosted MCP tools (replaySafety=%s)',
+      async (replaySafety) => {
+        const failure = errorWith('Connection lost', { code: 'ECONNRESET' });
+        const model = new ScriptedModel([
+          modelError(failure, { replaySafety }),
+          textResponse('Recovered'),
+        ]);
+        const agent = new Agent({
+          name: 'HostedMcpAgent',
+          model,
+          tools: [
+            hostedMcpTool({
+              serverLabel: 'records',
+              serverUrl: 'https://mcp.example.test',
+            }),
+          ],
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.networkError(),
+            },
+          },
+        });
+
+        const attempt = async () => {
+          if (stream) {
+            const result = await run(agent, 'Write a record', { stream: true });
+            for await (const _event of result) {
+              // Consume through the terminal response or error.
+            }
+            return result.finalOutput;
+          }
+          return (await run(agent, 'Write a record')).finalOutput;
+        };
+
+        if (replaySafety === 'safe') {
+          await expect(attempt()).resolves.toBe('Recovered');
+          expect(model.calls).toHaveLength(2);
+        } else {
+          await expect(attempt()).rejects.toBe(failure);
+          expect(model.calls).toHaveLength(1);
+        }
+      },
+    );
+  });
+
   it('retries non-streaming requests only when the user policy opts in', async () => {
     const model = new ScriptedModel([
       modelError(errorWith('Rate limited', { statusCode: 429 })),

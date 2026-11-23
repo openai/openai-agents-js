@@ -1912,6 +1912,120 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it.each([
+    {
+      source: 'providerData.input',
+      providerData: {
+        input: [
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: 'approval_write',
+            approve: true,
+          },
+        ],
+      },
+    },
+    {
+      source: 'extra_body.tools',
+      providerData: {
+        extra_body: {
+          tools: [
+            {
+              type: 'mcp',
+              server_label: 'records',
+              server_url: 'https://mcp.example.test',
+              require_approval: 'never',
+            },
+          ],
+        },
+      },
+    },
+    {
+      source: 'extraBody.input',
+      providerData: {
+        extraBody: {
+          input: [
+            {
+              type: 'mcp_approval_response',
+              approval_request_id: 'approval_write',
+              approve: true,
+            },
+          ],
+        },
+      },
+    },
+  ])(
+    'does not replay hosted MCP work supplied by $source',
+    async ({ providerData }) => {
+      const failure = Object.assign(
+        new Error('Connection lost after acceptance'),
+        { status: 503 },
+      );
+      // A client double exposes the provider-wire boundary hidden by ScriptedModel.
+      const create = vi.fn().mockRejectedValue(failure);
+      const model = new OpenAIResponsesModel(
+        { responses: { create } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const agent = new Agent({
+        name: 'McpBodyOverrideAgent',
+        model,
+        modelSettings: {
+          providerData,
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: () => true,
+          },
+        },
+      });
+
+      await expect(new Runner().run(agent, 'Write the record')).rejects.toBe(
+        failure,
+      );
+      expect(create).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retains explicit provider-safe advice for hosted MCP body overrides', () => {
+    const model = new OpenAIResponsesModel(
+      { responses: { create: vi.fn() } } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const error = Object.assign(new Error('Request was not accepted'), {
+      headers: new Headers([['x-should-retry', 'true']]),
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'Write the record',
+          tools: [],
+          modelSettings: {
+            providerData: {
+              extraBody: {
+                tools: [
+                  {
+                    type: 'mcp',
+                    server_label: 'records',
+                    server_url: 'https://mcp.example.test',
+                    require_approval: 'never',
+                  },
+                ],
+              },
+            },
+          },
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        },
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({ suggested: true, replaySafety: 'safe' });
+  });
+
   it('getRetryAdvice honors x-should-retry=false', () => {
     const fakeClient = {
       responses: { create: vi.fn() },

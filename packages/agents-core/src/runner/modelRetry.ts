@@ -346,6 +346,24 @@ function isStatefulRequest(request: ModelRequest): boolean {
   return Boolean(request.previousResponseId || request.conversationId);
 }
 
+function hasHostedMcpReplayRisk(request: ModelRequest): boolean {
+  return (
+    request.tools.some(
+      (tool) =>
+        tool.type === 'hosted_tool' && tool.providerData?.type === 'mcp',
+    ) ||
+    (Array.isArray(request.input) &&
+      request.input.some(
+        (item) =>
+          (item.type === 'hosted_tool_call' &&
+            (item.name === 'mcp_approval_response' ||
+              item.providerData?.type === 'mcp_approval_response')) ||
+          (item.type === 'unknown' &&
+            item.providerData?.type === 'mcp_approval_response'),
+      ))
+  );
+}
+
 function asError(value: unknown): Error | undefined {
   return value instanceof Error ? value : undefined;
 }
@@ -960,16 +978,18 @@ async function evaluateRetry({
     return { retry: false };
   }
 
+  // Hosted MCP work can have side effects even without server-managed history.
+  const requiresReplaySafety =
+    context.statefulRequest === true || hasHostedMcpReplayRisk(request);
   const decision = resolveRetryDecision(await retryPolicy(context));
   if (!decision.retry) {
     return decision;
   }
 
-  const statefulRequest = context.statefulRequest === true;
   const providerMarksReplaySafe = authority.replaySafety === 'safe';
   const providerMarksReplayUnsafe = authority.replaySafety === 'unsafe';
   if (
-    statefulRequest &&
+    requiresReplaySafety &&
     !(
       isReplaySafeApproval(decision) ||
       providerMarksReplaySafe ||

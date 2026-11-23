@@ -1509,7 +1509,26 @@ export class OpenAIResponsesModel implements Model {
   }
 
   getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
-    return getOpenAIRetryAdvice(args);
+    const advice = getOpenAIRetryAdvice(args);
+    if (advice?.replaySafety !== undefined) {
+      return advice;
+    }
+
+    // Body overrides can supply MCP work outside the normalized request fields.
+    const { providerData, overrides } = splitResponsesTransportOverrides(
+      args.request.modelSettings.providerData,
+    );
+    const body = { ...providerData, ...overrides.extraBody };
+    if (
+      (Array.isArray(body.tools) &&
+        body.tools.some((tool) => tool?.type === 'mcp')) ||
+      (Array.isArray(body.input) &&
+        body.input.some((item) => item?.type === 'mcp_approval_response'))
+    ) {
+      return { ...advice, replaySafety: 'unsafe' };
+    }
+
+    return advice;
   }
 
   /**
