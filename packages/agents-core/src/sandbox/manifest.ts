@@ -481,6 +481,9 @@ export function registerEnvValueReference<TReference extends EnvValueReference>(
 export function serializeEnvValueReference(
   reference: EnvValueReference,
 ): SerializedEnvValueReference {
+  if (reference instanceof PersistedEnvValueReference) {
+    return reference.serialize();
+  }
   const registration = envValueReferenceRegistry.get(reference.type);
   if (
     !registration ||
@@ -505,6 +508,41 @@ export function serializeEnvValueReference(
     ...serialized,
     type: reference.type,
   };
+}
+
+// Persisted lookup metadata is data, not authority to invoke an application's
+// registered parser or resolver. Runtime restoration binds current references.
+export class PersistedEnvValueReference extends EnvValueReference {
+  private readonly serialized: SerializedEnvValueReference;
+
+  constructor(serialized: SerializedEnvValueReference) {
+    super({
+      ephemeral: serialized.ephemeral === true,
+      description:
+        typeof serialized.description === 'string'
+          ? serialized.description
+          : undefined,
+    });
+    this.serialized = structuredClone(serialized);
+  }
+
+  override get type(): string {
+    return this.serialized.type;
+  }
+
+  override serialize(): SerializedEnvValueReference {
+    return structuredClone(this.serialized);
+  }
+
+  override init(): EnvValueReference {
+    return new PersistedEnvValueReference({ ...this.serialized });
+  }
+
+  override async resolve(): Promise<string> {
+    throw new TypeError(
+      'Persisted environment value references require rebinding from a current trusted manifest before resolution.',
+    );
+  }
 }
 
 export function isEnvValueReference(

@@ -1449,12 +1449,15 @@ export class SandboxRuntimeManager<TContext> {
         replaceWithTrustedManifest: client.backendId === 'docker',
       },
     );
-    if (client.backendId === 'docker') {
-      sessionState.environment = {
-        ...(sessionState.environment ?? {}),
-        ...(await materializedTrustedManifest.resolveEnvironment()),
-      };
+    for (const key of Object.keys(sessionState.manifest.environment)) {
+      delete sessionState.manifest.environment[key];
     }
+    Object.assign(
+      sessionState.manifest.environment,
+      cloneManifest(materializedTrustedManifest).environment,
+    );
+    sessionState.environment =
+      await materializedTrustedManifest.resolveEnvironment();
     assertMountCredentialsRebound(sessionState);
     validateMountCredentialBoundaries(sessionState.manifest);
     validateMountEnvironmentCredentialBoundaries(

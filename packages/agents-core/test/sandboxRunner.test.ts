@@ -1552,10 +1552,7 @@ describe('sandbox runner integration', () => {
             environment: Record<string, unknown>;
           }
         ).environment.TOKEN,
-      ).toEqual({
-        type: ClientSecretReference.type,
-        key: 'persisted-token',
-      });
+      ).toMatchObject({ key: 'current-token' });
       expect(client.resumeCalls[0]!.state).toBe(client.deserializedStates[0]);
       expect(client.resumeCalls[0]!.state).toBeInstanceOf(
         BrandedClientPreparedFakeSandboxState,
@@ -1656,6 +1653,110 @@ describe('sandbox runner integration', () => {
       }
     },
   );
+
+  it.each(['fake', 'docker'])(
+    'binds direct %s state environment to current configuration',
+    async (backendId) => {
+      class RestoringClient extends FakeSandboxClient {
+        override readonly backendId = backendId;
+      }
+      const client = new RestoringClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({ environment: { TOKEN: 'current' } }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: {
+          client,
+          sessionState: {
+            sessionId: 'persisted',
+            manifest: new Manifest({ environment: { TOKEN: 'stale' } }),
+            environment: { TOKEN: 'attacker', EXTRA: 'injected' },
+          },
+        },
+        runState: state,
+      });
+      await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+      expect(client.resumeCalls[0]!.state.environment).toEqual({
+        TOKEN: 'current',
+      });
+      expect(
+        client.resumeCalls[0]!.state.manifest.environment.TOKEN.value,
+      ).toBe('current');
+      await manager.cleanup(state);
+    },
+  );
+
+  it('loads RunState reference metadata without invoking its registered parser', async () => {
+    class RestoredReference extends EnvValueReference {
+      static readonly type = 'test.runstate_inert_reference';
+      constructor(readonly key: string) {
+        super();
+      }
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+      async resolve(): Promise<string> {
+        return `synthetic:${this.key}`;
+      }
+    }
+    const parse = vi.fn(
+      (payload: Record<string, unknown>) =>
+        new RestoredReference(String(payload.key)),
+    );
+    const unregister = registerEnvValueReference(RestoredReference, parse);
+    try {
+      const client = new FakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({
+          environment: { TOKEN: new RestoredReference('trusted') },
+        }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const first = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await first.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+      await first.cleanup(state, { preserveOwnedSessions: true });
+      const raw = JSON.parse(state.toString());
+      // Replace lookup metadata in every persisted copy, preserving the envelope.
+      const serialized = JSON.stringify(raw)
+        .split('"key":"trusted"')
+        .join('"key":"attacker"');
+      parse.mockClear();
+      const restored = await RunState.fromString(sandboxAgent, serialized);
+      expect(parse).not.toHaveBeenCalled();
+      const second = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: restored,
+      });
+      await second.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+      expect(
+        parse.mock.calls.every(([payload]) => payload.key === 'trusted'),
+      ).toBe(true);
+      const manifest = client.resumeCalls[0]!.state.manifest;
+      expect(await manifest.environment.TOKEN.resolve()).toBe(
+        'synthetic:trusted',
+      );
+      await second.cleanup(restored);
+    } finally {
+      unregister();
+    }
+  });
 
   it('lets a client-prepared Docker explicit resume remove a stale environment reference', async () => {
     class DockerClientEnvironmentPreparingFakeSandboxClient extends ClientEnvironmentPreparingFakeSandboxClient {
@@ -5902,7 +6003,6 @@ describe('sandbox runner integration', () => {
     });
 
     expect(client.resumeCalls[0]?.state.environment).toEqual({
-      PROVIDER_ENV: 'provider-value',
       SECRET_ENV: 'refreshed-secret',
     });
     expect(

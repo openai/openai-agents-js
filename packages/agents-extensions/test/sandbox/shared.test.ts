@@ -1805,8 +1805,10 @@ describe('remote sandbox path helpers', () => {
     });
   });
 
-  test('round-trips remote environment references without resolved secrets', async () => {
+  test('requires trusted binding for remote persisted environment references', async () => {
     let currentSecret = 'activity-secret';
+    let resolveCount = 0;
+    const parsedKeys: unknown[] = [];
     class RemoteSecretReference extends EnvValueReference {
       static readonly type = 'test.remote_secret_reference';
 
@@ -1819,12 +1821,14 @@ describe('remote sandbox path helpers', () => {
       }
 
       async resolve(): Promise<string> {
+        resolveCount += 1;
         return `${currentSecret}:${this.key}`;
       }
     }
     const unregister = registerEnvValueReference(
       RemoteSecretReference,
       (payload) => {
+        parsedKeys.push(payload.key);
         if (typeof payload.key !== 'string') {
           throw new TypeError('Remote secret reference key must be a string.');
         }
@@ -1857,9 +1861,15 @@ describe('remote sandbox path helpers', () => {
       });
 
       currentSecret = 'worker-secret';
-      const restored = await rehydrateRemoteSandboxSessionStateValues(
-        JSON.parse(serializedJson),
-      );
+      parsedKeys.length = 0;
+      await expect(
+        rehydrateRemoteSandboxSessionStateValues(JSON.parse(serializedJson)),
+      ).rejects.toThrow(/trusted manifest/);
+      expect(parsedKeys).toEqual([]);
+      const restored = await rehydrateRemoteSandboxSessionStateValues({
+        ...JSON.parse(serializedJson),
+        manifest: { environment: manifest.environment },
+      });
       expect(restored.manifest.environment.TOKEN).toBeInstanceOf(
         RemoteSecretReference,
       );
@@ -1867,6 +1877,28 @@ describe('remote sandbox path helpers', () => {
         TOKEN: 'worker-secret:openai-key',
         PROVIDER_VALUE: 'persisted',
       });
+      const trusted = new Manifest({
+        environment: {
+          TOKEN: new RemoteSecretReference('trusted-key'),
+          ENDPOINT: 'current-endpoint',
+        },
+      });
+      resolveCount = 0;
+      const resumed = await rehydrateRemoteSandboxSessionStateValues(
+        {
+          ...JSON.parse(serializedJson),
+          manifest: { environment: trusted.environment },
+          // SDK-prepared restoration discards the persisted runtime environment.
+          environment: undefined,
+        },
+        { PROVIDER_VALUE: 'current-provider-option' },
+      );
+      expect(resumed?.environment).toEqual({
+        TOKEN: 'worker-secret:trusted-key',
+        ENDPOINT: 'current-endpoint',
+        PROVIDER_VALUE: 'current-provider-option',
+      });
+      expect(resolveCount).toBe(1);
     } finally {
       unregister();
     }

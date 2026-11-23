@@ -985,7 +985,17 @@ describe('E2BSandboxClient', () => {
       );
       const serialized = await client.serializeSessionState(session.state);
       resolveCount = 0;
-      const restored = await client.deserializeSessionState(serialized);
+      await expect(client.deserializeSessionState(serialized)).rejects.toThrow(
+        /trusted manifest/,
+      );
+      expect(resolveCount).toBe(0);
+      const restored = await client.deserializeSessionState({
+        ...serialized,
+        manifest: {
+          ...(serialized.manifest as Record<string, unknown>),
+          environment: session.state.manifest.environment,
+        },
+      });
       expect(resolveCount).toBe(1);
       expect(restored.environment).toEqual({
         TOKEN: 'credential-1:openai-key',
