@@ -1,5 +1,24 @@
 # @openai/agents
 
+## 0.23.0
+
+### Patch Changes
+
+- efe1bde: Update compatible dependencies and preserve nested response usage details with the existing bounded schema.
+- Updated dependencies [31ca2f0]
+- Updated dependencies [efe1bde]
+- Updated dependencies [90a6b52]
+- Updated dependencies [5c18e71]
+- Updated dependencies [d8ae689]
+- Updated dependencies [ad5567d]
+- Updated dependencies [f096f03]
+- Updated dependencies [624e535]
+- Updated dependencies [f53216e]
+- Updated dependencies [ccceb64]
+  - @openai/agents-core@0.23.0
+  - @openai/agents-openai@0.23.0
+  - @openai/agents-realtime@0.23.0
+
 ## 0.22.0
 
 ### Patch Changes
