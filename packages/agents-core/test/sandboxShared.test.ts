@@ -780,6 +780,12 @@ describe('sandbox shared helpers', () => {
           TOKEN: 'persisted-plaintext-must-not-win',
           STATIC: 'enabled',
         }),
+      ).rejects.toThrow(/trusted manifest/);
+      await expect(
+        rehydratePersistedEnvironmentForRuntime(manifest, {
+          TOKEN: 'persisted-plaintext-must-not-win',
+          STATIC: 'enabled',
+        }),
       ).resolves.toEqual({
         TOKEN: 'replayed-secret:openai-key',
         STATIC: 'enabled',

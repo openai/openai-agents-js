@@ -404,7 +404,7 @@ export async function deserializeSandboxSessionStateEntry(
       state: providerStateWithSdkEnvelopeFields(
         envelope,
         prevalidatedPersistedState.manifest,
-        clientPreparesEnvironment ? undefined : resolvedTrustedManifest,
+        resolvedTrustedManifest,
       ),
     },
     {
@@ -423,9 +423,45 @@ export async function deserializeSandboxSessionStateEntry(
     providerStateWithSdkEnvelopeFields(
       envelope,
       prevalidatedPersistedState.manifest,
-      clientPreparesEnvironment ? undefined : materializedTrustedManifest,
+      materializedTrustedManifest,
     ),
   );
+  // Docker resolves ordinary values once when restoring its resources.
+  if (
+    !clientPreparesEnvironment &&
+    client.backendId !== 'docker' &&
+    materializedTrustedManifest
+  ) {
+    // Keep own string values already resolved in the provider's execution context.
+    const referenceEntries = client.resolveTrustedEnvironmentForResume
+      ? Object.entries(state.environment ?? {}).filter(
+          ([key, value]) =>
+            typeof value === 'string' &&
+            Object.prototype.hasOwnProperty.call(
+              materializedTrustedManifest.environment,
+              key,
+            ) &&
+            isEnvValueReference(materializedTrustedManifest.environment[key]!),
+        )
+      : [];
+    const manifestEnvironment = Object.fromEntries([
+      ...referenceEntries,
+      ...(await Promise.all(
+        Object.entries(materializedTrustedManifest.environment)
+          .filter(([, value]) => !isEnvValueReference(value))
+          .map(async ([key, value]) => [key, await value.resolve()]),
+      )),
+    ]);
+    state.environment = {
+      ...(client.resolveTrustedEnvironmentForResume
+        ? client.resolveTrustedEnvironmentForResume(
+            manifestEnvironment,
+            trustedConfig.clientOptions,
+          )
+        : state.environment),
+      ...manifestEnvironment,
+    };
+  }
   if (client.backendId === 'docker' && !clientPreparesEnvironment) {
     delete state.sessionIdentity;
   }
@@ -508,9 +544,12 @@ function providerStateWithSdkEnvelopeFields(
     envelope.providerState,
     envelope.backendId,
   );
-  const persistedEnvironment = isStringRecord(providerState.environment)
-    ? providerState.environment
-    : undefined;
+  const persistedEnvironment =
+    (!trustedManifest || envelope.environmentPreparation === 'client') &&
+    isStringRecord(providerState.environment)
+      ? providerState.environment
+      : undefined;
+  delete providerState.environment;
   const sanitizedEnvironment = persistedEnvironment
     ? sanitizeMountCredentialEnvironmentForPersistence({
         manifest: trustedManifest ?? persistedManifest,

@@ -4,7 +4,9 @@ import {
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,
   isEnvValueReference,
+  isSerializedEnvValueReference,
   Manifest,
+  PersistedEnvValueReference,
   type EnvValue,
 } from '../../manifest';
 import type { SandboxSessionState } from '../../session';
@@ -382,6 +384,16 @@ function deserializeManifestRecord(
 ): Record<string, unknown> {
   return {
     ...value,
+    environment: Object.fromEntries(
+      Object.entries(
+        (value.environment as Record<string, unknown> | undefined) ?? {},
+      ).map(([key, entry]) => [
+        key,
+        isSerializedEnvValueReference(entry)
+          ? new PersistedEnvValueReference({ ...entry })
+          : entry,
+      ]),
+    ),
     entries: deserializeEntriesForRuntime(
       value.entries as Record<string, Entry> | undefined,
     ),

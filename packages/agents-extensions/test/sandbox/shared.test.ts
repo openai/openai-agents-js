@@ -76,6 +76,11 @@ import {
   workspaceTarExcludeArgs,
 } from '../../src/sandbox/shared';
 import { collectPtyOutput } from '../../src/sandbox/shared/pty';
+import { E2BSandboxClient } from '../../src/sandbox/e2b';
+import { BlaxelSandboxClient } from '../../src/sandbox/blaxel';
+import { ModalSandboxClient } from '../../src/sandbox/modal';
+import { DaytonaSandboxClient } from '../../src/sandbox/daytona';
+import { VercelSandboxClient } from '../../src/sandbox/vercel';
 import {
   applyLocalSourceManifestEntryToState,
   applyLocalSourceManifestToState,
@@ -152,6 +157,34 @@ function onlyMountWrite(writes: Map<string, string>): string {
   expect(writes.size).toBe(1);
   return [...writes.values()][0]!;
 }
+
+test.each([
+  E2BSandboxClient,
+  BlaxelSandboxClient,
+  ModalSandboxClient,
+  DaytonaSandboxClient,
+  VercelSandboxClient,
+])('rebinds trusted provider environment defaults for %s', (Client) => {
+  const client = new Client({
+    env: { PROVIDER_ONLY: 'constructor', SHARED: 'provider' },
+  });
+  const environment = { SHARED: 'manifest', MANIFEST_ONLY: 'fresh' };
+  expect(client.resolveTrustedEnvironmentForResume(environment)).toEqual({
+    PROVIDER_ONLY: 'constructor',
+    SHARED: 'manifest',
+    MANIFEST_ONLY: 'fresh',
+  });
+  expect(
+    client.resolveTrustedEnvironmentForResume(environment, {
+      appName: 'environment-contract-test',
+      env: { PROVIDER_ONLY: 'run-option', SHARED: 'run-option' },
+    }),
+  ).toEqual({
+    PROVIDER_ONLY: 'run-option',
+    SHARED: 'manifest',
+    MANIFEST_ONLY: 'fresh',
+  });
+});
 
 describe('exposed port helpers', () => {
   test('requires configured ports unless on-demand resolution is allowed', () => {
@@ -1805,8 +1838,10 @@ describe('remote sandbox path helpers', () => {
     });
   });
 
-  test('round-trips remote environment references without resolved secrets', async () => {
+  test('requires trusted binding for remote persisted environment references', async () => {
     let currentSecret = 'activity-secret';
+    let resolveCount = 0;
+    const parsedKeys: unknown[] = [];
     class RemoteSecretReference extends EnvValueReference {
       static readonly type = 'test.remote_secret_reference';
 
@@ -1819,12 +1854,14 @@ describe('remote sandbox path helpers', () => {
       }
 
       async resolve(): Promise<string> {
+        resolveCount += 1;
         return `${currentSecret}:${this.key}`;
       }
     }
     const unregister = registerEnvValueReference(
       RemoteSecretReference,
       (payload) => {
+        parsedKeys.push(payload.key);
         if (typeof payload.key !== 'string') {
           throw new TypeError('Remote secret reference key must be a string.');
         }
@@ -1857,9 +1894,15 @@ describe('remote sandbox path helpers', () => {
       });
 
       currentSecret = 'worker-secret';
-      const restored = await rehydrateRemoteSandboxSessionStateValues(
-        JSON.parse(serializedJson),
-      );
+      parsedKeys.length = 0;
+      await expect(
+        rehydrateRemoteSandboxSessionStateValues(JSON.parse(serializedJson)),
+      ).rejects.toThrow(/trusted manifest/);
+      expect(parsedKeys).toEqual([]);
+      const restored = await rehydrateRemoteSandboxSessionStateValues({
+        ...JSON.parse(serializedJson),
+        manifest: { environment: manifest.environment },
+      });
       expect(restored.manifest.environment.TOKEN).toBeInstanceOf(
         RemoteSecretReference,
       );
@@ -1867,6 +1910,28 @@ describe('remote sandbox path helpers', () => {
         TOKEN: 'worker-secret:openai-key',
         PROVIDER_VALUE: 'persisted',
       });
+      const trusted = new Manifest({
+        environment: {
+          TOKEN: new RemoteSecretReference('trusted-key'),
+          ENDPOINT: 'current-endpoint',
+        },
+      });
+      resolveCount = 0;
+      const resumed = await rehydrateRemoteSandboxSessionStateValues(
+        {
+          ...JSON.parse(serializedJson),
+          manifest: { environment: trusted.environment },
+          // SDK-prepared restoration discards the persisted runtime environment.
+          environment: undefined,
+        },
+        { PROVIDER_VALUE: 'current-provider-option' },
+      );
+      expect(resumed?.environment).toEqual({
+        TOKEN: 'worker-secret:trusted-key',
+        ENDPOINT: 'current-endpoint',
+        PROVIDER_VALUE: 'current-provider-option',
+      });
+      expect(resolveCount).toBe(1);
     } finally {
       unregister();
     }

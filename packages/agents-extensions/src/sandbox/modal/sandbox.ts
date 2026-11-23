@@ -1354,6 +1354,14 @@ export class ModalSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironmentForResume(
+    environment: Readonly<Record<string, string>>,
+    options?: ModalSandboxClientOptions,
+  ): Record<string, string> {
+    const resolvedOptions = resolveOptions(this.options, options);
+    return { ...resolvedOptions.env, ...environment };
+  }
+
   async create(
     args?: SandboxClientCreateArgs | Manifest,
     manifestOptions?: SandboxClientOptions,

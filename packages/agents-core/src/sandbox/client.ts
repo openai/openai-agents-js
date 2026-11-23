@@ -193,6 +193,16 @@ export interface SandboxClient<
     manifest: Manifest,
     options?: TOptions,
   ): Manifest;
+  /**
+   * Rebinds current provider environment defaults for SDK-prepared explicit or
+   * serialized resume. Values have already been resolved from the current trusted
+   * manifest and must take precedence over provider defaults. No saved state is
+   * supplied.
+   */
+  resolveTrustedEnvironmentForResume?(
+    environment: Readonly<Record<string, string>>,
+    options?: TOptions,
+  ): Record<string, string>;
   /** Synchronously validates resume policy before environment materialization. */
   validateSessionStateForResume?(
     input: SandboxSessionResumeValidationInput<TSessionState>,

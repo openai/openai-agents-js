@@ -2132,7 +2132,7 @@ describe('UnixLocalSandboxClient', () => {
     await expect(stat(join(snapshot.path, 'dir/nested.tmp'))).rejects.toThrow();
   });
 
-  it('re-resolves registered environment references without persisting secrets', async () => {
+  it('requires trusted binding before re-resolving persisted environment references', async () => {
     let currentSecret = 'activity-secret';
     class LocalSecretReference extends EnvValueReference {
       static readonly type = 'test.local_secret_reference';
@@ -2177,7 +2177,7 @@ describe('UnixLocalSandboxClient', () => {
       const serialized = await client.serializeSessionState(session.state);
       const serializedJson = JSON.stringify(serialized);
       expect(serializedJson).not.toContain('activity-secret');
-      expect(serialized.manifest).toMatchObject({
+      expect(JSON.parse(serializedJson).manifest).toMatchObject({
         environment: {
           TOKEN: {
             type: LocalSecretReference.type,
@@ -2188,9 +2188,16 @@ describe('UnixLocalSandboxClient', () => {
       expect(serialized.environment).toEqual({});
 
       currentSecret = 'worker-secret';
-      const restoredState = await client.deserializeSessionState(
-        JSON.parse(serializedJson),
-      );
+      await expect(
+        client.deserializeSessionState(JSON.parse(serializedJson)),
+      ).rejects.toThrow(/trusted manifest/);
+      const restoredState = await client.deserializeSessionState({
+        ...JSON.parse(serializedJson),
+        manifest: {
+          ...JSON.parse(serializedJson).manifest,
+          environment: session.state.manifest.environment,
+        },
+      });
       expect(restoredState.manifest.environment.TOKEN).toBeInstanceOf(
         LocalSecretReference,
       );

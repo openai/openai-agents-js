@@ -1,9 +1,18 @@
+import { Runner, RunState, tool } from '@openai/agents-core';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+} from '@openai/agents-core/testing';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { z } from 'zod';
 import {
   EnvValueReference,
   Manifest,
   registerEnvValueReference,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  SandboxAgent,
 } from '@openai/agents-core/sandbox';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -943,6 +952,192 @@ describe('E2BSandboxClient', () => {
     expect(recreated.state.sandboxId).toBe('sbx_test');
   });
 
+  test.each([false, true])(
+    'rebinds current provider and manifest environment on explicit resume recreation (run options: %s)',
+    async (withRunOptions) => {
+      const previousClient = new E2BSandboxClient({
+        template: 'base',
+        pauseOnExit: true,
+        env: { PROVIDER_ONLY: 'stale-provider' },
+      });
+      const previous = await previousClient.create(
+        new Manifest({
+          environment: { REMOVED: 'stale-manifest', SHARED: 'stale-manifest' },
+        }),
+      );
+      previous.state.environment = {
+        PROVIDER_ONLY: 'stale-provider',
+        SHARED: 'injected-override',
+        INJECTED: 'untrusted',
+        REMOVED: 'stale-manifest',
+      };
+      const client = new E2BSandboxClient({
+        env: { PROVIDER_ONLY: 'current-provider', SHARED: 'provider-default' },
+      });
+      const manifest = new Manifest({
+        environment: {
+          SHARED: 'manifest-override',
+          MANIFEST_ONLY: 'current-manifest',
+          ['__proto__']: 'current-own-data',
+        },
+      });
+      // The wire double forces the real adapter's reconnect-to-create fallback.
+      createMock.mockClear();
+      connectMock.mockRejectedValueOnce(new Error('not found'));
+      const agent = new SandboxAgent({
+        name: 'E2BWorker',
+        model: new ScriptedModel([[assistantMessage('done')]]),
+        defaultManifest: manifest,
+      });
+
+      const result = await new Runner({ tracingDisabled: true }).run(
+        agent,
+        'Hello',
+        {
+          sandbox: {
+            client,
+            sessionState: previous.state,
+            ...(withRunOptions
+              ? {
+                  options: {
+                    env: {
+                      PROVIDER_ONLY: 'current-run-option',
+                      SHARED: 'run-default',
+                    },
+                  },
+                }
+              : {}),
+          },
+        },
+      );
+
+      expect(result.finalOutput).toBe('done');
+      expect(connectMock).toHaveBeenCalledOnce();
+      expect(createMock).toHaveBeenCalledExactlyOnceWith('base', {
+        envs: {
+          PROVIDER_ONLY: withRunOptions
+            ? 'current-run-option'
+            : 'current-provider',
+          SHARED: 'manifest-override',
+          MANIFEST_ONLY: 'current-manifest',
+          ['__proto__']: 'current-own-data',
+        },
+      });
+      const persisted =
+        result.state.toJSON().sandbox?.sessionState.manifest.environment;
+      expect(Object.prototype.hasOwnProperty.call(persisted, '__proto__')).toBe(
+        true,
+      );
+      expect(persisted?.['__proto__']).toEqual({ value: 'current-own-data' });
+      expect(previous.state.environment.INJECTED).toBe('untrusted');
+    },
+  );
+
+  test.each(['TOKEN', '__proto__', 'toString'])(
+    'rebinds per-run environment through serialized RunState before E2B recreation (%s)',
+    async (referenceName) => {
+      const context = new AsyncLocalStorage<string>();
+      const resolve = vi.fn((key: string) => {
+        expect(context.getStore()).toBe('provider');
+        return `synthetic-current:${key}`;
+      });
+      class CurrentReference extends EnvValueReference {
+        static readonly type = 'test.e2b_runstate_options_environment';
+        constructor(readonly key: string) {
+          super();
+        }
+        serialize(): Record<string, unknown> {
+          return { key: this.key };
+        }
+        async resolve(): Promise<string> {
+          return resolve(this.key);
+        }
+      }
+      const unregister = registerEnvValueReference(
+        CurrentReference,
+        (payload) => new CurrentReference(String(payload.key)),
+      );
+      try {
+        const approval = tool({
+          name: 'approve_resume',
+          description: 'Pause before resume.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute: async () => 'approved',
+        });
+        const agent = new SandboxAgent({
+          name: 'E2BWorker',
+          tools: [approval],
+          model: new ScriptedModel([
+            [functionCall(approval.name, {}, { callId: 'approval-1' })],
+            [assistantMessage('done')],
+          ]),
+          defaultManifest: new Manifest({
+            environment: { SHARED: 'old-manifest', REMOVED: 'old' },
+          }),
+        });
+        const client = new E2BSandboxClient({
+          template: 'base',
+          pauseOnExit: true,
+          env: {
+            CONSTRUCTOR_ONLY: 'excluded-secret',
+            PROVIDER_ONLY: 'constructor',
+            SHARED: 'provider',
+          },
+        });
+        const runner = new Runner({ tracingDisabled: true });
+        const first = await runner.run(agent, 'Hello', { sandbox: { client } });
+        expect(first.interruptions).toHaveLength(1);
+        first.state.approve(first.interruptions[0]!);
+        const current = agent.clone({
+          defaultManifest: new Manifest({
+            environment: {
+              SHARED: 'current-manifest',
+              MANIFEST_ONLY: 'current',
+              [referenceName]: new CurrentReference('trusted-key'),
+            },
+          }),
+        });
+        const restored = await RunState.fromString(
+          current,
+          first.state.toString(),
+        );
+        const deserialize = client.deserializeSessionState.bind(client);
+        vi.spyOn(client, 'deserializeSessionState').mockImplementation(
+          (input) => context.run('provider', () => deserialize(input)),
+        );
+        createMock.mockClear();
+        connectMock.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await runner.run(current, restored, {
+          sandbox: {
+            client,
+            options: {
+              env: {
+                PROVIDER_ONLY: 'current-run-option',
+                SHARED: 'run-option',
+              },
+            },
+          },
+        });
+
+        expect(result.finalOutput).toBe('done');
+        expect(connectMock).toHaveBeenCalledOnce();
+        expect(createMock).toHaveBeenCalledExactlyOnceWith('base', {
+          envs: {
+            PROVIDER_ONLY: 'current-run-option',
+            SHARED: 'current-manifest',
+            MANIFEST_ONLY: 'current',
+            [referenceName]: 'synthetic-current:trusted-key',
+          },
+        });
+        expect(resolve).toHaveBeenCalledExactlyOnceWith('trusted-key');
+      } finally {
+        unregister();
+      }
+    },
+  );
+
   test('reuses refreshed environment references when recreating a missing sandbox', async () => {
     let resolveCount = 0;
     class E2BSecretReference extends EnvValueReference {
@@ -985,7 +1180,17 @@ describe('E2BSandboxClient', () => {
       );
       const serialized = await client.serializeSessionState(session.state);
       resolveCount = 0;
-      const restored = await client.deserializeSessionState(serialized);
+      await expect(client.deserializeSessionState(serialized)).rejects.toThrow(
+        /trusted manifest/,
+      );
+      expect(resolveCount).toBe(0);
+      const restored = await client.deserializeSessionState({
+        ...serialized,
+        manifest: {
+          ...(serialized.manifest as Record<string, unknown>),
+          environment: session.state.manifest.environment,
+        },
+      });
       expect(resolveCount).toBe(1);
       expect(restored.environment).toEqual({
         TOKEN: 'credential-1:openai-key',

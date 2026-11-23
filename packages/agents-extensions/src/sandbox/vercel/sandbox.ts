@@ -1552,6 +1552,14 @@ export class VercelSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironmentForResume(
+    environment: Readonly<Record<string, string>>,
+    options?: VercelSandboxClientOptions,
+  ): Record<string, string> {
+    const resolvedOptions = resolveVercelOptions(this.options, options);
+    return { ...resolvedOptions.env, ...environment };
+  }
+
   resolveTrustedManifestForResume(
     manifest: Manifest,
     options?: VercelSandboxClientOptions,
