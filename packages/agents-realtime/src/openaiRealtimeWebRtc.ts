@@ -105,6 +105,9 @@ export class OpenAIRealtimeWebRTC
   #useInsecureApiKey: boolean;
   #cancelOngoingResponse = false;
   #muted = false;
+  #ownedAudioTracks: MediaStreamTrack[] = [];
+  #audioPlaybackHandler: ((event: RTCTrackEvent) => void) | undefined;
+  #detachDataChannelHandlers: (() => void) | undefined;
   #connectPromise: Promise<void> | undefined;
   #cancelConnectionAttempt: (() => void) | undefined;
   #connectAttemptId = 0;
@@ -290,222 +293,240 @@ export class OpenAIRealtimeWebRTC
           throw new Error('Connection closed before setup completed');
         }
 
-        dataChannel.addEventListener('open', () => {
-          if (
-            this.#connectAttemptId !== attemptId ||
-            this.#state.dataChannel !== dataChannel
-          ) {
-            return;
-          }
-
-          this.#state = {
-            status: 'connecting',
-            peerConnection,
-            dataChannel,
-            callId,
-          };
-
-          // Wait for session.updated acknowledgement before resolving connect().
-          // Without this, audio can flow to the server before config (instructions,
-          // tools, modalities) is applied, causing the server to use defaults.
-          let settled = false;
-          // eslint-disable-next-line prefer-const -- declared before finish() to avoid TDZ if a callback fires synchronously
-          let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          const removeConfigAckListeners = () => {
-            if (timeoutId !== undefined) clearTimeout(timeoutId);
-            dataChannel.removeEventListener('message', onConfigAck);
-            dataChannel.removeEventListener('close', onClose);
-          };
-          const fail = (
-            error: unknown,
-            cleanupTransport = true,
-            reportError = true,
-          ) => {
-            if (settled) return;
-            settled = true;
-            removeConfigAckListeners();
-            rejectConnection(error);
-            const released = releaseConnectionAttempt();
+        const attachDataChannelHandlers = (dataChannel: RTCDataChannel) => {
+          let detachOpenHandlers: (() => void) | undefined;
+          const onOpen = () => {
             if (
-              cleanupTransport &&
-              released &&
-              this.#state.dataChannel === dataChannel
+              this.#connectAttemptId !== attemptId ||
+              this.#state.dataChannel !== dataChannel
             ) {
-              this.#cleanupFailedConnection(error, reportError);
-            } else if (cleanupTransport && reportError) {
-              this.#reportError(error);
-            }
-          };
-          this.#cancelConnectionAttempt = () => {
-            fail(
-              new Error(
-                'Connection closed before session config was acknowledged',
-              ),
-              false,
-            );
-          };
-          const isActiveConnection = () =>
-            this.#connectAttemptId === attemptId &&
-            this.#state.status === 'connected' &&
-            this.#state.dataChannel === dataChannel &&
-            dataChannel.readyState === 'open';
-          const finish = () => {
-            if (settled) return;
-            removeConfigAckListeners();
-            // Reject if the transport was closed/errored while waiting,
-            // the dataChannel is no longer open, or a different connection
-            // attempt is now active (stale timeout from an earlier connect).
-            if (
-              this.#state.status !== 'connecting' ||
-              this.#state.dataChannel !== dataChannel ||
-              dataChannel.readyState !== 'open'
-            ) {
-              const error = new Error(
-                'Connection closed before session config was acknowledged',
-              );
-              fail(error);
               return;
             }
+
             this.#state = {
-              status: 'connected',
+              status: 'connecting',
               peerConnection,
               dataChannel,
               callId,
             };
-            if (this.#connectAttemptId === attemptId) {
-              this.#connectPromise = undefined;
-            }
+
+            // Wait for session.updated acknowledgement before resolving connect().
+            // Without this, audio can flow to the server before config (instructions,
+            // tools, modalities) is applied, causing the server to use defaults.
+            let settled = false;
+            // eslint-disable-next-line prefer-const -- declared before finish() to avoid TDZ if a callback fires synchronously
+            let timeoutId: ReturnType<typeof setTimeout> | undefined;
+            const removeConfigAckListeners = () => {
+              if (timeoutId !== undefined) clearTimeout(timeoutId);
+              dataChannel.removeEventListener('message', onConfigAck);
+              dataChannel.removeEventListener('close', onClose);
+            };
+            const fail = (
+              error: unknown,
+              cleanupTransport = true,
+              reportError = true,
+            ) => {
+              if (settled) return;
+              settled = true;
+              removeConfigAckListeners();
+              rejectConnection(error);
+              const released = releaseConnectionAttempt();
+              if (
+                cleanupTransport &&
+                released &&
+                this.#state.dataChannel === dataChannel
+              ) {
+                this.#cleanupFailedConnection(error, reportError);
+              } else if (cleanupTransport && reportError) {
+                this.#reportError(error);
+              }
+            };
+            this.#cancelConnectionAttempt = () => {
+              fail(
+                new Error(
+                  'Connection closed before session config was acknowledged',
+                ),
+                false,
+              );
+            };
+            const isActiveConnection = () =>
+              this.#connectAttemptId === attemptId &&
+              this.#state.status === 'connected' &&
+              this.#state.dataChannel === dataChannel &&
+              dataChannel.readyState === 'open';
+            const finish = () => {
+              if (settled) return;
+              removeConfigAckListeners();
+              // Reject if the transport was closed/errored while waiting,
+              // the dataChannel is no longer open, or a different connection
+              // attempt is now active (stale timeout from an earlier connect).
+              if (
+                this.#state.status !== 'connecting' ||
+                this.#state.dataChannel !== dataChannel ||
+                dataChannel.readyState !== 'open'
+              ) {
+                const error = new Error(
+                  'Connection closed before session config was acknowledged',
+                );
+                fail(error);
+                return;
+              }
+              this.#state = {
+                status: 'connected',
+                peerConnection,
+                dataChannel,
+                callId,
+              };
+              if (this.#connectAttemptId === attemptId) {
+                this.#connectPromise = undefined;
+              }
+              try {
+                this.emit('connection_change', this.#state.status);
+                if (!isActiveConnection()) {
+                  fail(
+                    new Error(
+                      'Connection closed before session config was acknowledged',
+                    ),
+                  );
+                  return;
+                }
+                this._onOpen();
+                if (!isActiveConnection()) {
+                  fail(
+                    new Error(
+                      'Connection closed before session config was acknowledged',
+                    ),
+                  );
+                  return;
+                }
+              } catch (error) {
+                fail(error);
+                return;
+              }
+              shouldRestoreModel = false;
+              if (isActiveAttempt()) {
+                this.#cancelConnectionAttempt = undefined;
+              }
+              settled = true;
+              resolveConnection();
+            };
+            const onConfigAck = (ackEvent: MessageEvent) => {
+              const { data: parsed } = parseRealtimeEvent(ackEvent);
+              if (parsed?.type === 'session.updated') {
+                finish();
+              }
+            };
+            const onClose = () => {
+              finish();
+            };
+            timeoutId = setTimeout(() => {
+              if (!settled) {
+                logger.warn(
+                  'Timed out waiting for session.updated ack — resolving connect() anyway',
+                );
+                finish();
+              }
+            }, 5000);
+            dataChannel.addEventListener('message', onConfigAck);
+            dataChannel.addEventListener('close', onClose);
+
+            // Register the general message handler AFTER onConfigAck so that
+            // finish() resolves connect() before _onMessage emits the
+            // session.updated event to external listeners.
+            const onMessage = (event: MessageEvent) => {
+              if (
+                this.#connectAttemptId !== attemptId ||
+                this.#state.dataChannel !== dataChannel
+              ) {
+                return;
+              }
+              const { data: parsed } = parseRealtimeEvent(event);
+              if (parsed?.type === 'error' && !settled) {
+                // A server rejection during setup must not become a successful
+                // connection through the acknowledgement timeout fallback.
+                fail(parsed, true, false);
+                this._onMessage(event);
+                return;
+              }
+              this._onMessage(event);
+              if (
+                this.#connectAttemptId !== attemptId ||
+                this.#state.dataChannel !== dataChannel
+              ) {
+                return;
+              }
+              if (!parsed) {
+                return;
+              }
+
+              if (parsed.type === 'error') {
+                this.#responseCreateSequencer.handleResponseCreateError(parsed);
+              }
+
+              if (parsed.type === 'response.created') {
+                this.#cancelOngoingResponse = true;
+                this.#responseCreateSequencer.markResponseCreated();
+              } else if (parsed.type === 'response.done') {
+                this.#cancelOngoingResponse = false;
+                this.#responseCreateSequencer.markResponseDone();
+              }
+
+              if (parsed.type === 'session.created') {
+                this._tracingConfig =
+                  'tracing' in parsed.session
+                    ? (parsed.session.tracing ?? null)
+                    : null;
+                // Trying to turn on tracing after the session is created
+                const tracingConfig =
+                  typeof userSessionConfig.tracing === 'undefined'
+                    ? 'auto'
+                    : userSessionConfig.tracing;
+                this._updateTracingConfig(tracingConfig);
+              }
+            };
+            dataChannel.addEventListener('message', onMessage);
+            detachOpenHandlers = () => {
+              removeConfigAckListeners();
+              dataChannel.removeEventListener('message', onMessage);
+            };
+
             try {
-              this.emit('connection_change', this.#state.status);
-              if (!isActiveConnection()) {
-                fail(
-                  new Error(
-                    'Connection closed before session config was acknowledged',
-                  ),
-                );
-                return;
-              }
-              this._onOpen();
-              if (!isActiveConnection()) {
-                fail(
-                  new Error(
-                    'Connection closed before session config was acknowledged',
-                  ),
-                );
-                return;
-              }
+              this.updateSessionConfig(userSessionConfig);
             } catch (error) {
               fail(error);
-              return;
-            }
-            shouldRestoreModel = false;
-            if (isActiveAttempt()) {
-              this.#cancelConnectionAttempt = undefined;
-            }
-            settled = true;
-            resolveConnection();
-          };
-          const onConfigAck = (ackEvent: MessageEvent) => {
-            const { data: parsed } = parseRealtimeEvent(ackEvent);
-            if (parsed?.type === 'session.updated') {
-              finish();
             }
           };
-          const onClose = () => {
-            finish();
-          };
-          timeoutId = setTimeout(() => {
-            if (!settled) {
-              logger.warn(
-                'Timed out waiting for session.updated ack — resolving connect() anyway',
-              );
-              finish();
-            }
-          }, 5000);
-          dataChannel.addEventListener('message', onConfigAck);
-          dataChannel.addEventListener('close', onClose);
 
-          // Register the general message handler AFTER onConfigAck so that
-          // finish() resolves connect() before _onMessage emits the
-          // session.updated event to external listeners.
-          dataChannel.addEventListener('message', (event) => {
+          const onError = (event: Event) => {
             if (
               this.#connectAttemptId !== attemptId ||
               this.#state.dataChannel !== dataChannel
             ) {
               return;
             }
-            const { data: parsed } = parseRealtimeEvent(event);
-            if (parsed?.type === 'error' && !settled) {
-              // A server rejection during setup must not become a successful
-              // connection through the acknowledgement timeout fallback.
-              fail(parsed, true, false);
-              this._onMessage(event);
-              return;
-            }
-            this._onMessage(event);
-            if (
-              this.#connectAttemptId !== attemptId ||
-              this.#state.dataChannel !== dataChannel
-            ) {
-              return;
-            }
-            if (!parsed) {
-              return;
-            }
-
-            if (parsed.type === 'error') {
-              this.#responseCreateSequencer.handleResponseCreateError(parsed);
-            }
-
-            if (parsed.type === 'response.created') {
-              this.#cancelOngoingResponse = true;
-              this.#responseCreateSequencer.markResponseCreated();
-            } else if (parsed.type === 'response.done') {
-              this.#cancelOngoingResponse = false;
-              this.#responseCreateSequencer.markResponseDone();
-            }
-
-            if (parsed.type === 'session.created') {
-              this._tracingConfig =
-                'tracing' in parsed.session
-                  ? (parsed.session.tracing ?? null)
-                  : null;
-              // Trying to turn on tracing after the session is created
-              const tracingConfig =
-                typeof userSessionConfig.tracing === 'undefined'
-                  ? 'auto'
-                  : userSessionConfig.tracing;
-              this._updateTracingConfig(tracingConfig);
-            }
-          });
-
-          try {
-            this.updateSessionConfig(userSessionConfig);
-          } catch (error) {
-            fail(error);
-          }
-        });
-
-        dataChannel.addEventListener('error', (event) => {
-          if (
-            this.#connectAttemptId !== attemptId ||
-            this.#state.dataChannel !== dataChannel
-          ) {
-            return;
-          }
-          rejectConnection(event);
-          releaseConnectionAttempt();
-          this.#cleanupFailedConnection(event);
-        });
+            rejectConnection(event);
+            releaseConnectionAttempt();
+            this.#cleanupFailedConnection(event);
+          };
+          dataChannel.addEventListener('open', onOpen);
+          dataChannel.addEventListener('error', onError);
+          return () => {
+            dataChannel.removeEventListener('open', onOpen);
+            dataChannel.removeEventListener('error', onError);
+            detachOpenHandlers?.();
+          };
+        };
+        this.#detachDataChannelHandlers =
+          attachDataChannelHandlers(dataChannel);
 
         // set up audio playback
         const audioElement =
           this.options.audioElement ?? document.createElement('audio');
         audioElement.autoplay = true;
-        peerConnection.ontrack = (event) => {
+        this.#audioPlaybackHandler = (event) => {
           audioElement.srcObject = event.streams[0];
         };
+        peerConnection.ontrack = this.#audioPlaybackHandler;
 
         // get microphone stream
         const stream =
@@ -525,7 +546,11 @@ export class OpenAIRealtimeWebRTC
           }
           return;
         }
-        peerConnection.addTrack(stream.getAudioTracks()[0]);
+        const audioTracks = stream.getAudioTracks();
+        if (!this.options.mediaStream) {
+          this.#ownedAudioTracks = audioTracks;
+        }
+        peerConnection.addTrack(audioTracks[0]);
 
         if (this.options.changePeerConnection) {
           const originalPeerConnection = peerConnection;
@@ -534,12 +559,69 @@ export class OpenAIRealtimeWebRTC
           if (!isActiveAttempt()) {
             return;
           }
-          peerConnection = changedPeerConnection;
-          if (originalPeerConnection !== peerConnection) {
-            originalPeerConnection.onconnectionstatechange = null;
+          if (originalPeerConnection !== changedPeerConnection) {
+            const detachOriginalHandlers = this.#detachDataChannelHandlers;
+            let replacementChannel: RTCDataChannel;
+            try {
+              replacementChannel =
+                changedPeerConnection.createDataChannel('oai-events');
+            } catch (error) {
+              try {
+                changedPeerConnection.close();
+              } catch (cleanupError) {
+                this.#reportError(cleanupError);
+              }
+              throw error;
+            }
+            peerConnection = changedPeerConnection;
+            this.#state = {
+              ...this.#state,
+              peerConnection,
+              dataChannel: replacementChannel,
+            };
+            try {
+              this.#detachDataChannelHandlers =
+                attachDataChannelHandlers(replacementChannel);
+              if (!peerConnection.ontrack) {
+                peerConnection.ontrack = this.#audioPlaybackHandler;
+              }
+              attachConnectionStateHandler(peerConnection);
+              const senderTracks = peerConnection
+                .getSenders()
+                .map((sender) => sender.track);
+              const ownedAudioTracks = this.#ownedAudioTracks;
+              this.#ownedAudioTracks = ownedAudioTracks.filter((track) =>
+                senderTracks.includes(track),
+              );
+              for (const track of ownedAudioTracks) {
+                if (!senderTracks.includes(track)) {
+                  try {
+                    track.stop();
+                  } catch (error) {
+                    this.#reportError(error);
+                  }
+                }
+              }
+            } finally {
+              detachOriginalHandlers?.();
+              originalPeerConnection.onconnectionstatechange = null;
+              if (
+                originalPeerConnection.ontrack === this.#audioPlaybackHandler
+              ) {
+                originalPeerConnection.ontrack = null;
+              }
+              try {
+                dataChannel.close();
+              } finally {
+                originalPeerConnection.close();
+              }
+            }
+          } else {
+            attachConnectionStateHandler(peerConnection);
           }
-          attachConnectionStateHandler(peerConnection);
-          this.#state = { ...this.#state, peerConnection };
+        }
+        if (this.#muted) {
+          this.mute(true);
         }
 
         const offer = await peerConnection.createOffer();
@@ -741,6 +823,12 @@ export class OpenAIRealtimeWebRTC
     this.#clearPeerConnectionDisconnectedTimeout();
     this.#cancelConnectionAttempt?.();
     const { dataChannel, peerConnection } = this.#state;
+    const ownedAudioTracks = this.#ownedAudioTracks;
+    const audioPlaybackHandler = this.#audioPlaybackHandler;
+    const detachDataChannelHandlers = this.#detachDataChannelHandlers;
+    this.#ownedAudioTracks = [];
+    this.#audioPlaybackHandler = undefined;
+    this.#detachDataChannelHandlers = undefined;
     const shouldNotify = this.#state.status !== 'disconnected';
 
     this.#state = {
@@ -761,28 +849,24 @@ export class OpenAIRealtimeWebRTC
 
     runCleanup(() => this.#responseCreateSequencer.releaseWaiters());
     this.#cancelOngoingResponse = false;
+    runCleanup(() => detachDataChannelHandlers?.());
     if (dataChannel) {
       runCleanup(() => dataChannel.close());
+    }
+
+    for (const track of ownedAudioTracks) {
+      runCleanup(() => track.stop());
     }
 
     if (peerConnection) {
       runCleanup(() => {
         peerConnection.onconnectionstatechange = null;
       });
-      // Skip sender cleanup when the caller supplied `mediaStream`. That stream belongs to the
-      // application, which may still be using it for a level meter, a recorder, or a later
-      // reconnect, so stopping it here would end the track permanently. This is deliberately
-      // scoped to that one case rather than a per-track ownership rule, so senders added through
-      // `changePeerConnection` are left to whoever added them.
-      if (!this.options.mediaStream) {
-        let senders: RTCRtpSender[] = [];
-        runCleanup(() => {
-          senders = peerConnection.getSenders();
-        });
-        for (const sender of senders) {
-          runCleanup(() => sender.track?.stop());
+      runCleanup(() => {
+        if (peerConnection.ontrack === audioPlaybackHandler) {
+          peerConnection.ontrack = null;
         }
-      }
+      });
       runCleanup(() => peerConnection.close());
     }
 

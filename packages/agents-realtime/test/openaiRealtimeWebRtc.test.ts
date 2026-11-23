@@ -46,10 +46,15 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-class FakeRTCPeerConnection {
+class FakeRTCPeerConnection extends EventTarget {
   ontrack: ((ev: any) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   connectionState = 'new';
+
+  constructor() {
+    super();
+    this.addEventListener('track', (event) => this.ontrack?.(event));
+  }
 
   createDataChannel(_name: string) {
     const dataChannel = new FakeRTCDataChannel();
@@ -103,7 +108,7 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
       value: {
         mediaDevices: {
           getUserMedia: async () => ({
-            getAudioTracks: () => [{ enabled: true }],
+            getAudioTracks: () => [{ enabled: true, stop: vi.fn() }],
           }),
         },
       },
@@ -888,6 +893,10 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
       writable: true,
     });
 
+    (global as any).navigator.mediaDevices.getUserMedia = async () => ({
+      getAudioTracks: () => [{ enabled: true, stop }],
+    });
+
     const rtc = new OpenAIRealtimeWebRTC();
     rtc.on('error', () => {});
     await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow();
@@ -920,22 +929,6 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
         return dataChannel as unknown as RTCDataChannel;
       }
 
-      override getSenders() {
-        if (this.instance !== 1) {
-          return [] as any;
-        }
-        return [
-          {
-            track: {
-              stop: () => {
-                trackStopCalls += 1;
-                throw new Error('track stop failed');
-              },
-            },
-          } as any,
-        ];
-      }
-
       override close() {
         peerConnectionCloseCalls += 1;
         if (this.instance === 1) {
@@ -946,6 +939,17 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     }
 
     (global as any).RTCPeerConnection = ThrowingCleanupPeerConnection as any;
+    (global as any).navigator.mediaDevices.getUserMedia = async () => ({
+      getAudioTracks: () => [
+        {
+          enabled: true,
+          stop: () => {
+            trackStopCalls += 1;
+            throw new Error('track stop failed');
+          },
+        },
+      ],
+    });
     let failSetup = true;
     const rtc = new OpenAIRealtimeWebRTC({
       changePeerConnection: async (peerConnection) => {
@@ -1014,7 +1018,7 @@ describe('OpenAIRealtimeWebRTC.connectionState', () => {
       value: {
         mediaDevices: {
           getUserMedia: async () => ({
-            getAudioTracks: () => [{ enabled: true }],
+            getAudioTracks: () => [{ enabled: true, stop: vi.fn() }],
           }),
         },
       },
@@ -1176,7 +1180,7 @@ describe('OpenAIRealtimeWebRTC.callId', () => {
       value: {
         mediaDevices: {
           getUserMedia: async () => ({
-            getAudioTracks: () => [{ enabled: true }],
+            getAudioTracks: () => [{ enabled: true, stop: vi.fn() }],
           }),
         },
       },
@@ -1351,7 +1355,7 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
       value: {
         mediaDevices: {
           getUserMedia: async () => ({
-            getAudioTracks: () => [{ enabled: true }],
+            getAudioTracks: () => [{ enabled: true, stop: vi.fn() }],
           }),
         },
       },
@@ -1446,16 +1450,16 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
         message: "Unknown parameter: 'session.type'",
       },
     };
+    const stopTrack = vi.fn();
+    (global as any).navigator.mediaDevices.getUserMedia = async () => ({
+      getAudioTracks: () => [{ enabled: true, stop: stopTrack }],
+    });
     const connecting = session.connect({ apiKey: 'ek_test' });
     const rejection = expect(connecting).rejects.toEqual(serverError);
     await vi.advanceTimersByTimeAsync(0);
     const failedChannel = noAckChannel!;
     const peer = rtc.connectionState.peerConnection!;
     const closePeer = vi.spyOn(peer, 'close');
-    const stopTrack = vi.fn();
-    vi.spyOn(peer, 'getSenders').mockReturnValue([
-      { track: { stop: stopTrack } },
-    ] as unknown as RTCRtpSender[]);
     expect(JSON.parse(failedChannel.sent[0]).session.instructions).toBe(
       'Use the configured instructions.',
     );
@@ -1685,6 +1689,206 @@ describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
     }
     lastChannel = null;
   });
+
+  // This double models peer-owned channels and sender removal, which the general fake omits.
+  class ReplacementPeerConnection extends TrackTrackingPeerConnection {
+    channel: FakeRTCDataChannel | undefined;
+    closed = false;
+
+    override createDataChannel(name: string) {
+      const channel = super.createDataChannel(name);
+      this.channel = channel as unknown as FakeRTCDataChannel;
+      return channel;
+    }
+
+    removeTrack(sender: RTCRtpSender) {
+      this.tracks = this.tracks.filter((track) => track !== sender.track);
+    }
+
+    override close() {
+      this.closed = true;
+      this.channel?.close();
+      super.close();
+    }
+  }
+
+  it.each([false, true])(
+    'rewires a replacement peer and preserves media ownership (caller stream: %s)',
+    async (callerOwned) => {
+      const track = createFakeTrack();
+      const extraTrack = createFakeTrack();
+      const audioElement = { autoplay: false, srcObject: null };
+      installGlobals(track);
+      (global as any).RTCPeerConnection = ReplacementPeerConnection;
+      let original: ReplacementPeerConnection;
+      let replacement: ReplacementPeerConnection;
+      const rtc = new OpenAIRealtimeWebRTC({
+        audioElement: audioElement as unknown as HTMLAudioElement,
+        ...(callerOwned
+          ? {
+              mediaStream: {
+                getAudioTracks: () => [track],
+              } as unknown as MediaStream,
+            }
+          : {}),
+        changePeerConnection: (pc) => {
+          original = pc as unknown as ReplacementPeerConnection;
+          replacement = new ReplacementPeerConnection();
+          replacement.addTrack(extraTrack);
+          replacement.addTrack(pc.getSenders()[0].track);
+          rtc.mute(true);
+          return replacement as unknown as RTCPeerConnection;
+        },
+      });
+
+      await rtc.connect({ apiKey: 'ek_test' });
+      expect(original!.closed).toBe(true);
+      expect(original!.channel!.readyState).toBe('closed');
+      expect(original!.ontrack).toBeNull();
+      expect(original!.onconnectionstatechange).toBeNull();
+      expect(rtc.connectionState.peerConnection).toBe(replacement!);
+      expect(rtc.connectionState.dataChannel).toBe(replacement!.channel);
+      expect(replacement!.tracks).toContain(track);
+      expect(track.stop).not.toHaveBeenCalled();
+      expect(track.enabled).toBe(false);
+      expect(extraTrack.enabled).toBe(false);
+      const remoteStream = {};
+      replacement!.ontrack!({ streams: [remoteStream] });
+      expect(audioElement.srcObject).toBe(remoteStream);
+      rtc.sendEvent({ type: 'response.cancel' });
+      expect(JSON.parse(replacement!.channel!.sent.at(-1)!)).toEqual({
+        type: 'response.cancel',
+      });
+      original!.channel!.dispatchEvent(new Event('error'));
+      expect(rtc.status).toBe('connected');
+      rtc.mute(false);
+      expect(track.enabled).toBe(true);
+      expect(extraTrack.enabled).toBe(true);
+      rtc.close();
+      expect(replacement!.closed).toBe(true);
+      expect(replacement!.channel!.readyState).toBe('closed');
+      expect(replacement!.ontrack).toBeNull();
+      expect(rtc.status).toBe('disconnected');
+      expect(track.stop).toHaveBeenCalledTimes(callerOwned ? 0 : 1);
+      expect(extraTrack.stop).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves custom replacement playback through track delivery and close', async () => {
+    installGlobals(createFakeTrack());
+    const replacement = new ReplacementPeerConnection();
+    const playback = { srcObject: null };
+    const onTrack = vi.fn((event) => {
+      playback.srcObject = event.streams[0];
+    });
+    replacement.ontrack = onTrack;
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: () => replacement as unknown as RTCPeerConnection,
+    });
+
+    await rtc.connect({ apiKey: 'ek_test' });
+    const remoteStream = {};
+    const event = Object.assign(new Event('track'), {
+      streams: [remoteStream],
+    });
+    replacement.dispatchEvent(event);
+    expect(playback.srcObject).toBe(remoteStream);
+    expect(onTrack).toHaveBeenCalledWith(event);
+    rtc.close();
+    expect(replacement.ontrack).toBe(onTrack);
+  });
+
+  it('cleans both peers when a replacement cannot create its data channel', async () => {
+    const microphoneTrack = createFakeTrack();
+    const callerTrack = createFakeTrack();
+    installGlobals(microphoneTrack);
+    (global as any).RTCPeerConnection = ReplacementPeerConnection;
+    const channelError = new Error('data channel creation failed');
+    class FailingChannelPeerConnection extends ReplacementPeerConnection {
+      override createDataChannel(): RTCDataChannel {
+        throw channelError;
+      }
+    }
+    const replacement = new FailingChannelPeerConnection();
+    replacement.addTrack(callerTrack);
+    const onTrack = vi.fn();
+    replacement.ontrack = onTrack;
+    let original: ReplacementPeerConnection;
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: (pc) => {
+        original = pc as unknown as ReplacementPeerConnection;
+        return replacement as unknown as RTCPeerConnection;
+      },
+    });
+    rtc.on('error', () => {});
+
+    await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toBe(channelError);
+    expect(original!.closed).toBe(true);
+    expect(original!.channel!.readyState).toBe('closed');
+    expect(original!.ontrack).toBeNull();
+    expect(original!.onconnectionstatechange).toBeNull();
+    expect(replacement.closed).toBe(true);
+    expect(replacement.ontrack).toBe(onTrack);
+    expect(microphoneTrack.stop).toHaveBeenCalledTimes(1);
+    expect(callerTrack.stop).not.toHaveBeenCalled();
+    expect(rtc.status).toBe('disconnected');
+    expect(rtc.connectionState.peerConnection).toBeUndefined();
+    expect(rtc.connectionState.dataChannel).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'releases only discarded SDK media on replacement (caller stream: %s)',
+    async (callerOwned) => {
+      const discardedTrack = createFakeTrack();
+      const replacementTrack = createFakeTrack();
+      installGlobals(discardedTrack);
+      (global as any).RTCPeerConnection = ReplacementPeerConnection;
+      const replacement = new ReplacementPeerConnection();
+      replacement.addTrack(replacementTrack);
+      const rtc = new OpenAIRealtimeWebRTC({
+        ...(callerOwned
+          ? {
+              mediaStream: {
+                getAudioTracks: () => [discardedTrack],
+              } as unknown as MediaStream,
+            }
+          : {}),
+        changePeerConnection: () => replacement as unknown as RTCPeerConnection,
+      });
+      await rtc.connect({ apiKey: 'ek_test' });
+      expect(replacement.tracks).toEqual([replacementTrack]);
+      expect(discardedTrack.stop).toHaveBeenCalledTimes(callerOwned ? 0 : 1);
+      rtc.close();
+      expect(discardedTrack.stop).toHaveBeenCalledTimes(callerOwned ? 0 : 1);
+      expect(replacementTrack.stop).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'cleans an SDK microphone removed by the hook (setup failure: %s)',
+    async (failSetup) => {
+      const track = createFakeTrack();
+      installGlobals(track);
+      (global as any).RTCPeerConnection = ReplacementPeerConnection;
+      const rtc = new OpenAIRealtimeWebRTC({
+        changePeerConnection: (pc) => {
+          pc.removeTrack(pc.getSenders()[0]);
+          if (failSetup) throw new Error('hook failed');
+          return pc;
+        },
+      });
+      if (failSetup) {
+        await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
+          'hook failed',
+        );
+      } else {
+        await rtc.connect({ apiKey: 'ek_test' });
+        rtc.close();
+      }
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(rtc.status).toBe('disconnected');
+    },
+  );
 
   it('keeps a caller-supplied media stream alive after close()', async () => {
     const callerTrack = createFakeTrack();
