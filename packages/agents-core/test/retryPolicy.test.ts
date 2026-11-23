@@ -3,6 +3,7 @@ import {
   Agent,
   InputGuardrailTripwireTriggered,
   MemorySession,
+  hostedMcpTool,
   ModelTimeoutError,
   retryPolicies,
   run,
@@ -90,6 +91,124 @@ beforeAll(() => {
 });
 
 describe('retry policies', () => {
+  it.each([false, true])(
+    'requires replay evidence for hosted MCP requests (stream=%s)',
+    async (stream) => {
+      for (const requestKind of [
+        'never',
+        'always',
+        'per-tool',
+        'approval-history',
+        'provider-mcp',
+        'provider-approval',
+        'unknown-approval',
+      ] as const) {
+        for (const replaySafety of [undefined, 'safe', 'unsafe'] as const) {
+          for (const approveUnsafeReplay of [false, true]) {
+            const allowed =
+              replaySafety === 'safe' ||
+              (replaySafety === 'unsafe' && approveUnsafeReplay && !stream);
+            const model = new ScriptedModel([
+              modelError(new Error('synthetic possibly accepted request'), {
+                replaySafety,
+              }),
+              stream
+                ? modelStream([createDoneEvent('recovered')])
+                : textResponse('recovered'),
+            ]);
+            const agent = new Agent({
+              name: 'HostedMcpReplay',
+              model,
+              tools:
+                requestKind === 'approval-history' ||
+                requestKind === 'provider-approval' ||
+                requestKind === 'unknown-approval'
+                  ? []
+                  : requestKind === 'provider-mcp'
+                    ? [
+                        {
+                          type: 'hosted_tool',
+                          name: 'custom_mcp',
+                          providerData: {
+                            type: 'mcp',
+                            server_label: 'synthetic',
+                            server_url: 'https://example.invalid',
+                            require_approval: 'never',
+                          },
+                        },
+                      ]
+                    : [
+                        hostedMcpTool({
+                          serverLabel: 'synthetic',
+                          serverUrl: 'https://example.invalid',
+                          ...(requestKind === 'never'
+                            ? { requireApproval: 'never' as const }
+                            : {
+                                requireApproval:
+                                  requestKind === 'per-tool'
+                                    ? { always: { toolNames: ['write'] } }
+                                    : ('always' as const),
+                              }),
+                        }),
+                      ],
+              modelSettings: {
+                retry: {
+                  maxRetries: 1,
+                  backoff: { initialDelayMs: 0, jitter: false },
+                  policy: () => ({ retry: true, approveUnsafeReplay }),
+                },
+              },
+            });
+            const input =
+              requestKind === 'approval-history' ||
+              requestKind === 'provider-approval' ||
+              requestKind === 'unknown-approval'
+                ? [
+                    {
+                      type:
+                        requestKind === 'unknown-approval'
+                          ? ('unknown' as const)
+                          : ('hosted_tool_call' as const),
+                      name:
+                        requestKind === 'provider-approval' ||
+                        requestKind === 'unknown-approval'
+                          ? 'custom_approval'
+                          : 'mcp_approval_response',
+                      providerData: {
+                        ...(requestKind === 'provider-approval' ||
+                        requestKind === 'unknown-approval'
+                          ? { type: 'mcp_approval_response' }
+                          : {}),
+                        approval_request_id: 'synthetic-approval',
+                        approve: true,
+                      },
+                    },
+                  ]
+                : 'synthetic input';
+            const invoke = async () => {
+              if (stream) {
+                const result = await run(agent, input, { stream: true });
+                for await (const _event of result) {
+                  /* Drain the public stream. */
+                }
+                return result.finalOutput;
+              }
+              return (await run(agent, input)).finalOutput;
+            };
+            if (allowed) {
+              await expect(invoke()).resolves.toBe('recovered');
+            } else {
+              await expect(invoke()).rejects.toThrow(
+                'synthetic possibly accepted request',
+              );
+            }
+            expect(model.calls).toHaveLength(allowed ? 2 : 1);
+          }
+        }
+      }
+    },
+  );
+
   it('retries non-streaming requests only when the user policy opts in', async () => {
     const model = new ScriptedModel([
       modelError(errorWith('Rate limited', { statusCode: 429 })),
@@ -1115,6 +1234,7 @@ describe('retry policies', () => {
     ]);
 
     const error = await getResponseWithRetry(model, {
+      tools: [],
       modelSettings: {
         retry: {
           maxRetries: 1,
@@ -1151,6 +1271,7 @@ describe('retry policies', () => {
     ]);
 
     const error = await getResponseWithRetry(model, {
+      tools: [],
       modelSettings: {
         retry: {
           maxRetries: 1,
@@ -1181,6 +1302,7 @@ describe('retry policies', () => {
     ]);
 
     const error = await getResponseWithRetry(model, {
+      tools: [],
       modelSettings: { retry: { maxRetries: 1 } },
     } as unknown as ModelRequest).catch((caughtError: unknown) => caughtError);
 
@@ -1209,6 +1331,7 @@ describe('retry policies', () => {
 
     try {
       const resultPromise = getResponseWithRetry(model, {
+        tools: [],
         signal: controller.signal,
         modelSettings: {
           retry: {
@@ -1363,6 +1486,7 @@ describe('retry policies', () => {
         textResponse('Recovered', responseUsage(1, 1)),
       ]);
       const request = {
+        tools: [],
         modelSettings: {
           retry: {
             maxRetries: 1,
@@ -1446,6 +1570,7 @@ describe('retry policies', () => {
         }),
       ]);
       const error = await consumeRetryStream(model, {
+        tools: [],
         signal: controller.signal,
         modelSettings: {
           retry: {
@@ -1492,6 +1617,7 @@ describe('retry policies', () => {
 
     try {
       const result = consumeRetryStream(model, {
+        tools: [],
         modelSettings: { timeoutMs: 25 },
       } as unknown as ModelRequest).catch((caught: unknown) => caught);
       await vi.advanceTimersByTimeAsync(25);

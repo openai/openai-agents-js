@@ -965,11 +965,25 @@ async function evaluateRetry({
     return decision;
   }
 
-  const statefulRequest = context.statefulRequest === true;
+  const replaySensitiveRequest =
+    context.statefulRequest === true ||
+    request.tools.some(
+      (tool) =>
+        tool.type === 'hosted_tool' &&
+        (tool.name === 'hosted_mcp' || tool.providerData?.type === 'mcp'),
+    ) ||
+    (Array.isArray(request.input) &&
+      request.input.some(
+        (item) =>
+          (item.type === 'hosted_tool_call' &&
+            item.name === 'mcp_approval_response') ||
+          ((item.type === 'hosted_tool_call' || item.type === 'unknown') &&
+            item.providerData?.type === 'mcp_approval_response'),
+      ));
   const providerMarksReplaySafe = authority.replaySafety === 'safe';
   const providerMarksReplayUnsafe = authority.replaySafety === 'unsafe';
   if (
-    statefulRequest &&
+    replaySensitiveRequest &&
     !(
       isReplaySafeApproval(decision) ||
       providerMarksReplaySafe ||
