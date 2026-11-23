@@ -1452,9 +1452,11 @@ export class SandboxRuntimeManager<TContext> {
     for (const key of Object.keys(sessionState.manifest.environment)) {
       delete sessionState.manifest.environment[key];
     }
-    Object.assign(
+    Object.defineProperties(
       sessionState.manifest.environment,
-      cloneManifest(materializedTrustedManifest).environment,
+      Object.getOwnPropertyDescriptors(
+        cloneManifest(materializedTrustedManifest).environment,
+      ),
     );
     const trustedEnvironment =
       await materializedTrustedManifest.resolveEnvironment();

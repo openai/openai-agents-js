@@ -1,5 +1,11 @@
-import { Runner } from '@openai/agents-core';
-import { ScriptedModel, assistantMessage } from '@openai/agents-core/testing';
+import { Runner, RunState, tool } from '@openai/agents-core';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+} from '@openai/agents-core/testing';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { z } from 'zod';
 import {
   EnvValueReference,
   Manifest,
@@ -951,6 +957,7 @@ describe('E2BSandboxClient', () => {
     async (withRunOptions) => {
       const previousClient = new E2BSandboxClient({
         template: 'base',
+        pauseOnExit: true,
         env: { PROVIDER_ONLY: 'stale-provider' },
       });
       const previous = await previousClient.create(
@@ -971,6 +978,7 @@ describe('E2BSandboxClient', () => {
         environment: {
           SHARED: 'manifest-override',
           MANIFEST_ONLY: 'current-manifest',
+          ['__proto__']: 'current-own-data',
         },
       });
       // The wire double forces the real adapter's reconnect-to-create fallback.
@@ -1012,9 +1020,121 @@ describe('E2BSandboxClient', () => {
             : 'current-provider',
           SHARED: 'manifest-override',
           MANIFEST_ONLY: 'current-manifest',
+          ['__proto__']: 'current-own-data',
         },
       });
+      const persisted =
+        result.state.toJSON().sandbox?.sessionState.manifest.environment;
+      expect(Object.prototype.hasOwnProperty.call(persisted, '__proto__')).toBe(
+        true,
+      );
+      expect(persisted?.['__proto__']).toEqual({ value: 'current-own-data' });
       expect(previous.state.environment.INJECTED).toBe('untrusted');
+    },
+  );
+
+  test.each(['TOKEN', '__proto__', 'toString'])(
+    'rebinds per-run environment through serialized RunState before E2B recreation (%s)',
+    async (referenceName) => {
+      const context = new AsyncLocalStorage<string>();
+      const resolve = vi.fn((key: string) => {
+        expect(context.getStore()).toBe('provider');
+        return `synthetic-current:${key}`;
+      });
+      class CurrentReference extends EnvValueReference {
+        static readonly type = 'test.e2b_runstate_options_environment';
+        constructor(readonly key: string) {
+          super();
+        }
+        serialize(): Record<string, unknown> {
+          return { key: this.key };
+        }
+        async resolve(): Promise<string> {
+          return resolve(this.key);
+        }
+      }
+      const unregister = registerEnvValueReference(
+        CurrentReference,
+        (payload) => new CurrentReference(String(payload.key)),
+      );
+      try {
+        const approval = tool({
+          name: 'approve_resume',
+          description: 'Pause before resume.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute: async () => 'approved',
+        });
+        const agent = new SandboxAgent({
+          name: 'E2BWorker',
+          tools: [approval],
+          model: new ScriptedModel([
+            [functionCall(approval.name, {}, { callId: 'approval-1' })],
+            [assistantMessage('done')],
+          ]),
+          defaultManifest: new Manifest({
+            environment: { SHARED: 'old-manifest', REMOVED: 'old' },
+          }),
+        });
+        const client = new E2BSandboxClient({
+          template: 'base',
+          pauseOnExit: true,
+          env: {
+            CONSTRUCTOR_ONLY: 'excluded-secret',
+            PROVIDER_ONLY: 'constructor',
+            SHARED: 'provider',
+          },
+        });
+        const runner = new Runner({ tracingDisabled: true });
+        const first = await runner.run(agent, 'Hello', { sandbox: { client } });
+        expect(first.interruptions).toHaveLength(1);
+        first.state.approve(first.interruptions[0]!);
+        const current = agent.clone({
+          defaultManifest: new Manifest({
+            environment: {
+              SHARED: 'current-manifest',
+              MANIFEST_ONLY: 'current',
+              [referenceName]: new CurrentReference('trusted-key'),
+            },
+          }),
+        });
+        const restored = await RunState.fromString(
+          current,
+          first.state.toString(),
+        );
+        const deserialize = client.deserializeSessionState.bind(client);
+        vi.spyOn(client, 'deserializeSessionState').mockImplementation(
+          (input) => context.run('provider', () => deserialize(input)),
+        );
+        createMock.mockClear();
+        connectMock.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await runner.run(current, restored, {
+          sandbox: {
+            client,
+            options: {
+              env: {
+                PROVIDER_ONLY: 'current-run-option',
+                SHARED: 'run-option',
+              },
+            },
+          },
+        });
+
+        expect(result.finalOutput).toBe('done');
+        expect(connectMock).toHaveBeenCalledOnce();
+        expect(createMock).toHaveBeenCalledExactlyOnceWith('base', {
+          envs: {
+            PROVIDER_ONLY: 'current-run-option',
+            SHARED: 'current-manifest',
+            MANIFEST_ONLY: 'current',
+            [referenceName]: 'synthetic-current:trusted-key',
+          },
+        });
+        expect(resolve).toHaveBeenCalledExactlyOnceWith('trusted-key');
+      } finally {
+        unregister();
+      }
     },
   );
 

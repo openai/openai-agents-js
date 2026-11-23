@@ -432,15 +432,34 @@ export async function deserializeSandboxSessionStateEntry(
     client.backendId !== 'docker' &&
     materializedTrustedManifest
   ) {
+    // Keep own string values already resolved in the provider's execution context.
+    const referenceEntries = client.resolveTrustedEnvironmentForResume
+      ? Object.entries(state.environment ?? {}).filter(
+          ([key, value]) =>
+            typeof value === 'string' &&
+            Object.prototype.hasOwnProperty.call(
+              materializedTrustedManifest.environment,
+              key,
+            ) &&
+            isEnvValueReference(materializedTrustedManifest.environment[key]!),
+        )
+      : [];
+    const manifestEnvironment = Object.fromEntries([
+      ...referenceEntries,
+      ...(await Promise.all(
+        Object.entries(materializedTrustedManifest.environment)
+          .filter(([, value]) => !isEnvValueReference(value))
+          .map(async ([key, value]) => [key, await value.resolve()]),
+      )),
+    ]);
     state.environment = {
-      ...state.environment,
-      ...Object.fromEntries(
-        await Promise.all(
-          Object.entries(materializedTrustedManifest.environment)
-            .filter(([, value]) => !isEnvValueReference(value))
-            .map(async ([key, value]) => [key, await value.resolve()]),
-        ),
-      ),
+      ...(client.resolveTrustedEnvironmentForResume
+        ? client.resolveTrustedEnvironmentForResume(
+            manifestEnvironment,
+            trustedConfig.clientOptions,
+          )
+        : state.environment),
+      ...manifestEnvironment,
     };
   }
   if (client.backendId === 'docker' && !clientPreparesEnvironment) {
