@@ -860,6 +860,14 @@ export class BlaxelSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironmentForResume(
+    environment: Readonly<Record<string, string>>,
+    options?: BlaxelSandboxClientOptions,
+  ): Record<string, string> {
+    const resolvedOptions = { ...this.options, ...options };
+    return { ...resolvedOptions.env, ...environment };
+  }
+
   async create(
     args?: SandboxClientCreateArgs<BlaxelSandboxClientOptions> | Manifest,
     manifestOptions?: BlaxelSandboxClientOptions,

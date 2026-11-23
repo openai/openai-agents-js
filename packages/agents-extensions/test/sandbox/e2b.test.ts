@@ -1,9 +1,12 @@
+import { Runner } from '@openai/agents-core';
+import { ScriptedModel, assistantMessage } from '@openai/agents-core/testing';
 import {
   EnvValueReference,
   Manifest,
   registerEnvValueReference,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  SandboxAgent,
 } from '@openai/agents-core/sandbox';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -942,6 +945,78 @@ describe('E2BSandboxClient', () => {
     expect(createMock).toHaveBeenCalledWith('base', {});
     expect(recreated.state.sandboxId).toBe('sbx_test');
   });
+
+  test.each([false, true])(
+    'rebinds current provider and manifest environment on explicit resume recreation (run options: %s)',
+    async (withRunOptions) => {
+      const previousClient = new E2BSandboxClient({
+        template: 'base',
+        env: { PROVIDER_ONLY: 'stale-provider' },
+      });
+      const previous = await previousClient.create(
+        new Manifest({
+          environment: { REMOVED: 'stale-manifest', SHARED: 'stale-manifest' },
+        }),
+      );
+      previous.state.environment = {
+        PROVIDER_ONLY: 'stale-provider',
+        SHARED: 'injected-override',
+        INJECTED: 'untrusted',
+        REMOVED: 'stale-manifest',
+      };
+      const client = new E2BSandboxClient({
+        env: { PROVIDER_ONLY: 'current-provider', SHARED: 'provider-default' },
+      });
+      const manifest = new Manifest({
+        environment: {
+          SHARED: 'manifest-override',
+          MANIFEST_ONLY: 'current-manifest',
+        },
+      });
+      // The wire double forces the real adapter's reconnect-to-create fallback.
+      createMock.mockClear();
+      connectMock.mockRejectedValueOnce(new Error('not found'));
+      const agent = new SandboxAgent({
+        name: 'E2BWorker',
+        model: new ScriptedModel([[assistantMessage('done')]]),
+        defaultManifest: manifest,
+      });
+
+      const result = await new Runner({ tracingDisabled: true }).run(
+        agent,
+        'Hello',
+        {
+          sandbox: {
+            client,
+            sessionState: previous.state,
+            ...(withRunOptions
+              ? {
+                  options: {
+                    env: {
+                      PROVIDER_ONLY: 'current-run-option',
+                      SHARED: 'run-default',
+                    },
+                  },
+                }
+              : {}),
+          },
+        },
+      );
+
+      expect(result.finalOutput).toBe('done');
+      expect(connectMock).toHaveBeenCalledOnce();
+      expect(createMock).toHaveBeenCalledExactlyOnceWith('base', {
+        envs: {
+          PROVIDER_ONLY: withRunOptions
+            ? 'current-run-option'
+            : 'current-provider',
+          SHARED: 'manifest-override',
+          MANIFEST_ONLY: 'current-manifest',
+        },
+      });
+      expect(previous.state.environment.INJECTED).toBe('untrusted');
+    },
+  );
 
   test('reuses refreshed environment references when recreating a missing sandbox', async () => {
     let resolveCount = 0;

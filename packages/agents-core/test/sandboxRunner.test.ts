@@ -1661,6 +1661,11 @@ describe('sandbox runner integration', () => {
         override readonly backendId = backendId;
       }
       const client = new RestoringClient();
+      const deserialize = vi
+        .spyOn(client, 'deserializeSessionState')
+        .mockRejectedValue(
+          new Error('This provider requires its opaque serialized format.'),
+        );
       const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
         name: 'SandboxWorker',
         model: new RecordingModel([]),
@@ -1676,8 +1681,14 @@ describe('sandbox runner integration', () => {
           client,
           sessionState: {
             sessionId: 'persisted',
-            manifest: new Manifest({ environment: { TOKEN: 'stale' } }),
-            environment: { TOKEN: 'attacker', EXTRA: 'injected' },
+            manifest: new Manifest({
+              environment: { TOKEN: 'stale' },
+            }),
+            environment: {
+              TOKEN: 'attacker',
+              EXTRA: 'injected',
+              REMOVED: 'stale',
+            },
           },
         },
         runState: state,
@@ -1686,6 +1697,7 @@ describe('sandbox runner integration', () => {
       expect(client.resumeCalls[0]!.state.environment).toEqual({
         TOKEN: 'current',
       });
+      expect(deserialize).not.toHaveBeenCalled();
       expect(
         client.resumeCalls[0]!.state.manifest.environment.TOKEN.value,
       ).toBe('current');

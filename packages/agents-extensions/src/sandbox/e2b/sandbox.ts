@@ -878,6 +878,14 @@ export class E2BSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironmentForResume(
+    environment: Readonly<Record<string, string>>,
+    options?: E2BSandboxClientOptions,
+  ): Record<string, string> {
+    const resolvedOptions = { ...this.options, ...options };
+    return { ...resolvedOptions.env, ...environment };
+  }
+
   async create(
     args?: SandboxClientCreateArgs<E2BSandboxClientOptions> | Manifest,
     manifestOptions?: E2BSandboxClientOptions,

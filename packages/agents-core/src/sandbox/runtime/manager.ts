@@ -1456,8 +1456,15 @@ export class SandboxRuntimeManager<TContext> {
       sessionState.manifest.environment,
       cloneManifest(materializedTrustedManifest).environment,
     );
-    sessionState.environment =
+    const trustedEnvironment =
       await materializedTrustedManifest.resolveEnvironment();
+    sessionState.environment = {
+      ...client.resolveTrustedEnvironmentForResume?.(
+        trustedEnvironment,
+        this.sandboxConfig?.options,
+      ),
+      ...trustedEnvironment,
+    };
     assertMountCredentialsRebound(sessionState);
     validateMountCredentialBoundaries(sessionState.manifest);
     validateMountEnvironmentCredentialBoundaries(
