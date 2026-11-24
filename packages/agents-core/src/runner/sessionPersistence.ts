@@ -879,21 +879,17 @@ export async function prepareSessionHistoryTransactionsForRun(
 export function captureSessionHistoryTransactionInputItems(
   session: Session | undefined,
   state: RunState<any, any>,
-  items: AgentInputItem[] | undefined,
+  tracker: SessionPersistenceTracker | undefined,
 ): void {
-  if (session === undefined) {
-    state._currentTurnSessionHistoryTransactionInputItems =
-      normalizeItemsForSessionPersistence(items ?? []);
-    return;
-  }
-  if (!isSessionHistoryTransactionAwareSession(session)) {
-    return;
-  }
-  if (state._currentTurnSessionHistoryTransactionSessionId === undefined) {
+  if (
+    session !== undefined &&
+    (!isSessionHistoryTransactionAwareSession(session) ||
+      state._currentTurnSessionHistoryTransactionSessionId === undefined)
+  ) {
     return;
   }
   state._currentTurnSessionHistoryTransactionInputItems =
-    normalizeItemsForSessionPersistence(items ?? []);
+    tracker?.getNormalizedItemsForPersistence() ?? [];
 }
 
 export function markSessionHistoryTransactionInputPersisted(
@@ -1246,6 +1242,7 @@ export type SessionPersistenceTracker = {
     filteredItems?: AgentInputItem[],
   ) => void;
   getItemsForPersistence: () => AgentInputItem[] | undefined;
+  getNormalizedItemsForPersistence: () => AgentInputItem[];
   buildPersistInputOnce: (
     serverManagesConversation: boolean,
   ) => (() => Promise<void>) | undefined;
@@ -1266,6 +1263,7 @@ export function createSessionPersistenceTracker(options: {
     private readonly hasCallModelInputFilter: boolean;
     private readonly persistInput?: typeof saveStreamInputToSession;
     private originalSnapshot: AgentInputItem[] | undefined;
+    private snapshotSharesOwnedItems = false;
     private filteredSnapshot: AgentInputItem[] | undefined;
     private preparedSources: PreparedOwnedSource[] | undefined;
     private initialPreparedItems: AgentInputItem[] | undefined;
@@ -1348,13 +1346,21 @@ export function createSessionPersistenceTracker(options: {
       );
     };
 
+    private setFilteredSnapshot(
+      snapshot: AgentInputItem[],
+      sharesOwnedItems = false,
+    ): void {
+      this.snapshotSharesOwnedItems = sharesOwnedItems;
+      this.filteredSnapshot = snapshot;
+    }
+
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
       if (filteredItems !== undefined) {
         if (!this.preparedSources) {
-          this.filteredSnapshot = cloneItems(filteredItems);
+          this.setFilteredSnapshot(cloneItems(filteredItems));
           return;
         }
         const next = reconcilePersistableFilteredItems({
@@ -1363,25 +1369,44 @@ export function createSessionPersistenceTracker(options: {
           filteredItems,
           ownedFilteredItems: this.ownedFilteredItems,
           persistedInputOrder: this.persistedInputOrder,
+          deferOwnedCopies: this.session === undefined,
         });
         this.ownedFilteredItems = next.ownedFilteredItems;
         this.persistedInputOrder = next.persistedInputOrder;
-        this.filteredSnapshot = next.filteredSnapshot;
+        this.setFilteredSnapshot(next.filteredSnapshot, next.sharesOwnedItems);
         return;
       }
 
-      this.filteredSnapshot = buildSnapshotForUnfilteredItems({
-        preparedSourceCounts: this.preparedSources
-          ? countItemReferences(
-              this.preparedSources.map((source) => source.item),
-            )
-          : undefined,
-        sourceItems,
-        existingSnapshot: this.filteredSnapshot,
-      });
+      this.setFilteredSnapshot(
+        buildSnapshotForUnfilteredItems({
+          preparedSourceCounts: this.preparedSources
+            ? countItemReferences(
+                this.preparedSources.map((source) => source.item),
+              )
+            : undefined,
+          sourceItems,
+          existingSnapshot: this.snapshotSharesOwnedItems
+            ? this.getItemsForPersistence()
+            : this.filteredSnapshot,
+        }),
+      );
+    };
+
+    getNormalizedItemsForPersistence = () => {
+      const items = this.snapshotSharesOwnedItems
+        ? this.filteredSnapshot
+        : this.getItemsForPersistence();
+      return normalizeItemsForSessionPersistence(items ?? []);
     };
 
     getItemsForPersistence = () => {
+      if (
+        this.snapshotSharesOwnedItems &&
+        this.filteredSnapshot !== undefined
+      ) {
+        this.filteredSnapshot = cloneItems(this.filteredSnapshot);
+        this.snapshotSharesOwnedItems = false;
+      }
       if (this.filteredSnapshot !== undefined) {
         return this.filteredSnapshot;
       }
@@ -1420,6 +1445,27 @@ export function createSessionPersistenceTracker(options: {
   }
 
   return new SessionPersistenceTrackerImpl();
+}
+
+// Only private data already detached by structuredClone reaches this check.
+// Normalization rebuilds plain trees but can retain references to nonplain values.
+function canNormalizeWithoutSharing(items: Iterable<AgentInputItem>): boolean {
+  const seen = new WeakSet<object>();
+  const pending: unknown[] = [...items];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (value === null || typeof value !== 'object') continue;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== Array.prototype)
+      return false;
+    for (const key of Object.keys(value)) {
+      if (key === '__proto__') return false;
+      pending.push((value as Record<string, unknown>)[key]);
+    }
+  }
+  return true;
 }
 
 function cloneItems(items: AgentInputItem[]): AgentInputItem[] {
@@ -1716,10 +1762,12 @@ function reconcilePersistableFilteredItems(options: {
   filteredItems: AgentInputItem[];
   ownedFilteredItems: Map<number, AgentInputItem>;
   persistedInputOrder: PersistedInputOccurrence[];
+  deferOwnedCopies: boolean;
 }): {
   ownedFilteredItems: Map<number, AgentInputItem>;
   persistedInputOrder: PersistedInputOccurrence[];
   filteredSnapshot: AgentInputItem[];
+  sharesOwnedItems: boolean;
 } {
   const {
     preparedSources,
@@ -1771,15 +1819,24 @@ function reconcilePersistableFilteredItems(options: {
   );
   nextPersistedInputOrder.push(...currentOrder);
 
+  // Keep the eager copy for sessions, injected messages, and values that
+  // normalization can pass through by reference.
+  const sharesOwnedItems =
+    options.deferOwnedCopies &&
+    nextOwnedFilteredItems.size > 0 &&
+    currentOrder.every((entry) => entry.type === 'owned') &&
+    canNormalizeWithoutSharing(nextOwnedFilteredItems.values());
+
   return {
     ownedFilteredItems: nextOwnedFilteredItems,
     persistedInputOrder: nextPersistedInputOrder,
+    sharesOwnedItems,
     filteredSnapshot: nextPersistedInputOrder.flatMap((occurrence) => {
       if (occurrence.type === 'injected') {
         return [structuredClone(occurrence.item)];
       }
       const item = nextOwnedFilteredItems.get(occurrence.index);
-      return item ? [structuredClone(item)] : [];
+      return item ? [sharesOwnedItems ? item : structuredClone(item)] : [];
     }),
   };
 }
