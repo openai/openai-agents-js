@@ -81,7 +81,9 @@ export class MemorySession
         `Adding items to memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
       );
     }
-    this.items = [...this.items, ...cloned];
+    for (const item of cloned) {
+      this.items.push(item);
+    }
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
@@ -95,7 +97,7 @@ export class MemorySession
         `Popping item from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
       );
     }
-    this.items = this.items.slice(0, -1);
+    this.items.pop();
     return cloned;
   }
 
