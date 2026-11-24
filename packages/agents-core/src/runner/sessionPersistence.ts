@@ -1776,7 +1776,7 @@ function reconcilePersistableFilteredItems(options: {
     persistedInputOrder: nextPersistedInputOrder,
     filteredSnapshot: nextPersistedInputOrder.flatMap((occurrence) => {
       if (occurrence.type === 'injected') {
-        return [structuredClone(occurrence.item)];
+        return [occurrence.item];
       }
       const item = nextOwnedFilteredItems.get(occurrence.index);
       return item ? [structuredClone(item)] : [];
