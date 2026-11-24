@@ -19,6 +19,25 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it('persists repeated owned references through an unchanged copied context', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const [shared] = toAgentInputList('same');
+    const prepared = [shared, { ...shared }, shared];
+    tracker.setPreparedItems([shared, shared], prepared);
+    const processed = [...prepared];
+    tracker.setPreparedTurnItems(prepared, processed);
+    const filtered = ['first', 'history', 'second'].flatMap(toAgentInputList);
+    tracker.recordTurnItems(processed, filtered);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      filtered[0],
+      filtered[2],
+    ]);
+  });
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
