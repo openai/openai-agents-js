@@ -124,6 +124,22 @@ describe('MemorySession', () => {
     expect(await session.getItems()).toEqual([createUserMessage('start')]);
   });
 
+  test.each([undefined, 2])(
+    'keeps nested snapshots independent with read limit %s',
+    async (limit) => {
+      const shared = { nested: { value: 'original' } };
+      const item = { ...createUserMessage('same'), providerData: shared };
+      const session = new MemorySession({ initialItems: [item, item] });
+
+      const [first, second] = await session.getItems(limit);
+      first.providerData!.nested.value = 'changed';
+
+      expect(second.providerData).toEqual(shared);
+      expect(shared.nested.value).toBe('original');
+      expect((await session.getItems(limit))[0].providerData).toEqual(shared);
+    },
+  );
+
   test('applies history mutations atomically', async () => {
     const session = new MemorySession({
       sessionId: 'session-3',
