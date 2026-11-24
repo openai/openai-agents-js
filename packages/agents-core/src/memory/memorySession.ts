@@ -50,7 +50,7 @@ export class MemorySession
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
     if (limit === undefined) {
-      const cloned = this.items.map(cloneAgentItem);
+      const cloned = structuredClone(this.items);
       if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
         this.logger.debug(
           `Getting items from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
@@ -62,7 +62,7 @@ export class MemorySession
       return [];
     }
     const start = Math.max(this.items.length - limit, 0);
-    const items = this.items.slice(start).map(cloneAgentItem);
+    const items = structuredClone(this.items.slice(start));
     if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
       this.logger.debug(
         `Getting items from memory session (${this.sessionId}): ${JSON.stringify(items)}`,
