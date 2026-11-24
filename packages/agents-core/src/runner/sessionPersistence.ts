@@ -1596,22 +1596,22 @@ function mapPreparedSourcesAfterContextProcessing(
   // Otherwise, an earlier removed occurrence can steal a later clone's prepared position and
   // cause an injected replacement to inherit the clone's Session ownership. Equal-sized key
   // groups retain forward occurrence matching because unrelated insertions may shift the group.
-  for (const [index, item] of processedItems.entries()) {
-    const preparedItem = preparedItems[index];
-    const key = getAgentInputItemKey(item);
-    if (
-      mappedPreparedIndexes[index] !== undefined ||
-      ambiguousProcessedIndexes.has(index) ||
-      preparedItem === undefined ||
-      usedPreparedIndexes.has(index) ||
-      key !== getAgentInputItemKey(preparedItem) ||
-      (processedIndexesByKey.get(key)?.length ?? 0) >=
-        (availablePreparedCountByKey.get(key) ?? 0)
-    ) {
+  for (const [key, indexes] of processedIndexesByKey) {
+    if (indexes.length >= (availablePreparedCountByKey.get(key) ?? 0)) {
       continue;
     }
-    mappedPreparedIndexes[index] = index;
-    usedPreparedIndexes.add(index);
+    for (const index of indexes) {
+      const preparedItem = preparedItems[index];
+      if (
+        preparedItem === undefined ||
+        usedPreparedIndexes.has(index) ||
+        key !== getAgentInputItemKey(preparedItem)
+      ) {
+        continue;
+      }
+      mappedPreparedIndexes[index] = index;
+      usedPreparedIndexes.add(index);
+    }
   }
 
   // Public capabilities may return clones. Resolve remaining occurrences against the complete
