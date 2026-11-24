@@ -117,6 +117,10 @@ export function getSnakeCasedProviderDataWithoutReservedKeys(
   value: unknown,
   reservedKeys: readonly string[],
 ): UnknownRecord {
+  if (value === undefined || value === null) {
+    return {};
+  }
+
   return omitReservedKeys(
     camelOrSnakeToSnakeCase(value),
     new Set(reservedKeys.map((key) => toSnakeCase(key))),
