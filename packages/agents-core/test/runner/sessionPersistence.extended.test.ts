@@ -19,6 +19,43 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it('retires mutated injected snapshots while preserving owned input', () => {
+    const tracker = createSessionPersistenceTracker({
+      hasCallModelInputFilter: true,
+    })!;
+    const owned = toAgentInputList('owned');
+    const injected = {
+      type: 'message' as const,
+      role: 'user' as const,
+      content: 'injected',
+      providerData: { values: new Map([['key', 'original']]) },
+    };
+    tracker.setPreparedItems(owned);
+    tracker.recordTurnItems([undefined, owned[0]], [injected, owned[0]]);
+    const first = tracker.getItemsForPersistence()!;
+
+    injected.providerData.values.set('key', 'filter mutation');
+    expect(first[0].providerData?.values).toEqual(
+      new Map([['key', 'original']]),
+    );
+    (first[0].providerData?.values as Map<string, string>).set(
+      'key',
+      'snapshot mutation',
+    );
+    const ownedSnapshot = first[1];
+    if (ownedSnapshot.type !== 'message') {
+      throw new Error('Expected an owned message.');
+    }
+    ownedSnapshot.content = 'snapshot mutation';
+
+    tracker.recordTurnItems([], []);
+
+    expect(tracker.getItemsForPersistence()).toEqual(owned);
+    expect(first[0].providerData?.values).toEqual(
+      new Map([['key', 'snapshot mutation']]),
+    );
+  });
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
