@@ -19,6 +19,56 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it.each(['filtered', 'reconciled', 'unfiltered'] as const)(
+    'keeps the prepared fallback until recording %s items succeeds',
+    (mode) => {
+      const tracker = createSessionPersistenceTracker({
+        session: makeSession(),
+        hasCallModelInputFilter: false,
+      })!;
+      let recording = false;
+      let failure: Error | undefined;
+      const observations: (AgentInputItem[] | undefined)[] = [];
+      const item: AgentInputItem = {
+        role: 'user',
+        get content() {
+          if (recording) {
+            observations.push(
+              structuredClone(tracker.getItemsForPersistence()),
+            );
+            if (failure) throw failure;
+          }
+          return recording ? 'recorded' : 'prepared';
+        },
+      };
+      tracker.setPreparedItems(
+        [item],
+        mode === 'filtered' ? [item] : undefined,
+      );
+      const before = tracker.getItemsForPersistence();
+      recording = true;
+      failure = new Error('snapshot preparation failed');
+      const record = () =>
+        tracker.recordTurnItems(
+          [item],
+          mode === 'unfiltered' ? undefined : [item],
+        );
+
+      expect(record).toThrow(failure);
+      expect(tracker.getItemsForPersistence()).toBe(before);
+      failure = undefined;
+      record();
+
+      expect(observations.length).toBeGreaterThan(0);
+      for (const observation of observations) {
+        expect(observation).toEqual([{ role: 'user', content: 'prepared' }]);
+      }
+      expect(tracker.getItemsForPersistence()).toEqual([
+        { role: 'user', content: 'recorded' },
+      ]);
+    },
+  );
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
