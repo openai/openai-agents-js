@@ -131,7 +131,6 @@ export type PreparedModelCall<TContext = UnknownContext> =
     previousResponseId?: string;
     conversationId?: string;
     sourceItems: (AgentInputItem | undefined)[];
-    persistedItems: AgentInputItem[];
     sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
     filterApplied: boolean;
     preserveInputIdentity: boolean;

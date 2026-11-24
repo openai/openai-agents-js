@@ -3225,6 +3225,58 @@ describe('sandbox runner integration', () => {
     },
   );
 
+  it('captures persistence before retained capability array clones mutate', async () => {
+    class RetainingItems extends Array<AgentInputItem> {
+      override map<U>(
+        callbackfn: (
+          value: AgentInputItem,
+          index: number,
+          array: AgentInputItem[],
+        ) => U,
+        thisArg?: unknown,
+      ): U[] {
+        const result = super.map(callbackfn, thisArg);
+        const first = result[0];
+        if (
+          first &&
+          typeof first === 'object' &&
+          !Object.is(first, this[0]) &&
+          'content' in first
+        ) {
+          queueMicrotask(() => {
+            first.content = 'late capability mutation';
+          });
+        }
+        return result;
+      }
+    }
+    class RetainingCapability extends Capability {
+      readonly type = 'retaining_context';
+      override processContext(context: AgentInputItem[]): AgentInputItem[] {
+        return new RetainingItems(...context);
+      }
+    }
+    const model = new RecordingModel([
+      modelResponse({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    ]);
+    const agent = new SandboxAgent({
+      name: 'RetainedContextAgent',
+      model,
+      capabilities: [new RetainingCapability()],
+    });
+    const session = new MemorySession();
+    await run(agent, 'original input', {
+      session,
+      sandbox: { client: new FakeSandboxClient() },
+    });
+    expect((await session.getItems())[0]).toMatchObject({
+      content: 'original input',
+    });
+  });
+
   it.each([
     { label: 'local non-streaming', stream: false, serverManaged: false },
     { label: 'server-managed streaming', stream: true, serverManaged: true },
