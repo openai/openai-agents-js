@@ -40,3 +40,5 @@ class NodeTimer implements Timer {
 }
 const timer = new NodeTimer();
 export { timer };
+
+export { canMatchInputItemsByPosition } from './inputTreeEquality-node';
