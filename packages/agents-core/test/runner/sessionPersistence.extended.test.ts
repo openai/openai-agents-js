@@ -77,6 +77,32 @@ describe('sessionPersistence tracker (extended)', () => {
     },
   );
 
+  it('keeps the owned occurrence when equal messages mix clones and moved references', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const [history] = toAgentInputList('same');
+    const current = structuredClone(history);
+    const prepared = [history, current];
+    tracker.setPreparedItems([current], prepared);
+
+    // The first copy keeps both positions. The capability then moves the
+    // current message ahead of a clone of the equal history message.
+    const turn = structuredClone(prepared);
+    const processed = [turn[1], structuredClone(turn[0])];
+    tracker.setPreparedTurnItems(turn, processed);
+    const filtered = toAgentInputList('current').concat(
+      toAgentInputList('history'),
+    );
+    tracker.recordTurnItems(processed, filtered);
+    filtered[0] = toAgentInputList('changed')[0];
+
+    expect(tracker.getItemsForPersistence()).toEqual(
+      toAgentInputList('current'),
+    );
+  });
+
   it('uses exact source ownership for equal-content items', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({

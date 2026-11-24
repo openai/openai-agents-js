@@ -1490,16 +1490,13 @@ function mapPreparedSourcesAfterContextProcessing(
     ]),
   );
   const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
-  const preparedIndexesByKey = new Map<string, number[]>();
+  const preparedKeys: { index: number; key: string }[] = [];
   for (const [index, item] of preparedItems.entries()) {
     const referenceIndexes = preparedIndexesByReference.get(item) ?? [];
     referenceIndexes.push(index);
     preparedIndexesByReference.set(item, referenceIndexes);
 
-    const key = getAgentInputItemKey(item);
-    const keyIndexes = preparedIndexesByKey.get(key) ?? [];
-    keyIndexes.push(index);
-    preparedIndexesByKey.set(key, keyIndexes);
+    preparedKeys.push({ index, key: getAgentInputItemKey(item) });
   }
 
   const mappedPreparedIndexes = new Array<number | undefined>(
@@ -1543,6 +1540,11 @@ function mapPreparedSourcesAfterContextProcessing(
 
   const processedIndexesByReference = new Map<AgentInputItem, number[]>();
   for (const [index, item] of processedItems.entries()) {
+    // Only skip ordinary indices. A custom iterator can supply a property
+    // key whose conversion is observable during reference matching.
+    if (Number.isInteger(index) && !preparedIndexesByReference.has(item)) {
+      continue;
+    }
     const indexes = processedIndexesByReference.get(item) ?? [];
     indexes.push(index);
     processedIndexesByReference.set(item, indexes);
@@ -1561,7 +1563,7 @@ function mapPreparedSourcesAfterContextProcessing(
     }
   }
 
-  const processedIndexesByKey = new Map<string, number[]>();
+  const processedKeys: { index: number; key: string }[] = [];
   for (const [index, item] of processedItems.entries()) {
     if (
       mappedPreparedIndexes[index] !== undefined ||
@@ -1569,11 +1571,33 @@ function mapPreparedSourcesAfterContextProcessing(
     ) {
       continue;
     }
-    const key = getAgentInputItemKey(item);
-    const indexes = processedIndexesByKey.get(key) ?? [];
-    indexes.push(index);
-    processedIndexesByKey.set(key, indexes);
+    processedKeys.push({ index, key: getAgentInputItemKey(item) });
   }
+
+  // A detached copy of the same sequence has one occurrence at each original
+  // position, including repeated equal messages. Shared references take priority.
+  const orderedClones =
+    processedIndexesByReference.size === 0 &&
+    preparedKeys.length === processedKeys.length &&
+    preparedKeys.every(
+      ({ index, key }, i) =>
+        index === i &&
+        processedKeys[i]!.index === i &&
+        key === processedKeys[i]!.key,
+    );
+  const groupIndexes = (entries: typeof preparedKeys) => {
+    const groups = new Map<string, number[]>();
+    if (!orderedClones) {
+      for (const { index, key } of entries) {
+        const indexes = groups.get(key) ?? [];
+        indexes.push(index);
+        groups.set(key, indexes);
+      }
+    }
+    return groups;
+  };
+  const preparedIndexesByKey = groupIndexes(preparedKeys);
+  const processedIndexesByKey = groupIndexes(processedKeys);
   const availablePreparedCountByKey = new Map<string, number>();
   for (const [key, indexes] of preparedIndexesByKey) {
     availablePreparedCountByKey.set(
@@ -1621,7 +1645,14 @@ function mapPreparedSourcesAfterContextProcessing(
       indexes.every((index) => !ambiguousProcessedIndexes.has(index)),
     ),
   );
-  mapOccurrences(matchableProcessedIndexesByKey, preparedIndexesByKey);
+  if (orderedClones) {
+    for (let index = 0; index < preparedKeys.length; index++) {
+      mappedPreparedIndexes[index] = index;
+      usedPreparedIndexes.add(index);
+    }
+  } else {
+    mapOccurrences(matchableProcessedIndexesByKey, preparedIndexesByKey);
+  }
 
   const remainingProcessedIndexes = processedItems
     .map((_, index) => index)
