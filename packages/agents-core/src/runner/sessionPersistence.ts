@@ -1251,7 +1251,7 @@ export type SessionPersistenceTracker = {
   ) => (() => Promise<void>) | undefined;
 };
 
-export function createSessionPersistenceTracker(options: {
+type SessionPersistenceTrackerOptions = {
   session?: Session;
   runContext?: RunContext<any>;
   compactionState?: SessionCompactionState;
@@ -1259,167 +1259,169 @@ export function createSessionPersistenceTracker(options: {
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
   resumedSessionInputItems?: AgentInputItem[];
-}): SessionPersistenceTracker | undefined {
-  class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
-    private readonly session?: Session;
-    private readonly runContext?: RunContext<any>;
-    private readonly hasCallModelInputFilter: boolean;
-    private readonly persistInput?: typeof saveStreamInputToSession;
-    private originalSnapshot: AgentInputItem[] | undefined;
-    private filteredSnapshot: AgentInputItem[] | undefined;
-    private preparedSources: PreparedOwnedSource[] | undefined;
-    private initialPreparedItems: AgentInputItem[] | undefined;
-    private initialSourcePositions: PreparedOwnedSourcePosition[] | undefined;
-    private ownedFilteredItems = new Map<number, AgentInputItem>();
-    private persistedInputOrder: PersistedInputOccurrence[] = [];
-    private persistedInput = false;
+};
 
-    constructor() {
-      this.session = options.session;
-      this.runContext = options.runContext;
-      this.hasCallModelInputFilter = options.hasCallModelInputFilter;
-      this.persistInput = options.persistInput;
-      this.originalSnapshot = options.resumingFromState
-        ? cloneItems(options.resumedSessionInputItems ?? [])
-        : undefined;
-      this.filteredSnapshot = options.resumedSessionInputItems
-        ? cloneItems(options.resumedSessionInputItems)
-        : undefined;
-      this.preparedSources = options.resumingFromState ? [] : undefined;
-      this.initialPreparedItems = options.resumingFromState ? [] : undefined;
-      this.initialSourcePositions = options.resumingFromState ? [] : undefined;
-    }
+export function createSessionPersistenceTracker(
+  options: SessionPersistenceTrackerOptions,
+): SessionPersistenceTracker | undefined {
+  return new SessionPersistenceTrackerImpl(options);
+}
 
-    setPreparedItems = (
-      items?: AgentInputItem[],
-      preparedInput?: string | AgentInputItem[],
-    ) => {
-      const sessionItems =
-        items ??
-        (this.session === undefined && preparedInput !== undefined
-          ? toAgentInputList(preparedInput)
-          : []);
-      this.originalSnapshot = cloneItems(
-        deduplicateAgentInputItemsPreferringLatest(sessionItems),
-      );
-      if (Array.isArray(preparedInput)) {
-        this.preparedSources = undefined;
-        this.initialPreparedItems = preparedInput;
-        this.initialSourcePositions = findOwnedItemIndexes(
-          preparedInput,
-          sessionItems,
-        );
-      } else if (typeof preparedInput === 'string') {
-        this.preparedSources = undefined;
-        this.initialPreparedItems = sessionItems;
-        this.initialSourcePositions = findOwnedItemIndexes(
-          sessionItems,
-          sessionItems,
-        );
-      } else {
-        this.preparedSources = sessionItems.map((item, ownerIndex) => ({
-          item,
-          ownerIndex,
-        }));
-        this.initialPreparedItems = undefined;
-        this.initialSourcePositions = undefined;
-      }
-      this.ownedFilteredItems.clear();
-      this.persistedInputOrder = [];
-    };
+class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
+  private readonly session?: Session;
+  private readonly runContext?: RunContext<any>;
+  private readonly hasCallModelInputFilter: boolean;
+  private readonly persistInput?: typeof saveStreamInputToSession;
+  private originalSnapshot: AgentInputItem[] | undefined;
+  private filteredSnapshot: AgentInputItem[] | undefined;
+  private preparedSources: PreparedOwnedSource[] | undefined;
+  private initialPreparedItems: AgentInputItem[] | undefined;
+  private initialSourcePositions: PreparedOwnedSourcePosition[] | undefined;
+  private ownedFilteredItems = new Map<number, AgentInputItem>();
+  private persistedInputOrder: PersistedInputOccurrence[] = [];
+  private persistedInput = false;
 
-    setPreparedTurnItems = (
-      preparedItems: AgentInputItem[],
-      processedItems: AgentInputItem[],
-    ) => {
-      if (!this.initialPreparedItems || !this.initialSourcePositions) {
-        return;
-      }
-      const preparedSources = mapPreparedSourcesAfterContextProcessing(
-        this.initialPreparedItems,
-        preparedItems,
-        this.initialSourcePositions,
-        { validateReplacements: false },
-      );
-      this.preparedSources = mapPreparedSourcesAfterContextProcessing(
-        preparedItems,
-        processedItems,
-        findPreparedSourcePositions(preparedItems, preparedSources),
-      );
-    };
-
-    recordTurnItems = (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => {
-      if (filteredItems !== undefined) {
-        if (!this.preparedSources) {
-          this.filteredSnapshot = cloneItems(filteredItems);
-          return;
-        }
-        const next = reconcilePersistableFilteredItems({
-          preparedSources: this.preparedSources,
-          sourceItems,
-          filteredItems,
-          ownedFilteredItems: this.ownedFilteredItems,
-          persistedInputOrder: this.persistedInputOrder,
-        });
-        this.ownedFilteredItems = next.ownedFilteredItems;
-        this.persistedInputOrder = next.persistedInputOrder;
-        this.filteredSnapshot = next.filteredSnapshot;
-        return;
-      }
-
-      this.filteredSnapshot = buildSnapshotForUnfilteredItems({
-        preparedSourceCounts: this.preparedSources
-          ? countItemReferences(
-              this.preparedSources.map((source) => source.item),
-            )
-          : undefined,
-        sourceItems,
-        existingSnapshot: this.filteredSnapshot,
-      });
-    };
-
-    getItemsForPersistence = () => {
-      if (this.filteredSnapshot !== undefined) {
-        return this.filteredSnapshot;
-      }
-      if (this.hasCallModelInputFilter) {
-        return undefined;
-      }
-      return this.originalSnapshot;
-    };
-
-    buildPersistInputOnce = (serverManagesConversation: boolean) => {
-      if (!this.session || serverManagesConversation) {
-        return undefined;
-      }
-      const persistInput = this.persistInput ?? saveStreamInputToSession;
-      return async () => {
-        if (this.persistedInput) {
-          return;
-        }
-        const itemsToPersist = this.getItemsForPersistence();
-        if (!itemsToPersist || itemsToPersist.length === 0) {
-          return;
-        }
-        this.persistedInput = true;
-        if (options.compactionState) {
-          await persistInput(
-            this.session,
-            itemsToPersist,
-            this.runContext,
-            options.compactionState,
-          );
-        } else {
-          await persistInput(this.session, itemsToPersist, this.runContext);
-        }
-      };
-    };
+  constructor(private readonly options: SessionPersistenceTrackerOptions) {
+    this.session = options.session;
+    this.runContext = options.runContext;
+    this.hasCallModelInputFilter = options.hasCallModelInputFilter;
+    this.persistInput = options.persistInput;
+    this.originalSnapshot = options.resumingFromState
+      ? cloneItems(options.resumedSessionInputItems ?? [])
+      : undefined;
+    this.filteredSnapshot = options.resumedSessionInputItems
+      ? cloneItems(options.resumedSessionInputItems)
+      : undefined;
+    this.preparedSources = options.resumingFromState ? [] : undefined;
+    this.initialPreparedItems = options.resumingFromState ? [] : undefined;
+    this.initialSourcePositions = options.resumingFromState ? [] : undefined;
   }
 
-  return new SessionPersistenceTrackerImpl();
+  setPreparedItems = (
+    items?: AgentInputItem[],
+    preparedInput?: string | AgentInputItem[],
+  ) => {
+    const sessionItems =
+      items ??
+      (this.session === undefined && preparedInput !== undefined
+        ? toAgentInputList(preparedInput)
+        : []);
+    this.originalSnapshot = cloneItems(
+      deduplicateAgentInputItemsPreferringLatest(sessionItems),
+    );
+    if (Array.isArray(preparedInput)) {
+      this.preparedSources = undefined;
+      this.initialPreparedItems = preparedInput;
+      this.initialSourcePositions = findOwnedItemIndexes(
+        preparedInput,
+        sessionItems,
+      );
+    } else if (typeof preparedInput === 'string') {
+      this.preparedSources = undefined;
+      this.initialPreparedItems = sessionItems;
+      this.initialSourcePositions = findOwnedItemIndexes(
+        sessionItems,
+        sessionItems,
+      );
+    } else {
+      this.preparedSources = sessionItems.map((item, ownerIndex) => ({
+        item,
+        ownerIndex,
+      }));
+      this.initialPreparedItems = undefined;
+      this.initialSourcePositions = undefined;
+    }
+    this.ownedFilteredItems.clear();
+    this.persistedInputOrder = [];
+  };
+
+  setPreparedTurnItems = (
+    preparedItems: AgentInputItem[],
+    processedItems: AgentInputItem[],
+  ) => {
+    if (!this.initialPreparedItems || !this.initialSourcePositions) {
+      return;
+    }
+    const preparedSources = mapPreparedSourcesAfterContextProcessing(
+      this.initialPreparedItems,
+      preparedItems,
+      this.initialSourcePositions,
+      { validateReplacements: false },
+    );
+    this.preparedSources = mapPreparedSourcesAfterContextProcessing(
+      preparedItems,
+      processedItems,
+      findPreparedSourcePositions(preparedItems, preparedSources),
+    );
+  };
+
+  recordTurnItems = (
+    sourceItems: (AgentInputItem | undefined)[],
+    filteredItems?: AgentInputItem[],
+  ) => {
+    if (filteredItems !== undefined) {
+      if (!this.preparedSources) {
+        this.filteredSnapshot = cloneItems(filteredItems);
+        return;
+      }
+      const next = reconcilePersistableFilteredItems({
+        preparedSources: this.preparedSources,
+        sourceItems,
+        filteredItems,
+        ownedFilteredItems: this.ownedFilteredItems,
+        persistedInputOrder: this.persistedInputOrder,
+      });
+      this.ownedFilteredItems = next.ownedFilteredItems;
+      this.persistedInputOrder = next.persistedInputOrder;
+      this.filteredSnapshot = next.filteredSnapshot;
+      return;
+    }
+
+    this.filteredSnapshot = buildSnapshotForUnfilteredItems({
+      preparedSourceCounts: this.preparedSources
+        ? countItemReferences(this.preparedSources.map((source) => source.item))
+        : undefined,
+      sourceItems,
+      existingSnapshot: this.filteredSnapshot,
+    });
+  };
+
+  getItemsForPersistence = () => {
+    if (this.filteredSnapshot !== undefined) {
+      return this.filteredSnapshot;
+    }
+    if (this.hasCallModelInputFilter) {
+      return undefined;
+    }
+    return this.originalSnapshot;
+  };
+
+  buildPersistInputOnce = (serverManagesConversation: boolean) => {
+    if (!this.session || serverManagesConversation) {
+      return undefined;
+    }
+    const persistInput = this.persistInput ?? saveStreamInputToSession;
+    return async () => {
+      if (this.persistedInput) {
+        return;
+      }
+      const itemsToPersist = this.getItemsForPersistence();
+      if (!itemsToPersist || itemsToPersist.length === 0) {
+        return;
+      }
+      this.persistedInput = true;
+      if (this.options.compactionState) {
+        await persistInput(
+          this.session,
+          itemsToPersist,
+          this.runContext,
+          this.options.compactionState,
+        );
+      } else {
+        await persistInput(this.session, itemsToPersist, this.runContext);
+      }
+    };
+  };
 }
 
 function cloneItems(items: AgentInputItem[]): AgentInputItem[] {
