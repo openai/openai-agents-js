@@ -8,7 +8,7 @@ import { mapOwnedInputItemsAfterContextProcessing } from './sessionPersistence';
 type PendingInputPreparation = {
   turnInput: AgentInputItem[];
   sourceItems: (AgentInputItem | undefined)[];
-  persistedItems: AgentInputItem[];
+  modelInput: { input: AgentInputItem[] };
   sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
   preserveInputIdentity: boolean;
 };
@@ -84,7 +84,7 @@ export function selectPendingInputForAdmission(
     if (!pendingItem || acceptedIds.has(pendingItem.inputId)) {
       continue;
     }
-    const persistedItem = preparation.persistedItems[index];
+    const persistedItem = preparation.modelInput.input[index];
     if (!persistedItem) {
       continue;
     }

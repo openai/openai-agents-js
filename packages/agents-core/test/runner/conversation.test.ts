@@ -39,12 +39,10 @@ describe('applyCallModelInputFilter', () => {
     expect(result.modelInput.input).toEqual(original);
     expect(result.modelInput.input[0]).not.toBe(original[0]);
     expect(result.sourceItems[0]).toBe(original[0]);
-    expect(result.persistedItems).toEqual(original);
-    expect(result.persistedItems[0]).not.toBe(result.modelInput.input[0]);
     expect(result.modelInput.instructions).toBe('sys');
   });
 
-  it('maps filtered items back to originals and clones persisted items', async () => {
+  it('maps filtered items back to originals and detaches model input', async () => {
     const agent = makeAgent('Filter');
     const context = new RunContext();
     const first: AgentInputItem = {
@@ -82,8 +80,6 @@ describe('applyCallModelInputFilter', () => {
     expect(result.sourceItems).toEqual([second, first]);
     expect(result.modelInput.input[0]).not.toBe(second);
     expect(result.modelInput.input[1]).not.toBe(first);
-    expect(result.persistedItems).toHaveLength(2);
-    expect(result.persistedItems[0]).not.toBe(result.modelInput.input[0]);
     expect(first.content).toBe('secret');
     expect(second.content).toBe('keep me');
   });
@@ -125,8 +121,6 @@ describe('applyCallModelInputFilter', () => {
       'injected',
     ]);
     expect(result.modelInput.input[0]).not.toBe(shared);
-    expect(result.persistedItems[0]).not.toBe(shared);
-    expect(result.persistedItems[0]).not.toBe(result.modelInput.input[0]);
   });
 
   it('keeps default filter input isolated from source mutations', async () => {
@@ -154,7 +148,6 @@ describe('applyCallModelInputFilter', () => {
 
     expect(original.content).toBe('original');
     expect(result.modelInput.input[0]).toMatchObject({ content: 'filtered' });
-    expect(result.persistedItems[0]).toMatchObject({ content: 'filtered' });
   });
 
   it('leaves sourceItems undefined for injected filter items', async () => {
@@ -189,8 +182,8 @@ describe('applyCallModelInputFilter', () => {
 
     expect(result.filterApplied).toBe(true);
     expect(result.sourceItems).toEqual([first, second, undefined]);
-    expect(result.persistedItems).toHaveLength(3);
-    expect(result.persistedItems[2]).toMatchObject({
+    expect(result.modelInput.input).toHaveLength(3);
+    expect(result.modelInput.input[2]).toMatchObject({
       type: 'message',
       role: 'user',
       content: 'injected',
@@ -218,7 +211,6 @@ describe('applyCallModelInputFilter', () => {
 
     expect(result.modelInput.input).toHaveLength(2);
     expect(result.sourceItems).toEqual([undefined, original]);
-    expect(result.persistedItems).toHaveLength(2);
   });
 
   it('treats repeated use of one filter clone as an injected occurrence', async () => {
@@ -242,7 +234,6 @@ describe('applyCallModelInputFilter', () => {
 
     expect(result.modelInput.input).toHaveLength(2);
     expect(result.sourceItems).toEqual([original, undefined]);
-    expect(result.persistedItems).toHaveLength(2);
   });
 
   it('does not match a repeated filter clone to equal-content history', async () => {
@@ -267,7 +258,6 @@ describe('applyCallModelInputFilter', () => {
 
     expect(result.modelInput.input).toHaveLength(2);
     expect(result.sourceItems).toEqual([current, undefined]);
-    expect(result.persistedItems).toHaveLength(2);
   });
 
   it('throws a UserError when the filter returns an invalid shape', async () => {
@@ -317,7 +307,6 @@ describe('applyCallModelInputFilter', () => {
     );
 
     expect(result.modelInput.input).toEqual([newCall, output]);
-    expect(result.persistedItems).toEqual([newCall, output]);
     expect(result.sourceItems).toEqual([newCall, output]);
   });
 
@@ -353,7 +342,6 @@ describe('applyCallModelInputFilter', () => {
     );
 
     expect(result.modelInput.input).toEqual([newCall, output]);
-    expect(result.persistedItems).toEqual([newCall, output]);
     expect(result.sourceItems).toEqual([newCall, output]);
   });
 
@@ -380,7 +368,6 @@ describe('applyCallModelInputFilter', () => {
     );
 
     expect(result.modelInput.input).toEqual([oldCall, newCall]);
-    expect(result.persistedItems).toEqual([oldCall, newCall]);
     expect(result.sourceItems).toEqual([oldCall, newCall]);
   });
 });

@@ -220,6 +220,37 @@ function createResumableState<TAgent extends Agent<any, any>>(
 }
 
 describe('RunState pending input', () => {
+  it('captures admitted input before the model mutates its request', async () => {
+    class MutatingModel extends RecordingModel {
+      override async getResponse(request: ModelRequest) {
+        if (!Array.isArray(request.input))
+          throw new Error('Expected input array');
+        for (const item of request.input) {
+          if (item.type === 'message' && item.content === 'follow-up') {
+            item.content = 'model mutation';
+          }
+        }
+        return super.getResponse(request);
+      }
+    }
+    const model = new MutatingModel([
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ]);
+    const agent = new Agent({ name: 'pending-snapshot', model });
+    const state = createResumableState(agent);
+    state.addInput('follow-up');
+
+    const result = await new Runner({ tracingDisabled: true }).run(
+      agent,
+      state,
+    );
+
+    expect(result.history).toContainEqual(message('follow-up'));
+    expect(result.history).not.toContainEqual(message('model mutation'));
+    expect(result.state.pendingInput).toEqual([]);
+    expect(result.state.toString()).not.toContain('model mutation');
+  });
+
   it('stages immutable input in order and round-trips it', async () => {
     const agent = new Agent({ name: 'pending-input' });
     const state = createResumableState(agent);

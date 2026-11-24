@@ -3823,7 +3823,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const {
       modelInput,
       sourceItems,
-      persistedItems,
       sourceMatchKinds,
       filterApplied,
       preserveInputIdentity,
@@ -3835,9 +3834,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       systemInstructions,
     );
 
-    // Persist normalized clones so session history mirrors the exact model payload. An empty array
-    // is intentional when a filter removes everything.
-    sessionInputUpdate?.(sourceItems, persistedItems);
+    // Capture persistence before the model or its hooks can mutate this detached payload.
+    // An empty array is intentional when a filter removes everything.
+    sessionInputUpdate?.(sourceItems, modelInput.input);
 
     const previousResponseId =
       serverConversationTracker?.previousResponseId ??
@@ -3857,7 +3856,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       previousResponseId,
       conversationId,
       sourceItems,
-      persistedItems,
       sourceMatchKinds,
       filterApplied,
       preserveInputIdentity,

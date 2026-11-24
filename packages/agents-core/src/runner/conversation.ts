@@ -50,18 +50,16 @@ export type CallModelInputFilter<TContext = unknown> = ((
 
 /**
  * Result of applying a `callModelInputFilter`.
+ * The runner captures modelInput.input for persistence before exposing it to the model.
  * - `modelInput` is the payload that goes to the model.
  * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
  *   This lets the conversation tracker know which originals reached the model.
- * - `persistedItems` are the normalized clones we should commit to session memory so the stored
- *   history reflects identity-aware replacement plus any redactions or truncation from the filter.
  * - `filterApplied` signals whether a filter ran so callers can distinguish empty filtered results
  *   from the filter being skipped entirely.
  */
 export type FilterApplicationResult = {
   modelInput: { input: AgentInputItem[]; instructions?: string };
   sourceItems: (AgentInputItem | undefined)[];
-  persistedItems: AgentInputItem[];
   sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
   filterApplied: boolean;
   preserveInputIdentity: boolean;
@@ -109,14 +107,21 @@ export async function applyCallModelInputFilter<TContext>(
   const cloneInputItems = (
     items: AgentInputItem[],
     map?: WeakMap<object, AgentInputItem>,
-  ) =>
-    items.map((item) => {
+  ) => {
+    const length = items.length;
+    const clones = new Array<AgentInputItem>(length);
+    // Keep clone outputs private even when caller arrays customize their methods or species.
+    for (let index = 0; index < length; index++) {
+      if (!(index in items)) continue;
+      const item = items[index];
       const cloned = structuredClone(item) as AgentInputItem;
+      clones[index] = cloned;
       if (map && cloned && typeof cloned === 'object') {
         map.set(cloned as object, item);
       }
-      return cloned;
-    });
+    }
+    return clones;
+  };
 
   // Record the relationship between the array passed to filters and the original inputs.
   const cloneMap = new WeakMap<object, AgentInputItem>();
@@ -147,7 +152,6 @@ export async function applyCallModelInputFilter<TContext>(
       sourceItems: normalizedInput.map(
         (item) => cloneMap.get(item as object) ?? item,
       ),
-      persistedItems: cloneInputItems(normalizedInput),
       sourceMatchKinds: normalizedInput.map(() => 'identity'),
       filterApplied: false,
       preserveInputIdentity,
@@ -290,7 +294,6 @@ export async function applyCallModelInputFilter<TContext>(
             : result.instructions,
       },
       sourceItems,
-      persistedItems: clonedFilteredInput.map((item) => structuredClone(item)),
       sourceMatchKinds,
       filterApplied: true,
       preserveInputIdentity,
