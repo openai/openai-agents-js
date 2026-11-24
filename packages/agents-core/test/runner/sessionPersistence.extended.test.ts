@@ -19,6 +19,56 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it.each(['plain', 'map'] as const)(
+    'isolates %s input across normalized reads, mutable reads, and later turns',
+    (shape) => {
+      const tracker = createSessionPersistenceTracker({
+        hasCallModelInputFilter: true,
+      })!;
+      const item = {
+        type: 'message' as const,
+        role: 'user' as const,
+        content: 'original',
+        providerData: {
+          data:
+            shape === 'map'
+              ? new Map([['key', 'original']])
+              : { key: 'original' },
+        },
+      };
+      const expected = structuredClone(item);
+      const edit = (items: AgentInputItem[], value: string) => {
+        const data = items[0].providerData
+          ?.data as typeof item.providerData.data;
+        if (data instanceof Map) {
+          data.set('key', value);
+        } else {
+          data.key = value;
+        }
+      };
+      tracker.setPreparedItems([item]);
+      tracker.recordTurnItems([item], [item]);
+
+      edit(tracker.getNormalizedItemsForPersistence(), 'normalized edit');
+      const mutable = tracker.getItemsForPersistence()!;
+      // Normalization rebuilds plain records, but preserves a Map within
+      // the same turn. Neither edit may reach the next turn's saved value.
+      const expectedMutable = structuredClone(expected);
+      if (expectedMutable.providerData.data instanceof Map) {
+        expectedMutable.providerData.data.set('key', 'normalized edit');
+      }
+      expect(mutable).toEqual([expectedMutable]);
+      edit(mutable, 'reader edit');
+      expect(tracker.getItemsForPersistence()).toBe(mutable);
+      expect(tracker.getNormalizedItemsForPersistence()).toEqual(mutable);
+
+      // A later filter can omit an owned message. Its saved value must survive.
+      tracker.recordTurnItems([], []);
+      expect(tracker.getItemsForPersistence()).toEqual([expected]);
+      expect(item).toEqual(expected);
+    },
+  );
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
