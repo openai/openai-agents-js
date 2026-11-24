@@ -9,20 +9,32 @@ const initialBufferGetter = Object.getOwnPropertyDescriptor(
   'Buffer',
 )?.get;
 const isBuffer = NodeBuffer.isBuffer;
-const arrayMethods = [
+const arrayMethodNames = [
   'entries',
   'map',
   'filter',
   'flatMap',
   'every',
   'constructor',
-].map(
-  (name) =>
-    [
-      name,
-      Object.getOwnPropertyDescriptor(Array.prototype, name)?.value,
-    ] as const,
-);
+] as const;
+const arrayMethods: unknown[] = [];
+const functionToString = Function.prototype.toString;
+let startupArrayMethodsAreNative = true;
+// Inspect startup methods without invoking wrappers or their conversion hooks.
+for (let index = 0; index < arrayMethodNames.length; index++) {
+  const name = arrayMethodNames[index]!;
+  const method = Object.getOwnPropertyDescriptor(Array.prototype, name)?.value;
+  arrayMethods[index] = method;
+  const nativeName = name === 'constructor' ? 'Array' : name;
+  if (
+    typeof method !== 'function' ||
+    types.isProxy(method) ||
+    Reflect.apply(functionToString, method, []) !==
+      `function ${nativeName}() { [native code] }`
+  ) {
+    startupArrayMethodsAreNative = false;
+  }
+}
 
 // Bound work before returning to the existing key serializer.
 const MAX_COMPARISON_DEPTH = 64;
@@ -159,6 +171,7 @@ export function canMatchInputItemsByPosition(
   processedItems: readonly unknown[],
 ): boolean {
   if (
+    !startupArrayMethodsAreNative ||
     Object.getPrototypeOf(Array.prototype) !== Object.prototype ||
     Object.getPrototypeOf(Object.prototype) !== null ||
     !usesExpectedBuffer() ||
@@ -168,9 +181,10 @@ export function canMatchInputItemsByPosition(
     preparedItems.length !== processedItems.length
   )
     return false;
-  for (const [name, method] of arrayMethods) {
+  for (let index = 0; index < arrayMethodNames.length; index++) {
     if (
-      Object.getOwnPropertyDescriptor(Array.prototype, name)?.value !== method
+      Object.getOwnPropertyDescriptor(Array.prototype, arrayMethodNames[index]!)
+        ?.value !== arrayMethods[index]
     ) {
       return false;
     }
