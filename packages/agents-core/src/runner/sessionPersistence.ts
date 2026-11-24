@@ -1436,23 +1436,62 @@ function countItemReferences(
   return counts;
 }
 
+function createOwnerIndexLookup(
+  sourceItems: AgentInputItem[],
+  sourceOwnerIndexes: number[],
+) {
+  let nextSourceIndex = 0;
+  let remainingOwnerIndexes: Map<AgentInputItem, number[]> | undefined;
+  return (item: AgentInputItem): number | undefined => {
+    if (!remainingOwnerIndexes) {
+      if (
+        nextSourceIndex < sourceItems.length &&
+        sourceItems[nextSourceIndex] === item
+      ) {
+        return sourceOwnerIndexes[nextSourceIndex++];
+      }
+      // Index only the unconsumed suffix once source order diverges.
+      remainingOwnerIndexes = new Map();
+      for (let i = sourceItems.length - 1; i >= nextSourceIndex; i--) {
+        const source = sourceItems[i];
+        const indexes = remainingOwnerIndexes.get(source) ?? [];
+        indexes.push(sourceOwnerIndexes[i]);
+        remainingOwnerIndexes.set(source, indexes);
+      }
+    }
+    return remainingOwnerIndexes.get(item)?.pop();
+  };
+}
+
+function createPreparedSourceOwnerLookup(
+  preparedSources: PreparedOwnedSource[],
+) {
+  const items: AgentInputItem[] = [];
+  const ownerIndexes: number[] = [];
+  for (const source of preparedSources) {
+    items.push(source.item);
+    ownerIndexes.push(source.ownerIndex);
+  }
+  return createOwnerIndexLookup(items, ownerIndexes);
+}
+
 function findOwnedItemIndexes(
   preparedInput: AgentInputItem[],
   ownedItems: AgentInputItem[],
 ): PreparedOwnedSourcePosition[] {
-  const remainingOwnerIndexes = new Map<AgentInputItem, number[]>();
+  const items: AgentInputItem[] = [];
+  const ownerIndexes: number[] = [];
   for (const [ownerIndex, item] of ownedItems.entries()) {
-    const indexes = remainingOwnerIndexes.get(item) ?? [];
-    indexes.push(ownerIndex);
-    remainingOwnerIndexes.set(item, indexes);
+    items.push(item);
+    ownerIndexes.push(ownerIndex);
   }
+  const takeOwnerIndex = createOwnerIndexLookup(items, ownerIndexes);
   const positions: PreparedOwnedSourcePosition[] = [];
-  for (const [index, item] of preparedInput.entries()) {
-    const ownerIndex = remainingOwnerIndexes.get(item)?.shift();
-    if (ownerIndex === undefined) {
-      continue;
+  for (const [preparedIndex, item] of preparedInput.entries()) {
+    const ownerIndex = takeOwnerIndex(item);
+    if (ownerIndex !== undefined) {
+      positions.push({ preparedIndex, ownerIndex });
     }
-    positions.push({ preparedIndex: index, ownerIndex });
   }
   return positions;
 }
@@ -1461,15 +1500,10 @@ function findPreparedSourcePositions(
   preparedItems: AgentInputItem[],
   preparedSources: PreparedOwnedSource[],
 ): PreparedOwnedSourcePosition[] {
-  const remainingOwnerIndexes = new Map<AgentInputItem, number[]>();
-  for (const source of preparedSources) {
-    const indexes = remainingOwnerIndexes.get(source.item) ?? [];
-    indexes.push(source.ownerIndex);
-    remainingOwnerIndexes.set(source.item, indexes);
-  }
+  const takeOwnerIndex = createPreparedSourceOwnerLookup(preparedSources);
   const positions: PreparedOwnedSourcePosition[] = [];
   for (const [preparedIndex, item] of preparedItems.entries()) {
-    const ownerIndex = remainingOwnerIndexes.get(item)?.shift();
+    const ownerIndex = takeOwnerIndex(item);
     if (ownerIndex !== undefined) {
       positions.push({ preparedIndex, ownerIndex });
     }
@@ -1728,13 +1762,7 @@ function reconcilePersistableFilteredItems(options: {
     ownedFilteredItems,
     persistedInputOrder,
   } = options;
-  const sourceOwnerIndexes = new Map<AgentInputItem, number[]>();
-  for (const source of preparedSources) {
-    const ownerIndexes = sourceOwnerIndexes.get(source.item) ?? [];
-    ownerIndexes.push(source.ownerIndex);
-    sourceOwnerIndexes.set(source.item, ownerIndexes);
-  }
-  const sourceOccurrences = new Map<AgentInputItem, number>();
+  const takeOwnerIndex = createPreparedSourceOwnerLookup(preparedSources);
   const representedOwnedIndexes = new Set<number>();
   const currentOrder: PersistedInputOccurrence[] = [];
   const nextOwnedFilteredItems = new Map(ownedFilteredItems);
@@ -1746,9 +1774,7 @@ function reconcilePersistableFilteredItems(options: {
     }
     const source = sourceItems[i];
     if (source && typeof source === 'object') {
-      const occurrence = sourceOccurrences.get(source) ?? 0;
-      sourceOccurrences.set(source, occurrence + 1);
-      const ownedIndex = sourceOwnerIndexes.get(source)?.[occurrence];
+      const ownedIndex = takeOwnerIndex(source);
       if (ownedIndex !== undefined) {
         representedOwnedIndexes.add(ownedIndex);
         nextOwnedFilteredItems.set(ownedIndex, structuredClone(filteredItem));

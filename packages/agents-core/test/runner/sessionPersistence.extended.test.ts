@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionPersistenceTracker,
+  mapOwnedInputItemsAfterContextProcessing,
   PreparedInputWithSessionResult,
 } from '../../src/runner/sessionPersistence';
 import type { Session } from '../../src/memory/session';
@@ -19,6 +20,132 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it('captures source iterator order before a later ordinary turn', () => {
+    class ReverseIteratorArray<T> extends Array<T> {
+      override [Symbol.iterator]() {
+        return this.slice().reverse().values();
+      }
+    }
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const shared = { role: 'user', content: 'shared' } as const;
+    const input = [shared, shared];
+    tracker.setPreparedItems(input, input);
+    tracker.setPreparedTurnItems(
+      input,
+      new ReverseIteratorArray(shared, shared),
+    );
+    tracker.recordTurnItems(
+      [shared, shared],
+      [
+        { role: 'user', content: 'first' },
+        { role: 'user', content: 'second' },
+      ],
+    );
+    tracker.setPreparedTurnItems(input, input);
+    tracker.recordTurnItems([shared], [{ role: 'user', content: 'updated' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'user', content: 'updated' },
+    ]);
+  });
+
+  it('uses owner indexes supplied by the owned input entries iterator', () => {
+    const shared = { role: 'user', content: 'shared' } as const;
+    const owned: AgentInputItem[] = [shared, shared];
+    const entries: Array<[number, AgentInputItem]> = [
+      [1, shared],
+      [0, shared],
+    ];
+    owned.entries = () => entries.values();
+    expect(
+      mapOwnedInputItemsAfterContextProcessing(
+        [shared, shared],
+        [shared, shared],
+        owned,
+      ),
+    ).toEqual([
+      { item: shared, ownerIndex: 1 },
+      { item: shared, ownerIndex: 0 },
+    ]);
+  });
+
+  it('keeps duplicate ownership after an ordered prefix diverges', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const shared = { role: 'user', content: 'shared' } as const;
+    const middle = { role: 'user', content: 'middle' } as const;
+    const last = { role: 'user', content: 'last' } as const;
+    tracker.setPreparedItems([shared, middle, shared, last]);
+    const filtered = ['first', 'last', 'duplicate', 'middle'].map(
+      (content) => ({ role: 'user' as const, content }),
+    );
+    tracker.recordTurnItems([shared, last, shared, middle], filtered);
+    expect(tracker.getItemsForPersistence()).toEqual(filtered);
+
+    tracker.recordTurnItems([shared], [{ role: 'user', content: 'updated' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      filtered[1],
+      filtered[2],
+      filtered[3],
+      { role: 'user', content: 'updated' },
+    ]);
+  });
+
+  it('retains omitted owned input while dropping prior injected input', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const first = { role: 'user', content: 'first' } as const;
+    const second = { role: 'user', content: 'second' } as const;
+    const injected = { role: 'user', content: 'injected' } as const;
+    tracker.setPreparedItems([first, second]);
+    tracker.recordTurnItems(
+      [first, undefined, second],
+      [first, injected, second],
+    );
+    expect(tracker.getItemsForPersistence()).toEqual([first, injected, second]);
+    tracker.recordTurnItems([second], [{ ...second, content: 'updated' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      first,
+      { ...second, content: 'updated' },
+    ]);
+  });
+
+  it('keeps the current owner lookup when a filtered getter prepares another turn', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const first = { role: 'user', content: 'first' } as const;
+    const second = { role: 'user', content: 'second' } as const;
+    tracker.setPreparedItems([first, second], [first, second]);
+    tracker.setPreparedTurnItems([first, second], [first, second]);
+    const filteredFirst = {
+      role: 'user' as const,
+      get content() {
+        tracker.setPreparedTurnItems([first, second], [second, first]);
+        return 'filtered first';
+      },
+    };
+    tracker.recordTurnItems([first, second], [filteredFirst, second]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'filtered first' },
+      second,
+    ]);
+    tracker.setPreparedTurnItems([first, second], [first, second]);
+    tracker.recordTurnItems([second], [{ ...second, content: 'updated' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'filtered first' },
+      { ...second, content: 'updated' },
+    ]);
+  });
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
