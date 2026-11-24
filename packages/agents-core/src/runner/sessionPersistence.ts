@@ -1348,13 +1348,19 @@ export function createSessionPersistenceTracker(options: {
       );
     };
 
+    private setFilteredSnapshot(snapshot: AgentInputItem[]): void {
+      this.filteredSnapshot = snapshot;
+      // The committed turn snapshot makes the prepared fallback unreachable.
+      this.originalSnapshot = undefined;
+    }
+
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
       if (filteredItems !== undefined) {
         if (!this.preparedSources) {
-          this.filteredSnapshot = cloneItems(filteredItems);
+          this.setFilteredSnapshot(cloneItems(filteredItems));
           return;
         }
         const next = reconcilePersistableFilteredItems({
@@ -1366,19 +1372,21 @@ export function createSessionPersistenceTracker(options: {
         });
         this.ownedFilteredItems = next.ownedFilteredItems;
         this.persistedInputOrder = next.persistedInputOrder;
-        this.filteredSnapshot = next.filteredSnapshot;
+        this.setFilteredSnapshot(next.filteredSnapshot);
         return;
       }
 
-      this.filteredSnapshot = buildSnapshotForUnfilteredItems({
-        preparedSourceCounts: this.preparedSources
-          ? countItemReferences(
-              this.preparedSources.map((source) => source.item),
-            )
-          : undefined,
-        sourceItems,
-        existingSnapshot: this.filteredSnapshot,
-      });
+      this.setFilteredSnapshot(
+        buildSnapshotForUnfilteredItems({
+          preparedSourceCounts: this.preparedSources
+            ? countItemReferences(
+                this.preparedSources.map((source) => source.item),
+              )
+            : undefined,
+          sourceItems,
+          existingSnapshot: this.filteredSnapshot,
+        }),
+      );
     };
 
     getItemsForPersistence = () => {
