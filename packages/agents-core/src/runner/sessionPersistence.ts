@@ -1,3 +1,4 @@
+import { canMatchInputItemsByPosition } from '@openai/agents-core/_shims';
 import {
   getMcpToolBinding,
   matchesFunctionToolRecipient,
@@ -1489,6 +1490,12 @@ function mapPreparedSourcesAfterContextProcessing(
       ownerIndex,
     ]),
   );
+  if (canMatchInputItemsByPosition(preparedItems, processedItems)) {
+    return processedItems.flatMap((item, index) => {
+      const ownerIndex = ownerIndexByPreparedIndex.get(index);
+      return ownerIndex === undefined ? [] : [{ item, ownerIndex }];
+    });
+  }
   const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
   const preparedIndexesByKey = new Map<string, number[]>();
   for (const [index, item] of preparedItems.entries()) {

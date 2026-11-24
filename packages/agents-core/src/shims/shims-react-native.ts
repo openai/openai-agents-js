@@ -4,6 +4,7 @@ export type { EventEmitter, EventEmitterEvents } from './interface';
 export { isBrowserEnvironment, loadEnv } from './config-browser';
 export {
   AsyncLocalStorage,
+  canMatchInputItemsByPosition,
   MCPServerSSE,
   MCPServerStdio,
   MCPServerStreamableHttp,

@@ -52,3 +52,11 @@ class NodeTimer implements Timer {
 }
 const timer = new NodeTimer();
 export { timer };
+
+// These runtimes keep the existing matcher without a side-effect-free Proxy check.
+export function canMatchInputItemsByPosition(
+  _preparedItems: readonly unknown[],
+  _processedItems: readonly unknown[],
+): boolean {
+  return false;
+}

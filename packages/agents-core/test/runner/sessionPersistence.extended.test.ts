@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionPersistenceTracker,
+  mapOwnedInputItemsAfterContextProcessing,
   PreparedInputWithSessionResult,
 } from '../../src/runner/sessionPersistence';
 import type { Session } from '../../src/memory/session';
@@ -19,6 +20,183 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it('captures source iterator order before a later ordinary turn', () => {
+    class ReverseIteratorArray<T> extends Array<T> {
+      override [Symbol.iterator]() {
+        return this.slice().reverse().values();
+      }
+    }
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const shared = { role: 'user', content: 'shared' } as const;
+    const input = [shared, shared];
+    tracker.setPreparedItems(input, input);
+    tracker.setPreparedTurnItems(
+      input,
+      new ReverseIteratorArray(shared, shared),
+    );
+    tracker.recordTurnItems(
+      [shared, shared],
+      [
+        { role: 'user', content: 'first' },
+        { role: 'user', content: 'second' },
+      ],
+    );
+    tracker.setPreparedTurnItems(input, input);
+    tracker.recordTurnItems([shared], [{ role: 'user', content: 'updated' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'user', content: 'updated' },
+    ]);
+  });
+
+  it('keeps occurrence ownership when every root remains identical, including repeats', () => {
+    const history = { role: 'user', content: 'same' } as const;
+    const current = { role: 'user', content: 'same' } as const;
+    const prepared: AgentInputItem[] = [history, current, history, current];
+    const processed = prepared.slice();
+    expect(
+      mapOwnedInputItemsAfterContextProcessing(prepared, processed, [current]),
+    ).toEqual([{ item: current, ownerIndex: 0 }]);
+  });
+
+  it('keeps shared-reference precedence when detached equal roots remain at their positions', () => {
+    const history = { role: 'user', content: 'same' } as const;
+    const current = { role: 'user', content: 'same' } as const;
+    const prepared: AgentInputItem[] = [history, current];
+    const processed = [current, structuredClone(current)];
+    expect(
+      mapOwnedInputItemsAfterContextProcessing(prepared, processed, [current]),
+    ).toEqual([{ item: current, ownerIndex: 0 }]);
+  });
+
+  it('observes a getter error even when all roots, including repeats, remain identical', () => {
+    const plain = { role: 'user', content: 'plain' } as const;
+    let reads = 0;
+    const sentinel = new Error('repeated metadata getter');
+    const metadata = {
+      get value() {
+        reads++;
+        throw sentinel;
+      },
+    };
+    const observed = {
+      role: 'user',
+      content: 'observed',
+      providerData: metadata,
+    } as const;
+    const prepared: AgentInputItem[] = [plain, observed, plain];
+    expect(() =>
+      mapOwnedInputItemsAfterContextProcessing(
+        prepared,
+        prepared.slice(),
+        prepared,
+      ),
+    ).toThrow(sentinel);
+    expect(reads).toBe(1);
+  });
+
+  it.each([false, true])(
+    'emits processed order after a self-removing source iterator reverses positions (shared roots: %s)',
+    (sharedRoots) => {
+      const prepared: AgentInputItem[] = [
+        { role: 'user', content: 'first' },
+        { role: 'user', content: 'second' },
+      ];
+      const owned = prepared.slice();
+      const processed = sharedRoots
+        ? prepared.slice()
+        : structuredClone(prepared);
+      prepared.entries = function () {
+        Reflect.deleteProperty(this, 'entries');
+        const positions: [number, AgentInputItem][] = [
+          [1, this[1]],
+          [0, this[0]],
+        ];
+        return positions.values();
+      };
+      expect(
+        mapOwnedInputItemsAfterContextProcessing(prepared, processed, owned),
+      ).toEqual([
+        { item: processed[0], ownerIndex: 0 },
+        { item: processed[1], ownerIndex: 1 },
+      ]);
+    },
+  );
+
+  it('keeps only owned input when context processing returns independent unchanged trees', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: false,
+    })!;
+    const history = {
+      role: 'user',
+      content: 'history',
+      providerData: { tags: ['old'] },
+    } as const;
+    const current = {
+      role: 'user',
+      content: 'current',
+      providerData: { tags: ['new'] },
+    } as const;
+    const prepared: AgentInputItem[] = [history, current];
+    tracker.setPreparedItems([current], prepared);
+    const turn = structuredClone(prepared);
+    const processed = structuredClone(turn);
+    tracker.setPreparedTurnItems(turn, processed);
+    tracker.recordTurnItems(processed, processed);
+    expect(tracker.getItemsForPersistence()).toEqual([current]);
+  });
+
+  it('keeps reference ownership when equal messages change positions', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const history = { role: 'user', content: 'same' } as const;
+    const current = { role: 'user', content: 'same' } as const;
+    const prepared: AgentInputItem[] = [history, current];
+    tracker.setPreparedItems([current], prepared);
+    const turn = structuredClone(prepared);
+    const processed = [turn[1], turn[0]];
+    tracker.setPreparedTurnItems(turn, processed);
+    tracker.recordTurnItems(processed, [
+      { role: 'user', content: 'current edit' },
+      { role: 'user', content: 'history edit' },
+    ]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'current edit' },
+    ]);
+  });
+
+  it('preserves a hidden binary-metadata getter error during context matching', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: false,
+    })!;
+    const current = {
+      role: 'user',
+      content: 'current',
+      providerData: {},
+    } as const;
+    const prepared: AgentInputItem[] = [current];
+    tracker.setPreparedItems([current], prepared);
+    const turn = structuredClone(prepared);
+    let reads = 0;
+    Object.defineProperty(turn[0].providerData!, 'type', {
+      get() {
+        reads++;
+        throw new Error('hidden metadata type');
+      },
+    });
+    expect(() => tracker.setPreparedTurnItems(turn, turn)).toThrow(
+      'hidden metadata type',
+    );
+    expect(reads).toBe(1);
+  });
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
