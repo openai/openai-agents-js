@@ -1483,6 +1483,17 @@ function mapPreparedSourcesAfterContextProcessing(
   preparedSourcePositions: PreparedOwnedSourcePosition[],
   options: { validateReplacements?: boolean } = {},
 ): PreparedOwnedSource[] {
+  if (
+    preparedItems === processedItems ||
+    (preparedItems.length === processedItems.length &&
+      preparedItems.every((item, index) => item === processedItems[index]))
+  ) {
+    return preparedSourcePositions.map(({ preparedIndex, ownerIndex }) => ({
+      item: processedItems[preparedIndex]!,
+      ownerIndex,
+    }));
+  }
+
   const ownerIndexByPreparedIndex = new Map(
     preparedSourcePositions.map(({ preparedIndex, ownerIndex }) => [
       preparedIndex,
