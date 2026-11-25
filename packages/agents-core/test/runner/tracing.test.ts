@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { Agent } from '../../src/agent';
 import {
+  createRunUsageRecorder,
   ensureAgentSpan,
   finishRunnerSpan,
   getTracing,
@@ -109,6 +110,45 @@ describe('getTracing', () => {
         cached_input_tokens: 5,
         cache_write_input_tokens: 10,
       });
+    });
+  });
+  it('keeps late usage on the current turn and the original parent recorder', async () => {
+    await withTrace('usage ownership', async () => {
+      const parentTask = startTaskSpan('parent');
+      const parentTurn = startTurnSpan(1, 'parent agent', parentTask.span);
+      const task = startTaskSpan('task', parentTurn.span);
+      const first = startTurnSpan(1, 'agent', task.span);
+      const second = startTurnSpan(2, 'agent', task.span);
+      const holder: { current: typeof first | undefined } = { current: first };
+      const parent = createRunUsageRecorder(
+        parentTask,
+        { current: parentTurn },
+        undefined,
+      );
+      const record = createRunUsageRecorder(task, holder, parent);
+      const usage = new Usage({
+        requests: 1,
+        inputTokens: 2,
+        outputTokens: 3,
+        totalTokens: 5,
+      });
+      record(usage);
+      holder.current = second;
+      finishRunnerSpan(second);
+      record(usage);
+      expect(first.ownedUsage.inputTokens).toBe(2);
+      expect(second.ownedUsage.inputTokens).toBe(2);
+      expect(task.ownedUsage.totalTokens).toBe(10);
+      holder.current = undefined;
+      record(usage);
+      expect(second.ownedUsage.inputTokens).toBe(2);
+      expect(task.ownedUsage.requests).toBe(3);
+      expect(parentTask.ownedUsage.totalTokens).toBe(15);
+      expect(parentTurn.ownedUsage.inputTokens).toBe(6);
+      finishRunnerSpan(first);
+      finishRunnerSpan(task);
+      finishRunnerSpan(parentTurn);
+      finishRunnerSpan(parentTask);
     });
   });
 });

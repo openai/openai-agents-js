@@ -1,3 +1,4 @@
+import type { UsageRecorder } from './usageTracking';
 import { Agent } from '../agent';
 import { Handoff } from '../handoff';
 import { ModelTracing } from '../model';
@@ -100,6 +101,19 @@ export function recordRunnerSpanUsage(
   if (lifecycle) {
     addUsageSnapshot(lifecycle.ownedUsage, increment);
   }
+}
+
+// Keep state-retained callbacks outside the complete run invocation scope.
+export function createRunUsageRecorder(
+  taskSpan: ReturnType<typeof startTaskSpan> | undefined,
+  turnSpanState: { current: ReturnType<typeof startTurnSpan> | undefined },
+  parentUsageRecorder: UsageRecorder | undefined,
+): UsageRecorder {
+  return (usage) => {
+    recordRunnerSpanUsage(taskSpan, usage);
+    recordRunnerSpanUsage(turnSpanState.current, usage);
+    parentUsageRecorder?.(usage);
+  };
 }
 
 function hasUsage(usage: UsageSnapshot): boolean {

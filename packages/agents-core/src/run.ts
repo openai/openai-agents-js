@@ -161,7 +161,7 @@ import {
   setRunnerSpanError,
   startRunnerInvocationSpans,
   startTurnSpan,
-  recordRunnerSpanUsage,
+  createRunUsageRecorder,
   type RunnerSpanLifecycle,
 } from './runner/tracing';
 import {
@@ -1411,15 +1411,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       let continuingInterruptedTurn = false;
       let runError: unknown;
       const attemptedRunErrorHandlers = new WeakSet<object>();
-      let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+      const turnSpanState: {
+        current: ReturnType<typeof startTurnSpan> | undefined;
+      } = { current: undefined };
       let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
       let guardrailTracker = createGuardrailTracker();
-      const parentUsageRecorder = getRunnerParentUsageRecorder(this);
-      const recordUsage = (usage: Usage) => {
-        recordRunnerSpanUsage(taskSpan, usage);
-        recordRunnerSpanUsage(currentTurnSpan, usage);
-        parentUsageRecorder?.(usage);
-      };
+      const recordUsage = createRunUsageRecorder(
+        taskSpan,
+        turnSpanState,
+        getRunnerParentUsageRecorder(this),
+      );
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
@@ -1520,7 +1521,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           });
         }
         setRunnerSpanError(
-          currentTurnSpan,
+          turnSpanState.current,
           error,
           this.config.traceIncludeSensitiveData,
         );
@@ -1627,9 +1628,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
         }
         activateDeferredApprovedToolFinalSessionWrite();
-        finishRunnerSpan(currentTurnSpan);
+        finishRunnerSpan(turnSpanState.current);
         setRunStateTurnSpanParent(state, undefined);
-        currentTurnSpan = undefined;
+        turnSpanState.current = undefined;
         const result = new RunResult<TContext, TAgent>(state);
         try {
           await persistNonStreamingResult(
@@ -1700,13 +1701,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             });
 
             if (useTaskAndTurnSpans) {
-              currentTurnSpan = ensureTurnSpan(
-                currentTurnSpan,
+              turnSpanState.current = ensureTurnSpan(
+                turnSpanState.current,
                 state._currentTurn,
                 state._currentAgent.name,
                 state._currentAgentSpan,
               );
-              setRunStateTurnSpanParent(state, currentTurnSpan.span);
+              setRunStateTurnSpanParent(state, turnSpanState.current.span);
             }
 
             const { interruptedOutcome, approvedToolCheckpointDeferred } =
@@ -1807,9 +1808,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             });
             // Approval resolution belongs to the previous turn; any next model call
             // starts a new counted turn with its own span and usage.
-            finishRunnerSpan(currentTurnSpan);
+            finishRunnerSpan(turnSpanState.current);
             setRunStateTurnSpanParent(state, undefined);
-            currentTurnSpan = undefined;
+            turnSpanState.current = undefined;
             if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
               return completeResult(new RunResult<TContext, TAgent>(state));
@@ -1860,13 +1861,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 },
                 onAgentSpanReady: useTaskAndTurnSpans
                   ? (turn, agentName) => {
-                      currentTurnSpan = ensureTurnSpan(
-                        currentTurnSpan,
+                      turnSpanState.current = ensureTurnSpan(
+                        turnSpanState.current,
                         turn,
                         agentName,
                         state._currentAgentSpan,
                       );
-                      setRunStateTurnSpanParent(state, currentTurnSpan.span);
+                      setRunStateTurnSpanParent(
+                        state,
+                        turnSpanState.current.span,
+                      );
                     }
                   : undefined,
                 agentSpanParent: taskSpan?.span ?? invocationSpanParent,
@@ -1887,7 +1891,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
-              tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
+              tracingParent:
+                turnSpanState.current?.span ?? state._currentAgentSpan,
             });
             sessionTurnInputUpdate?.(
               sessionPreparedTurnInput,
@@ -2191,9 +2196,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             options.signal?.throwIfAborted();
             if (turnResult.nextStep.type !== 'next_step_final_output') {
-              finishRunnerSpan(currentTurnSpan);
+              finishRunnerSpan(turnSpanState.current);
               setRunStateTurnSpanParent(state, undefined);
-              currentTurnSpan = undefined;
+              turnSpanState.current = undefined;
             }
           }
 
@@ -2279,7 +2284,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         recordNonStreamingError(err);
         throw err;
       } finally {
-        finishRunnerSpan(currentTurnSpan);
+        finishRunnerSpan(turnSpanState.current);
         setRunStateTurnSpanParent(state, undefined);
         const preserveSandboxSessions =
           state._currentStep?.type === 'next_step_interruption';
@@ -2456,15 +2461,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ResumedSessionWritePreparation | undefined;
     let deferredApprovedToolFinalSessionWritePreparation:
       ResumedSessionWritePreparation | undefined;
-    let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+    const turnSpanState: {
+      current: ReturnType<typeof startTurnSpan> | undefined;
+    } = { current: undefined };
     let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
     let commitDeferredLocalPendingInput: (() => Promise<void>) | undefined;
-    const parentUsageRecorder = getRunnerParentUsageRecorder(this);
-    const recordUsage = (usage: Usage) => {
-      recordRunnerSpanUsage(taskSpan, usage);
-      recordRunnerSpanUsage(currentTurnSpan, usage);
-      parentUsageRecorder?.(usage);
-    };
+    const recordUsage = createRunUsageRecorder(
+      taskSpan,
+      turnSpanState,
+      getRunnerParentUsageRecorder(this),
+    );
     setRunStateUsageRecorder(result.state, recordUsage);
     const saveStreamResultWithCompactionOwnership = async (
       overrideOptions?: SessionPersistenceOptions,
@@ -2550,7 +2556,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         });
       }
       setRunnerSpanError(
-        currentTurnSpan,
+        turnSpanState.current,
         error,
         this.config.traceIncludeSensitiveData,
       );
@@ -2658,9 +2664,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
       activateDeferredApprovedToolFinalSessionWrite();
-      finishRunnerSpan(currentTurnSpan);
+      finishRunnerSpan(turnSpanState.current);
       setRunStateTurnSpanParent(result.state, undefined);
-      currentTurnSpan = undefined;
+      turnSpanState.current = undefined;
       result.state._currentTurnInProgress = false;
       // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
       if (!serverManagesConversation) {
@@ -2769,13 +2775,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           });
 
           if (useTaskAndTurnSpans) {
-            currentTurnSpan = ensureTurnSpan(
-              currentTurnSpan,
+            turnSpanState.current = ensureTurnSpan(
+              turnSpanState.current,
               result.state._currentTurn,
               result.state._currentAgent.name,
               result.state._currentAgentSpan,
             );
-            setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+            setRunStateTurnSpanParent(result.state, turnSpanState.current.span);
           }
 
           const interruptedOutcome = await (async () => {
@@ -2855,9 +2861,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           });
           // Approval resolution belongs to the previous turn; any next model call
           // starts a new counted turn with its own span and usage.
-          finishRunnerSpan(currentTurnSpan);
+          finishRunnerSpan(turnSpanState.current);
           setRunStateTurnSpanParent(result.state, undefined);
-          currentTurnSpan = undefined;
+          turnSpanState.current = undefined;
           if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
             return;
@@ -2912,13 +2918,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
             onAgentSpanReady: useTaskAndTurnSpans
               ? (turn, agentName) => {
-                  currentTurnSpan = ensureTurnSpan(
-                    currentTurnSpan,
+                  turnSpanState.current = ensureTurnSpan(
+                    turnSpanState.current,
                     turn,
                     agentName,
                     result.state._currentAgentSpan,
                   );
-                  setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+                  setRunStateTurnSpanParent(
+                    result.state,
+                    turnSpanState.current.span,
+                  );
                 }
               : undefined,
             agentSpanParent: taskSpan?.span ?? invocationSpanParent,
@@ -2943,7 +2952,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               result.state._currentAgent,
             ),
             tracingParent:
-              currentTurnSpan?.span ?? result.state._currentAgentSpan,
+              turnSpanState.current?.span ?? result.state._currentAgentSpan,
           });
           sessionTurnInputUpdate?.(
             sessionPreparedTurnInput,
@@ -3406,9 +3415,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
           });
           if (turnResult.nextStep.type !== 'next_step_final_output') {
-            finishRunnerSpan(currentTurnSpan);
+            finishRunnerSpan(turnSpanState.current);
             setRunStateTurnSpanParent(result.state, undefined);
-            currentTurnSpan = undefined;
+            turnSpanState.current = undefined;
           }
         }
 
@@ -3494,7 +3503,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       recordStreamingError(error);
       throw error;
     } finally {
-      finishRunnerSpan(currentTurnSpan);
+      finishRunnerSpan(turnSpanState.current);
       setRunStateTurnSpanParent(result.state, undefined);
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
