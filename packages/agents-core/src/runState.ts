@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from '@openai/agents-core/_shims';
+import { inputHistoryAccelerator } from './shims/nativeHistoryNode';
 import { Agent, type ToolUseBehavior } from './agent';
 import type { Handoff } from './handoff';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
@@ -2790,7 +2791,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   ) {
     this._context = context;
     this._agentToolInvocation = undefined;
-    this._originalInput = structuredClone(originalInput);
+    this._originalInput = inputHistoryAccelerator
+      ? inputHistoryAccelerator.cloneOriginal(originalInput)
+      : structuredClone(originalInput);
     this._pendingInput = [];
     this._modelResponses = [];
     this._currentAgentSpan = undefined;

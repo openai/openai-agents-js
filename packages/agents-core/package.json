@@ -11,7 +11,8 @@
     "prebuild": "node ../../scripts/embedMeta.mts",
     "build": "tsc",
     "build-check": "tsc --noEmit -p ./tsconfig.test.json",
-    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json",
+    "bundle": "node native/build.mjs"
   },
   "exports": {
     ".": {
@@ -189,6 +190,19 @@
     "zod": "^4.6.7"
   },
   "files": [
-    "dist"
-  ]
+    "dist",
+    "native/loader.cjs",
+    "native/input-history.cc",
+    "native/build.mjs",
+    "native/portable.cjs"
+  ],
+  "imports": {
+    "#agents-native-history": {
+      "react-native": "./native/portable.cjs",
+      "workerd": "./native/portable.cjs",
+      "browser": "./native/portable.cjs",
+      "node": "./native/loader.cjs",
+      "default": "./native/portable.cjs"
+    }
+  }
 }

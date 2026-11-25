@@ -105,7 +105,12 @@ export async function applyCallModelInputFilter<TContext>(
   context: RunContext<TContext>,
   inputItems: AgentInputItem[],
   systemInstructions: string | undefined,
+  prepareNativeInput?: () => FilterApplicationResult | undefined,
 ): Promise<FilterApplicationResult> {
+  if (!callModelInputFilter && prepareNativeInput) {
+    const prepared = prepareNativeInput();
+    if (prepared) return prepared;
+  }
   const cloneInputItems = (
     items: AgentInputItem[],
     map?: WeakMap<object, AgentInputItem>,

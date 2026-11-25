@@ -1,3 +1,6 @@
+import { inputHistoryAccelerator } from '../shims/nativeHistoryNode';
+import type { InputSnapshot } from './nativeInputHistory';
+import type { FilterApplicationResult } from './conversation';
 import {
   getMcpToolBinding,
   matchesFunctionToolRecipient,
@@ -879,8 +882,10 @@ export async function prepareSessionHistoryTransactionsForRun(
 export function captureSessionHistoryTransactionInputItems(
   session: Session | undefined,
   state: RunState<any, any>,
-  items: AgentInputItem[] | undefined,
+  tracker: SessionPersistenceTracker | undefined,
 ): void {
+  if (session === undefined && tracker?.publishTextInput(state)) return;
+  const items = tracker?.getItemsForPersistence();
   if (session === undefined) {
     state._currentTurnSessionHistoryTransactionInputItems =
       normalizeItemsForSessionPersistence(items ?? []);
@@ -1232,7 +1237,20 @@ type PreparedOwnedSourcePosition = {
   ownerIndex: number;
 };
 
+export type DeferredInput = {
+  result: FilterApplicationResult;
+  isUnread: () => boolean;
+  read: () => AgentInputItem[];
+  publish: (target: Pick<FilterApplicationResult, 'persistedItems'>) => void;
+  save: (sources: (AgentInputItem | undefined)[]) => boolean;
+};
+
 export type SessionPersistenceTracker = {
+  prepareTextInput: (
+    items: AgentInputItem[],
+    instructions?: string,
+  ) => DeferredInput | undefined;
+  publishTextInput: (state: RunState<any, any>) => boolean;
   setPreparedItems: (
     items?: AgentInputItem[],
     preparedInput?: string | AgentInputItem[],
@@ -1273,6 +1291,10 @@ export function createSessionPersistenceTracker(options: {
     private ownedFilteredItems = new Map<number, AgentInputItem>();
     private persistedInputOrder: PersistedInputOccurrence[] = [];
     private persistedInput = false;
+    private initialText?: InputSnapshot;
+    private pendingText?: InputSnapshot;
+    private textCount = 0;
+    private aligned?: AgentInputItem[];
 
     constructor() {
       this.session = options.session;
@@ -1299,6 +1321,32 @@ export function createSessionPersistenceTracker(options: {
         (this.session === undefined && preparedInput !== undefined
           ? toAgentInputList(preparedInput)
           : []);
+      this.initialText = this.pendingText = this.aligned = undefined;
+      this.textCount = 0;
+      const history = inputHistoryAccelerator;
+      if (
+        history &&
+        this.session === undefined &&
+        !options.resumingFromState &&
+        !this.hasCallModelInputFilter &&
+        items === undefined &&
+        Array.isArray(preparedInput) &&
+        sessionItems.length
+      ) {
+        const snapshot = history.captureInitial(sessionItems, preparedInput);
+        if (
+          snapshot &&
+          history.installSaved(this, 'originalSnapshot', snapshot)
+        ) {
+          this.initialPreparedItems = preparedInput;
+          this.initialSourcePositions = this.preparedSources = undefined;
+          this.initialText = snapshot;
+          this.textCount = sessionItems.length;
+          this.ownedFilteredItems.clear();
+          this.persistedInputOrder = [];
+          return;
+        }
+      }
       this.originalSnapshot = cloneItems(
         deduplicateAgentInputItemsPreferringLatest(sessionItems),
       );
@@ -1332,6 +1380,23 @@ export function createSessionPersistenceTracker(options: {
       preparedItems: AgentInputItem[],
       processedItems: AgentInputItem[],
     ) => {
+      this.aligned = undefined;
+      if (this.initialText && this.initialPreparedItems) {
+        this.aligned = inputHistoryAccelerator!.align(
+          this.initialPreparedItems,
+          this.textCount,
+          preparedItems,
+          processedItems,
+        );
+        if (this.aligned) {
+          this.preparedSources = undefined;
+          return;
+        }
+        this.initialSourcePositions ??= Array.from(
+          { length: this.textCount },
+          (_, index) => ({ preparedIndex: index, ownerIndex: index }),
+        );
+      }
       if (!this.initialPreparedItems || !this.initialSourcePositions) {
         return;
       }
@@ -1348,10 +1413,103 @@ export function createSessionPersistenceTracker(options: {
       );
     };
 
+    // Each field remains independently editable. Both promise results share
+    // the original persisted-items reference until one replaces its own field.
+    prepareTextInput = (
+      items: AgentInputItem[],
+      instructions?: string,
+    ): DeferredInput | undefined => {
+      const history = inputHistoryAccelerator;
+      if (
+        !history ||
+        !this.aligned ||
+        !this.initialText ||
+        this.pendingText ||
+        this.persistedInputOrder.length ||
+        this.ownedFilteredItems.size
+      )
+        return;
+      const captured = history.simpleInput(
+        items,
+        instructions,
+        this.initialText,
+        this.aligned,
+      );
+      if (!captured) return;
+      const { snapshot, modelInput, sourceItems, sourceMatchKinds } = captured;
+      let materialized: AgentInputItem[] | undefined;
+      const read = () => (materialized ??= history.materialize(snapshot));
+      const result: FilterApplicationResult = {
+        modelInput,
+        sourceItems,
+        persistedItems: [],
+        sourceMatchKinds,
+        filterApplied: false,
+        preserveInputIdentity: false,
+      };
+      const intact = history.installEnvelope(result, 'persistedItems', read);
+      if (!intact) return;
+      return {
+        result,
+        isUnread: () => materialized === undefined && intact(),
+        read,
+        publish: (target) => {
+          if (!history.installSaved(target, 'persistedItems', snapshot, read)) {
+            target.persistedItems = read();
+          }
+        },
+        save: (sources) => {
+          if (
+            !this.aligned ||
+            this.pendingText ||
+            this.persistedInputOrder.length ||
+            this.ownedFilteredItems.size ||
+            !history.validateIdentity(this.aligned, sources)
+          )
+            return false;
+          this.pendingText = snapshot;
+          this.filteredSnapshot = undefined;
+          return true;
+        },
+      };
+    };
+
+    publishTextInput = (state: RunState<any, any>): boolean =>
+      this.pendingText !== undefined &&
+      this.filteredSnapshot === undefined &&
+      inputHistoryAccelerator!.installSaved(
+        state,
+        '_currentTurnSessionHistoryTransactionInputItems',
+        this.pendingText,
+      );
+
+    // A later turn can inject, drop or reorder items. Reconstruct the existing
+    // occurrence table before handing control to normal reconciliation.
+    private restoreTextOwners(unfiltered: boolean) {
+      if (this.pendingText) {
+        if (unfiltered) this.getItemsForPersistence();
+        const owners = inputHistoryAccelerator!.materialize(this.pendingText);
+        this.pendingText = undefined;
+        for (let index = 0; index < owners.length; index++) {
+          this.ownedFilteredItems.set(index, owners[index]);
+          this.persistedInputOrder.push({ type: 'owned', index });
+        }
+      }
+      if (this.aligned) {
+        this.preparedSources = this.aligned.map((item, ownerIndex) => ({
+          item,
+          ownerIndex,
+        }));
+      }
+    }
+
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
+      if (this.aligned || this.pendingText) {
+        this.restoreTextOwners(filteredItems === undefined);
+      }
       if (filteredItems !== undefined) {
         if (!this.preparedSources) {
           this.filteredSnapshot = cloneItems(filteredItems);
@@ -1382,6 +1540,11 @@ export function createSessionPersistenceTracker(options: {
     };
 
     getItemsForPersistence = () => {
+      if (this.pendingText && this.filteredSnapshot === undefined) {
+        this.filteredSnapshot = inputHistoryAccelerator!.materialize(
+          this.pendingText,
+        );
+      }
       if (this.filteredSnapshot !== undefined) {
         return this.filteredSnapshot;
       }
