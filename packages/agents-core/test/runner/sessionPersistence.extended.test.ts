@@ -19,6 +19,69 @@ function makeSession(): Session {
 }
 
 describe('sessionPersistence tracker (extended)', () => {
+  it('retains native capture errors and reads before private snapshot copying', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const source: AgentInputItem = { role: 'user', content: 'source' };
+    tracker.setPreparedItems([source]);
+    let reads = 0;
+    tracker.recordTurnItems(
+      [source],
+      [
+        {
+          role: 'user',
+          get content() {
+            reads++;
+            return 'captured';
+          },
+        },
+      ],
+    );
+    expect(reads).toBe(1);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'captured' },
+    ]);
+    expect(() =>
+      tracker.recordTurnItems(
+        [source],
+        [{ role: 'user', content: 'invalid', providerData: { callback() {} } }],
+      ),
+    ).toThrow();
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { role: 'user', content: 'captured' },
+    ]);
+  });
+
+  it('keeps private filtered input detached from published persistence snapshots', () => {
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    const first: AgentInputItem = { role: 'user', content: 'first' };
+    const second: AgentInputItem = { role: 'user', content: 'second' };
+    const filtered: AgentInputItem = {
+      role: 'user',
+      content: 'filtered',
+      providerData: { metadata: { label: 'private' } },
+    };
+    tracker.setPreparedItems([first, second]);
+    tracker.recordTurnItems([first], [filtered]);
+    const snapshot = tracker.getItemsForPersistence()!;
+    (snapshot[0] as any).providerData.metadata.label = 'published edit';
+    (filtered as any).providerData.metadata.label = 'model edit';
+    tracker.recordTurnItems([second], [{ role: 'user', content: 'later' }]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      {
+        role: 'user',
+        content: 'filtered',
+        providerData: { metadata: { label: 'private' } },
+      },
+      { role: 'user', content: 'later' },
+    ]);
+  });
+
   it('ignores filtered snapshot when callModelInputFilter was applied', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({

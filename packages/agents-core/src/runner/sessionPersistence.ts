@@ -62,6 +62,7 @@ import {
   sessionItemArraysMatch,
   storedToolOutputMatches,
 } from './sessionItems';
+import { captureInputOccurrence } from './clonePrivateInput';
 
 export { selectRunItemIndexesForBlockedOutput } from './blockedOutputPersistence';
 
@@ -1270,7 +1271,7 @@ export function createSessionPersistenceTracker(options: {
     private preparedSources: PreparedOwnedSource[] | undefined;
     private initialPreparedItems: AgentInputItem[] | undefined;
     private initialSourcePositions: PreparedOwnedSourcePosition[] | undefined;
-    private ownedFilteredItems = new Map<number, AgentInputItem>();
+    private ownedFilteredItems = new Map<number, () => AgentInputItem>();
     private persistedInputOrder: PersistedInputOccurrence[] = [];
     private persistedInput = false;
 
@@ -1714,10 +1715,10 @@ function reconcilePersistableFilteredItems(options: {
   preparedSources: PreparedOwnedSource[];
   sourceItems: (AgentInputItem | undefined)[];
   filteredItems: AgentInputItem[];
-  ownedFilteredItems: Map<number, AgentInputItem>;
+  ownedFilteredItems: Map<number, () => AgentInputItem>;
   persistedInputOrder: PersistedInputOccurrence[];
 }): {
-  ownedFilteredItems: Map<number, AgentInputItem>;
+  ownedFilteredItems: Map<number, () => AgentInputItem>;
   persistedInputOrder: PersistedInputOccurrence[];
   filteredSnapshot: AgentInputItem[];
 } {
@@ -1751,7 +1752,10 @@ function reconcilePersistableFilteredItems(options: {
       const ownedIndex = sourceOwnerIndexes.get(source)?.[occurrence];
       if (ownedIndex !== undefined) {
         representedOwnedIndexes.add(ownedIndex);
-        nextOwnedFilteredItems.set(ownedIndex, structuredClone(filteredItem));
+        nextOwnedFilteredItems.set(
+          ownedIndex,
+          captureInputOccurrence(filteredItem),
+        );
         currentOrder.push({ type: 'owned', index: ownedIndex });
       }
       continue;
@@ -1778,8 +1782,8 @@ function reconcilePersistableFilteredItems(options: {
       if (occurrence.type === 'injected') {
         return [structuredClone(occurrence.item)];
       }
-      const item = nextOwnedFilteredItems.get(occurrence.index);
-      return item ? [structuredClone(item)] : [];
+      const read = nextOwnedFilteredItems.get(occurrence.index);
+      return read ? [read()] : [];
     }),
   };
 }
