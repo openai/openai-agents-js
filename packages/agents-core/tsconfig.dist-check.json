@@ -6,6 +6,6 @@
     "types": ["node"],
     "lib": ["ES2018", "DOM"]
   },
-  "include": ["./dist/**/*.d.ts"],
+  "include": ["./dist/**/*.d.ts", "./src/shims/nativeHistoryLoaderTypes.d.ts"],
   "exclude": ["./dist/runner/**"]
 }
