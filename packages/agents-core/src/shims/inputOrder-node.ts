@@ -5,26 +5,48 @@ const descriptor = Reflect.getOwnPropertyDescriptor;
 const array = Array.prototype;
 const object = Object.prototype;
 const buffer = descriptor(globalThis, 'Buffer');
-const isBuffer = Buffer.isBuffer;
+const isBuffer = descriptor(Buffer, 'isBuffer')?.value;
 const builtin = (fn: unknown, name: string) =>
   typeof fn === 'function' &&
   !types.isProxy(fn) &&
   Function.prototype.toString.call(fn) ===
     `function ${name}() { [native code] }`;
 
-// Applications can intercept array traversal. Preserve the matching passes
-// when an array method or species has been customized.
+function ordinaryInstanceCheck(constructor: object): boolean {
+  let current: object | null = constructor;
+  while (current) {
+    if (types.isProxy(current)) return false;
+    const method = descriptor(current, Symbol.hasInstance);
+    if (method) return builtin(method.value, '[Symbol.hasInstance]');
+    current = Reflect.getPrototypeOf(current);
+  }
+  return false;
+}
+
+// Preserve the matching passes when applications intercept traversal or
+// the binary checks performed by the key serializer.
 function ordinaryTraversal(): boolean {
+  if ('value' in object || 'get' in object) return false;
   const globalBuffer = descriptor(globalThis, 'Buffer');
+  const arrayBuffer = descriptor(globalThis, 'ArrayBuffer')?.value;
+  const isBufferField = descriptor(Buffer, 'isBuffer');
   if (
     !builtin(descriptor, 'getOwnPropertyDescriptor') ||
     !builtin(Reflect.ownKeys, 'ownKeys') ||
     !builtin(Reflect.getPrototypeOf, 'getPrototypeOf') ||
     !builtin(JSON.stringify, 'stringify') ||
+    !builtin(descriptor(Array, 'isArray')?.value, 'isArray') ||
+    !arrayBuffer ||
+    !builtin(arrayBuffer, 'ArrayBuffer') ||
+    !builtin(descriptor(arrayBuffer, 'isView')?.value, 'isView') ||
+    !ordinaryInstanceCheck(arrayBuffer) ||
+    !ordinaryInstanceCheck(Buffer) ||
     !globalBuffer ||
     globalBuffer.get !== buffer?.get ||
     globalThis.Buffer !== Buffer ||
-    Buffer.isBuffer !== isBuffer ||
+    !isBufferField ||
+    !('value' in isBufferField) ||
+    isBufferField.value !== isBuffer ||
     !builtin(descriptor(Array, Symbol.species)?.get, 'get [Symbol.species]') ||
     !builtin(descriptor(array, Symbol.iterator)?.value, 'values') ||
     Reflect.getPrototypeOf(array) !== object ||
