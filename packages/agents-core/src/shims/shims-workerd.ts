@@ -52,3 +52,12 @@ class NodeTimer implements Timer {
 }
 const timer = new NodeTimer();
 export { timer };
+
+// Keep serialized matching where proxy detection is unavailable.
+export function matchesOwnedHistory(
+  _original: unknown[],
+  _prepared: unknown[],
+  _processed: unknown[],
+): boolean {
+  return false;
+}

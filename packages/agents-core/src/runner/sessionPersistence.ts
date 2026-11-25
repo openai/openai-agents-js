@@ -1,3 +1,4 @@
+import { matchesOwnedHistory } from '@openai/agents-core/_shims';
 import {
   getMcpToolBinding,
   matchesFunctionToolRecipient,
@@ -1333,6 +1334,28 @@ export function createSessionPersistenceTracker(options: {
       processedItems: AgentInputItem[],
     ) => {
       if (!this.initialPreparedItems || !this.initialSourcePositions) {
+        return;
+      }
+      // Each initial occurrence must still own its position. A changed or
+      // partially owned history needs both reference-and-key matching passes.
+      if (
+        this.session === undefined &&
+        !this.hasCallModelInputFilter &&
+        matchesOwnedHistory(
+          this.initialPreparedItems,
+          preparedItems,
+          processedItems,
+        ) &&
+        this.initialSourcePositions.length === processedItems.length &&
+        this.initialSourcePositions.every(
+          ({ preparedIndex, ownerIndex }, i) =>
+            preparedIndex === i && ownerIndex === i,
+        )
+      ) {
+        this.preparedSources = processedItems.map((item, ownerIndex) => ({
+          item,
+          ownerIndex,
+        }));
         return;
       }
       const preparedSources = mapPreparedSourcesAfterContextProcessing(
