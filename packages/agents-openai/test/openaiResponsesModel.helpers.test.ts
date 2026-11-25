@@ -1466,6 +1466,27 @@ describe('getInputItems', () => {
     });
   });
 
+  it('returns independent text records when provider data is absent', () => {
+    const message = {
+      role: 'assistant' as const,
+      status: 'completed' as const,
+      content: [{ type: 'output_text' as const, text: 'prior' }],
+    };
+    const [first, second] = getInputItems([message, message]);
+    expect(first).toStrictEqual({
+      type: 'message',
+      id: undefined,
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'prior', annotations: [] }],
+      status: 'completed',
+    });
+    expect(second).toStrictEqual(first);
+    expect(second).not.toBe(first);
+    expect(Reflect.get(second, 'content')[0].annotations).not.toBe(
+      Reflect.get(first, 'content')[0].annotations,
+    );
+  });
+
   it('converts message content arrays for user and assistant roles', () => {
     const items = getInputItems([
       {
