@@ -1243,7 +1243,8 @@ export type SessionPersistenceTracker = {
   ) => void;
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
-    filteredItems?: AgentInputItem[],
+    filteredItems?: ArrayLike<AgentInputItem>,
+    privateSnapshot?: boolean,
   ) => void;
   getItemsForPersistence: () => AgentInputItem[] | undefined;
   buildPersistInputOnce: (
@@ -1350,15 +1351,19 @@ export function createSessionPersistenceTracker(options: {
 
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
+      filteredItems?: ArrayLike<AgentInputItem>,
+      privateSnapshot = false,
     ) => {
       if (filteredItems !== undefined) {
         if (!this.preparedSources) {
-          this.filteredSnapshot = cloneItems(filteredItems);
+          this.filteredSnapshot = Array.isArray(filteredItems)
+            ? cloneItems(filteredItems)
+            : Array.from(filteredItems, (item) => structuredClone(item));
           return;
         }
         const next = reconcilePersistableFilteredItems({
           preparedSources: this.preparedSources,
+          privateSnapshot: privateSnapshot && this.session === undefined,
           sourceItems,
           filteredItems,
           ownedFilteredItems: this.ownedFilteredItems,
@@ -1712,8 +1717,9 @@ export function mapOwnedInputItemsAfterContextProcessing(
 
 function reconcilePersistableFilteredItems(options: {
   preparedSources: PreparedOwnedSource[];
+  privateSnapshot: boolean;
   sourceItems: (AgentInputItem | undefined)[];
-  filteredItems: AgentInputItem[];
+  filteredItems: ArrayLike<AgentInputItem>;
   ownedFilteredItems: Map<number, AgentInputItem>;
   persistedInputOrder: PersistedInputOccurrence[];
 }): {
@@ -1723,6 +1729,7 @@ function reconcilePersistableFilteredItems(options: {
 } {
   const {
     preparedSources,
+    privateSnapshot,
     sourceItems,
     filteredItems,
     ownedFilteredItems,
@@ -1751,7 +1758,10 @@ function reconcilePersistableFilteredItems(options: {
       const ownedIndex = sourceOwnerIndexes.get(source)?.[occurrence];
       if (ownedIndex !== undefined) {
         representedOwnedIndexes.add(ownedIndex);
-        nextOwnedFilteredItems.set(ownedIndex, structuredClone(filteredItem));
+        nextOwnedFilteredItems.set(
+          ownedIndex,
+          privateSnapshot ? filteredItem : structuredClone(filteredItem),
+        );
         currentOrder.push({ type: 'owned', index: ownedIndex });
       }
       continue;
@@ -1760,7 +1770,7 @@ function reconcilePersistableFilteredItems(options: {
     // content-based identity matching, which could collapse ordinary messages.
     currentOrder.push({
       type: 'injected',
-      item: structuredClone(filteredItem),
+      item: privateSnapshot ? filteredItem : structuredClone(filteredItem),
     });
   }
 

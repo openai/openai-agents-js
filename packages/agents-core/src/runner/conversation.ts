@@ -95,6 +95,10 @@ export function getServerConversationOwner(
   return undefined;
 }
 
+// A custom map implementation may retain its result. Keep its original
+// snapshot and let the tracker make its own copy in that case.
+const defaultArrayMap = Array.prototype.map;
+
 /**
  * Applies the optional callModelInputFilter and returns the filtered input alongside the original
  * items so downstream tracking and session persistence stay in sync with what the model saw.
@@ -105,6 +109,7 @@ export async function applyCallModelInputFilter<TContext>(
   context: RunContext<TContext>,
   inputItems: AgentInputItem[],
   systemInstructions: string | undefined,
+  takePersistedInput?: (items: ArrayLike<AgentInputItem>) => void,
 ): Promise<FilterApplicationResult> {
   const cloneInputItems = (
     items: AgentInputItem[],
@@ -142,12 +147,32 @@ export async function applyCallModelInputFilter<TContext>(
   if (!callModelInputFilter) {
     const normalizedInput =
       deduplicateAgentInputItemsPreferringLatest(clonedBaseInput);
+    const sourceItems = normalizedInput.map(
+      (item) => cloneMap.get(item as object) ?? item,
+    );
+    let persistedItems: AgentInputItem[] = [];
+    if (
+      takePersistedInput &&
+      Object.getOwnPropertyDescriptor(Array.prototype, 'map')?.value ===
+        defaultArrayMap
+    ) {
+      // Neither an array species constructor nor an inherited index setter
+      // should receive the snapshot the tracker will own.
+      const storage = { __proto__: null, length: normalizedInput.length };
+      const snapshot: { length: number; [index: number]: AgentInputItem } =
+        storage;
+      for (let i = 0; i < normalizedInput.length; i++) {
+        if (i in normalizedInput)
+          snapshot[i] = structuredClone(normalizedInput[i]!);
+      }
+      takePersistedInput(snapshot);
+    } else {
+      persistedItems = cloneInputItems(normalizedInput);
+    }
     return {
       modelInput: { ...base, input: normalizedInput },
-      sourceItems: normalizedInput.map(
-        (item) => cloneMap.get(item as object) ?? item,
-      ),
-      persistedItems: cloneInputItems(normalizedInput),
+      sourceItems,
+      persistedItems,
       sourceMatchKinds: normalizedInput.map(() => 'identity'),
       filterApplied: false,
       preserveInputIdentity,
