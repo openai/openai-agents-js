@@ -104,6 +104,7 @@ import {
   saveStreamResultToSession,
   saveToSession,
   type SessionPersistenceOptions,
+  type SessionPersistenceTracker,
   type ResumedSessionWritePreparation,
 } from './runner/sessionPersistence';
 import {
@@ -1265,10 +1266,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     ) => void,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
+    sessionInputUpdate?: SessionPersistenceTracker['recordTurnItems'],
     getSessionInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
@@ -1912,6 +1910,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedSandboxAgent.turnInput,
               serverConversationTracker,
               sessionInputUpdate,
+              processedPendingInputItems.length === 0 &&
+                options.session === undefined,
             );
             captureSessionHistoryTransactionInputItems(
               options.session,
@@ -2354,10 +2354,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
     ) => void,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
+    sessionInputUpdate?: SessionPersistenceTracker['recordTurnItems'],
     getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
@@ -2969,6 +2966,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedSandboxAgent.turnInput,
             serverConversationTracker,
             sessionInputUpdate,
+            processedPendingInputItems.length === 0 &&
+              options.session === undefined,
           );
           captureSessionHistoryTransactionInputItems(
             options.session,
@@ -3563,10 +3562,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
     ) => void,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
+    sessionInputUpdate?: SessionPersistenceTracker['recordTurnItems'],
     getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
@@ -3743,10 +3739,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     artifacts: AgentArtifacts<TContext>,
     turnInput: AgentInputItem[],
     serverConversationTracker?: ServerConversationTracker,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
+    sessionInputUpdate?: SessionPersistenceTracker['recordTurnItems'],
+    allowPrivatePersistedInput = false,
   ): Promise<PreparedModelCall<TContext>> {
     const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
@@ -3820,6 +3814,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         artifacts.serializedHandoffs.length === 0
       );
 
+    // Keep the detached snapshot local across the await. Only pending input
+    // admission needs it on the prepared call when there is no Session.
+    let privatePersistedInput: ArrayLike<AgentInputItem> | undefined;
     const {
       modelInput,
       sourceItems,
@@ -3833,11 +3830,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._context,
       turnInput,
       systemInstructions,
+      allowPrivatePersistedInput
+        ? (items) => {
+            privatePersistedInput = items;
+          }
+        : undefined,
     );
 
     // Persist normalized clones so session history mirrors the exact model payload. An empty array
     // is intentional when a filter removes everything.
-    sessionInputUpdate?.(sourceItems, persistedItems);
+    sessionInputUpdate?.(
+      sourceItems,
+      privatePersistedInput ?? persistedItems,
+      privatePersistedInput !== undefined,
+    );
 
     const previousResponseId =
       serverConversationTracker?.previousResponseId ??
