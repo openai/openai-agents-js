@@ -729,3 +729,73 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(persist).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('matching cloned input in order', () => {
+  it('keeps both occurrences when matching first diverges after a repeated key', () => {
+    const history = { role: 'user', content: 'same' } as const;
+    const current = { ...history };
+    const tail = { ...history, content: 'tail' };
+    const input = [history, current, tail];
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    tracker.setPreparedItems([current], input);
+    const turn = structuredClone(input);
+    const processed = structuredClone([turn[0]!, turn[2]!, turn[1]!]);
+    tracker.setPreparedTurnItems(turn, processed);
+    tracker.recordTurnItems(processed, [
+      { ...history, content: 'history copy' },
+      tail,
+      { ...current, content: 'current copy' },
+    ]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current copy' },
+    ]);
+  });
+
+  it('propagates a later serialization error after the keys initially match', () => {
+    const input = toAgentInputList('original');
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: false,
+    })!;
+    tracker.setPreparedItems(input, input);
+    const turn = structuredClone(input);
+    const processed = structuredClone(turn);
+    const error = new Error('later serialization');
+    let calls = 0;
+    Object.defineProperty(processed[0], 'toJSON', {
+      value() {
+        if (++calls === 2) throw error;
+        return input[0];
+      },
+    });
+    expect(() => tracker.setPreparedTurnItems(turn, processed)).toThrow(error);
+  });
+});
+
+describe('matching a mixture of references and clones', () => {
+  it('reserves the exact owned reference before matching an equal clone', () => {
+    const history = { role: 'user', content: 'equal' } as const;
+    const current = { ...history };
+    const tail = { ...history, content: 'tail' };
+    const input = [history, current, tail];
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: true,
+    })!;
+    tracker.setPreparedItems([current], input);
+    const turn = structuredClone(input);
+    const processed = [turn[1]!, structuredClone(turn[0]!), turn[2]!];
+    tracker.setPreparedTurnItems(turn, processed);
+    tracker.recordTurnItems(processed, [
+      { ...current, content: 'current copy' },
+      { ...history, content: 'history copy' },
+      tail,
+    ]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current copy' },
+    ]);
+  });
+});

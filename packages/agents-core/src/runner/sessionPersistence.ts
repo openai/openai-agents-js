@@ -1490,17 +1490,39 @@ function mapPreparedSourcesAfterContextProcessing(
       ownerIndex,
     ]),
   );
-  const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
-  const preparedIndexesByKey = new Map<string, number[]>();
+  // A callback can edit a message between traversals. Save what each traversal
+  // observes and reuse only equal strings, including for repeated long messages.
+  const preparedEntries: {
+    index: number;
+    item: AgentInputItem;
+    key: string;
+  }[] = [];
+  const canonicalKeys = new Map<string, string>();
+  function reuseKey(key: string): string {
+    const existing = canonicalKeys.get(key);
+    if (existing !== undefined) return existing;
+    canonicalKeys.set(key, key);
+    return key;
+  }
   for (const [index, item] of preparedItems.entries()) {
-    const referenceIndexes = preparedIndexesByReference.get(item) ?? [];
-    referenceIndexes.push(index);
-    preparedIndexesByReference.set(item, referenceIndexes);
-
-    const key = getAgentInputItemKey(item);
-    const keyIndexes = preparedIndexesByKey.get(key) ?? [];
-    keyIndexes.push(index);
-    preparedIndexesByKey.set(key, keyIndexes);
+    preparedEntries.push({
+      index,
+      item,
+      key: reuseKey(getAgentInputItemKey(item)),
+    });
+  }
+  function groupIndexes<T extends { index: number }, K>(
+    entries: T[],
+    identity: (entry: T) => K,
+  ) {
+    const groups = new Map<K, number[]>();
+    for (const entry of entries) {
+      const value = identity(entry);
+      const indexes = groups.get(value);
+      if (indexes) indexes.push(entry.index);
+      else groups.set(value, [entry.index]);
+    }
+    return groups;
   }
 
   const mappedPreparedIndexes = new Array<number | undefined>(
@@ -1542,13 +1564,48 @@ function mapPreparedSourcesAfterContextProcessing(
     }
   };
 
-  const processedIndexesByReference = new Map<AgentInputItem, number[]>();
+  const processedEntries: { index: number; item: AgentInputItem }[] = [];
   for (const [index, item] of processedItems.entries()) {
-    const indexes = processedIndexesByReference.get(item) ?? [];
-    indexes.push(index);
-    processedIndexesByReference.set(item, indexes);
+    processedEntries.push({ index, item });
   }
-  mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
+  // Reference identity takes precedence over content. Two common cases need
+  // no occurrence groups. Either every reference is in place, or none match.
+  const hasSequentialIndexes =
+    preparedEntries.every((entry, i) => entry.index === i) &&
+    processedEntries.every((entry, i) => entry.index === i);
+  const sameReferencesInOrder =
+    hasSequentialIndexes &&
+    preparedEntries.length === processedEntries.length &&
+    processedEntries.every(
+      (entry, i) => entry.item === preparedEntries[i]!.item,
+    );
+  const preparedReferences =
+    hasSequentialIndexes && !sameReferencesInOrder
+      ? new Set(preparedEntries.map((entry) => entry.item))
+      : undefined;
+  const noSharedReferences =
+    preparedReferences !== undefined &&
+    processedEntries.every((entry) => !preparedReferences.has(entry.item));
+  const needsReferenceGroups = !sameReferencesInOrder && !noSharedReferences;
+  const preparedIndexesByReference = groupIndexes(
+    needsReferenceGroups ? preparedEntries : [],
+    (entry) => entry.item,
+  );
+  const processedIndexesByReference = groupIndexes(
+    needsReferenceGroups ? processedEntries : [],
+    (entry) => entry.item,
+  );
+  function matchByPosition() {
+    for (let i = 0; i < preparedEntries.length; i++) {
+      mappedPreparedIndexes[i] = i;
+      usedPreparedIndexes.add(i);
+    }
+  }
+  if (sameReferencesInOrder) {
+    matchByPosition();
+  } else {
+    mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
+  }
   const referenceMappedPreparedIndexes = new Set(usedPreparedIndexes);
   for (const [item, processedIndexes] of processedIndexesByReference) {
     const preparedIndexes = preparedIndexesByReference.get(item);
@@ -1562,7 +1619,7 @@ function mapPreparedSourcesAfterContextProcessing(
     }
   }
 
-  const processedIndexesByKey = new Map<string, number[]>();
+  const processedKeys: { index: number; key: string }[] = [];
   for (const [index, item] of processedItems.entries()) {
     if (
       mappedPreparedIndexes[index] !== undefined ||
@@ -1571,10 +1628,31 @@ function mapPreparedSourcesAfterContextProcessing(
       continue;
     }
     const key = getAgentInputItemKey(item);
-    const indexes = processedIndexesByKey.get(key) ?? [];
-    indexes.push(index);
-    processedIndexesByKey.set(key, indexes);
+    const original = preparedEntries[processedKeys.length];
+    processedKeys.push({
+      index,
+      key: original && key === original.key ? original.key : reuseKey(key),
+    });
   }
+  // When references do not overlap, equal keys in the same order pair by
+  // position, including repeated messages.
+  const sameKeysInOrder =
+    noSharedReferences &&
+    preparedEntries.length === processedKeys.length &&
+    processedKeys.every(
+      (entry, i) => entry.index === i && entry.key === preparedEntries[i]!.key,
+    );
+  const allMatchedByReference =
+    sameReferencesInOrder && processedKeys.length === 0;
+  const needsKeyGroups = !sameKeysInOrder && !allMatchedByReference;
+  const preparedIndexesByKey = groupIndexes(
+    needsKeyGroups ? preparedEntries : [],
+    (entry) => entry.key,
+  );
+  const processedIndexesByKey = groupIndexes(
+    needsKeyGroups ? processedKeys : [],
+    (entry) => entry.key,
+  );
   const availablePreparedCountByKey = new Map<string, number>();
   for (const [key, indexes] of preparedIndexesByKey) {
     availablePreparedCountByKey.set(
@@ -1613,6 +1691,12 @@ function mapPreparedSourcesAfterContextProcessing(
     }
     mappedPreparedIndexes[index] = index;
     usedPreparedIndexes.add(index);
+  }
+
+  // Assign positions after the reads above. Assigning them earlier would skip
+  // serialization of the prepared message, including its getters and errors.
+  if (sameKeysInOrder) {
+    matchByPosition();
   }
 
   // Public capabilities may return clones. Resolve remaining occurrences against the complete
