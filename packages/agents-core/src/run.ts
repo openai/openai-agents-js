@@ -1912,6 +1912,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedSandboxAgent.turnInput,
               serverConversationTracker,
               sessionInputUpdate,
+              turnInput,
             );
             captureSessionHistoryTransactionInputItems(
               options.session,
@@ -2969,6 +2970,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedSandboxAgent.turnInput,
             serverConversationTracker,
             sessionInputUpdate,
+            turnInput,
           );
           captureSessionHistoryTransactionInputItems(
             options.session,
@@ -3747,6 +3749,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    nativeTurnInput?: AgentInputItem[],
   ): Promise<PreparedModelCall<TContext>> {
     const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
@@ -3833,6 +3836,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._context,
       turnInput,
       systemInstructions,
+      nativeTurnInput,
     );
 
     // Persist normalized clones so session history mirrors the exact model payload. An empty array

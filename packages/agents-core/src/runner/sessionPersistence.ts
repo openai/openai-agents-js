@@ -1,3 +1,4 @@
+import { cloneCapturedInputItem } from './privateInput';
 import {
   getMcpToolBinding,
   matchesFunctionToolRecipient,
@@ -1776,10 +1777,10 @@ function reconcilePersistableFilteredItems(options: {
     persistedInputOrder: nextPersistedInputOrder,
     filteredSnapshot: nextPersistedInputOrder.flatMap((occurrence) => {
       if (occurrence.type === 'injected') {
-        return [structuredClone(occurrence.item)];
+        return [cloneCapturedInputItem(occurrence.item)];
       }
       const item = nextOwnedFilteredItems.get(occurrence.index);
-      return item ? [structuredClone(item)] : [];
+      return item ? [cloneCapturedInputItem(item)] : [];
     }),
   };
 }

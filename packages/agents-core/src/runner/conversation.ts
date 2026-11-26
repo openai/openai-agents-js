@@ -1,3 +1,4 @@
+import { cloneCapturedInputItem } from './privateInput';
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
 import { RunInputItem, RunItem, RunToolSearchOutputItem } from '../items';
@@ -105,6 +106,7 @@ export async function applyCallModelInputFilter<TContext>(
   context: RunContext<TContext>,
   inputItems: AgentInputItem[],
   systemInstructions: string | undefined,
+  nativeTurnInput?: AgentInputItem[],
 ): Promise<FilterApplicationResult> {
   const cloneInputItems = (
     items: AgentInputItem[],
@@ -125,6 +127,14 @@ export async function applyCallModelInputFilter<TContext>(
   // receive deep copies so their mutations cannot affect the cached turn state.
   const preserveInputIdentity =
     callModelInputFilter?.preserveInputIdentity === true;
+  // The Runner supplies only its own turn array, before sandbox replacement.
+  // Native map allocates its result before any input getter can change this array.
+  const privateBaseCapture =
+    !callModelInputFilter &&
+    inputItems === nativeTurnInput &&
+    Object.getPrototypeOf(inputItems) === Array.prototype &&
+    !Object.prototype.hasOwnProperty.call(inputItems, 'map') &&
+    !Object.prototype.hasOwnProperty.call(inputItems, 'constructor');
   const clonedBaseInput = preserveInputIdentity
     ? [...inputItems]
     : cloneInputItems(inputItems, cloneMap);
@@ -147,7 +157,9 @@ export async function applyCallModelInputFilter<TContext>(
       sourceItems: normalizedInput.map(
         (item) => cloneMap.get(item as object) ?? item,
       ),
-      persistedItems: cloneInputItems(normalizedInput),
+      persistedItems: privateBaseCapture
+        ? normalizedInput.map((item) => cloneCapturedInputItem(item))
+        : cloneInputItems(normalizedInput),
       sourceMatchKinds: normalizedInput.map(() => 'identity'),
       filterApplied: false,
       preserveInputIdentity,
