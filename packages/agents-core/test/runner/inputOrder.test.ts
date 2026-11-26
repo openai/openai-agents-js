@@ -512,4 +512,101 @@ describe('ownership of a complete input history', () => {
       ),
     ).toBe(false);
   });
+  it.each(['caller', 'Math'] as const)(
+    'keeps original capture order with a native %s host',
+    async (kind) => {
+      let armed = false;
+      let started = false;
+      const caller = {
+        role: 'user' as const,
+        content: 'before',
+        providerData: { nested: { x: 'same' }, type: 'metadata' },
+      };
+      const originalMath = Math;
+      const backing =
+        kind === 'caller'
+          ? { x: 'same' }
+          : Object.create(null, Object.getOwnPropertyDescriptors(originalMath));
+      const host = runInNewContext(
+        'this',
+        new Proxy(backing, {
+          ownKeys(target) {
+            if (armed && kind === 'caller')
+              throw Error('host enumeration before parent');
+            return Reflect.ownKeys(target);
+          },
+          getOwnPropertyDescriptor(target, key) {
+            if (armed && kind === 'Math' && key === 'min')
+              throw Error('Math descriptor before capture');
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        }),
+      );
+      Object.setPrototypeOf(host, Object.prototype);
+      const model = new ScriptedModel([[assistantMessage('ok')]]);
+      const runner = new Runner({ tracingDisabled: true });
+      runner.on('agent_start', (_context, _agent, prepared) => {
+        started = true;
+        expect(prepared![0]).not.toBe(caller);
+        if (kind === 'Math') globalThis.Math = host;
+        else {
+          caller.providerData.nested = host;
+          Object.defineProperty(caller.providerData, 'type', {
+            get() {
+              armed = false;
+              return 'metadata';
+            },
+          });
+        }
+        armed = true;
+      });
+      try {
+        const agent = new Agent({ name: 'Host order', model });
+        const result = await runner.run(agent, [caller], { stream: true });
+        for await (const event of result) void event;
+        await result.completed;
+        expect(started).toBe(true);
+        expect(model.calls[0].request.input[0]).toMatchObject({
+          content: 'before',
+        });
+      } finally {
+        armed = false;
+        globalThis.Math = originalMath;
+      }
+    },
+  );
+
+  it('declines a native host retained position before descriptor traps', () => {
+    let armed = false;
+    const host = runInNewContext(
+      'this',
+      new Proxy(
+        { preparedIndex: 0, ownerIndex: 0 },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            if (armed && (key === 'preparedIndex' || key === 'ownerIndex'))
+              throw Error('host position proof');
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        },
+      ),
+    );
+    Object.setPrototypeOf(host, Object.prototype);
+    const input = [message('prior')],
+      prepared = structuredClone(input);
+    armed = true;
+    expect(matchesOwnedHistory(input, prepared, prepared, [host])).toBe(false);
+  });
+
+  it('preserves an ordinary Infinity field through fallback', () => {
+    const input = [
+      { ...message('prior'), providerData: { Infinity: 'ordinary' } },
+    ];
+    const prepared = structuredClone(input);
+    expect(matchesOwnedHistory(input, prepared, prepared)).toBe(false);
+    const tracker = begin(input);
+    tracker.setPreparedTurnItems(prepared, prepared);
+    tracker.recordTurnItems(prepared, prepared);
+    expect(tracker.getItemsForPersistence()).toEqual(input);
+  });
 });

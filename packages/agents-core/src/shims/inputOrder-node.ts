@@ -61,7 +61,7 @@ const builtin = (fn: unknown, name: string) =>
 function ordinaryInstanceCheck(constructor: object): boolean {
   let current: object | null = constructor;
   while (current) {
-    if (types.isProxy(current)) return false;
+    if (typeof current !== 'function' || types.isProxy(current)) return false;
     const method = descriptor(current, Symbol.hasInstance);
     if (method) return builtin(method.value, '[Symbol.hasInstance]');
     current = Reflect.getPrototypeOf(current);
@@ -82,11 +82,15 @@ function ordinaryIterator(iterator: object): boolean {
   const prototype = Reflect.getPrototypeOf(iterator);
   if (!prototype || types.isProxy(prototype)) return false;
   const parent = Reflect.getPrototypeOf(prototype);
+  if (
+    !parent ||
+    types.isProxy(parent) ||
+    Reflect.getPrototypeOf(parent) !== object ||
+    'Infinity' in prototype
+  )
+    return false;
   const next = descriptor(prototype, 'next')?.value;
   return (
-    !!parent &&
-    !types.isProxy(parent) &&
-    Reflect.getPrototypeOf(parent) === object &&
     builtin(next, 'next') &&
     // Generator next methods take a value. Calling an async generator's
     // method on this iterator would create a rejected promise.
@@ -118,6 +122,14 @@ function ordinaryTraversal(): boolean {
     typeof descriptor(types, 'isBoxedPrimitive')?.value !== 'function'
   )
     return false;
+  const objectConstructor = descriptor(object, 'constructor')?.value;
+  if (
+    typeof objectConstructor !== 'function' ||
+    types.isProxy(objectConstructor)
+  )
+    return false;
+  const prototypeOf = descriptor(objectConstructor, 'getPrototypeOf')?.value;
+  if (!builtin(prototypeOf, 'getPrototypeOf')) return false;
   // Reading a getter here could edit the input or skip an error in the key serializer.
   for (let i = 0; i < traversalGlobals.length; i++) {
     const field = descriptor(realm, traversalGlobals[i]);
@@ -126,7 +138,9 @@ function ordinaryTraversal(): boolean {
       !('value' in field) ||
       !field.value ||
       (typeof field.value !== 'object' && typeof field.value !== 'function') ||
-      types.isProxy(field.value)
+      types.isProxy(field.value) ||
+      (typeof field.value === 'object' &&
+        (prototypeOf(field.value) !== object || 'Infinity' in field.value))
     )
       return false;
   }
@@ -268,10 +282,15 @@ function equalData(
   )
     return false;
   const list = Array.isArray(a);
+  // Node VM globals have been retaining a non-configurable Infinity despite ordinary
+  // proxy/prototype checks. After those exclusions, `in` has been avoiding sandbox Proxy
+  // traps and enumeration. Ordinary records with this field have been falling back.
   if (
     list !== Array.isArray(b) ||
     Reflect.getPrototypeOf(a) !== (list ? array : object) ||
     Reflect.getPrototypeOf(b) !== (list ? array : object) ||
+    'Infinity' in a ||
+    'Infinity' in b ||
     'toJSON' in a ||
     'toJSON' in b ||
     types.isBoxedPrimitive(a) ||
@@ -346,6 +365,8 @@ export function matchesOwnedHistory(
         !position ||
         typeof position !== 'object' ||
         types.isProxy(position) ||
+        Reflect.getPrototypeOf(position) !== object ||
+        'Infinity' in position ||
         descriptor(position, 'preparedIndex')?.value !== i ||
         descriptor(position, 'ownerIndex')?.value !== i
       )
