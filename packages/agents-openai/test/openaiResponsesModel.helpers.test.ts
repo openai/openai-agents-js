@@ -1466,6 +1466,59 @@ describe('getInputItems', () => {
     });
   });
 
+  it('preserves non-message metadata getter order when metadata is absent', () => {
+    const reads: string[] = [];
+    const item = {
+      type: 'function_call' as const,
+      id: 'call',
+      callId: 'call',
+      get name() {
+        reads.push('name');
+        return 'lookup';
+      },
+      get arguments() {
+        reads.push('arguments');
+        return '{}';
+      },
+      get providerData() {
+        reads.push('providerData');
+        return undefined;
+      },
+    };
+    const [converted] = getInputItems([item]);
+    expect(reads).toEqual(['name', 'arguments', 'providerData']);
+    expect(converted).toStrictEqual({
+      id: 'call',
+      type: 'function_call',
+      name: 'lookup',
+      call_id: 'call',
+      arguments: '{}',
+      status: undefined,
+    });
+    expect(converted).not.toBe(item);
+  });
+
+  it('returns independent text records when provider data is absent', () => {
+    const message = {
+      role: 'assistant' as const,
+      status: 'completed' as const,
+      content: [{ type: 'output_text' as const, text: 'prior' }],
+    };
+    const [first, second] = getInputItems([message, message]);
+    expect(first).toStrictEqual({
+      type: 'message',
+      id: undefined,
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'prior', annotations: [] }],
+      status: 'completed',
+    });
+    expect(second).toStrictEqual(first);
+    expect(second).not.toBe(first);
+    expect(Reflect.get(second, 'content')[0].annotations).not.toBe(
+      Reflect.get(first, 'content')[0].annotations,
+    );
+  });
+
   it('converts message content arrays for user and assistant roles', () => {
     const items = getInputItems([
       {

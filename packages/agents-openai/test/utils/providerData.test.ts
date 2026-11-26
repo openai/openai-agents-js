@@ -154,6 +154,21 @@ describe('snakeOrCamelToCamelCase', () => {
 });
 
 describe('reserved providerData filtering', () => {
+  it.each([undefined, null])(
+    'returns fresh empty records for %s metadata',
+    (value) => {
+      const first = getSnakeCasedProviderDataWithoutReservedKeys(value, [
+        'role',
+      ]);
+      const second = getSnakeCasedProviderDataWithoutReservedKeys(value, [
+        'role',
+      ]);
+      expect(first).toStrictEqual({});
+      expect(second).toStrictEqual(first);
+      expect(second).not.toBe(first);
+    },
+  );
+
   it('removes reserved keys without touching other values', () => {
     expect(
       getProviderDataWithoutReservedKeys(
