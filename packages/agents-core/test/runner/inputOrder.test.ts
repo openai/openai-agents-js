@@ -1,5 +1,6 @@
+import { types } from 'node:util';
 import { runInNewContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import { matchesOwnedHistory } from '../../src/shims/inputOrder-node';
 import type { AgentInputItem } from '../../src/types';
@@ -27,6 +28,133 @@ function begin(input: AgentInputItem[]) {
 }
 
 describe('ownership of a complete input history', () => {
+  it.each(
+    (['isProxy', 'isBoxedPrimitive'] as const).flatMap((name) =>
+      (['method', 'bound', 'proxy'] as const).flatMap((kind) =>
+        [false, true].map((restore) => ({ name, kind, restore })),
+      ),
+    ),
+  )(
+    'keeps replay items away from a bootstrap $name $kind wrapper (restore: $restore)',
+    async ({ name, kind, restore }) => {
+      const prior = Object.getOwnPropertyDescriptor(types, name)!;
+      const input = [message('original')];
+      const prepared = structuredClone(input);
+      let matching = false;
+      let observed = 0;
+      try {
+        vi.resetModules();
+        const observe = (value: unknown) => {
+          if (matching) {
+            observed++;
+            if (value === prepared[0])
+              Object.assign(prepared[0], { content: 'changed by observer' });
+          }
+          return prior.value(value);
+        };
+        const wrapper =
+          kind === 'bound'
+            ? observe.bind(undefined)
+            : kind === 'proxy'
+              ? new Proxy(prior.value, {
+                  apply(_target, _receiver, args) {
+                    return observe(args[0]);
+                  },
+                })
+              : observe;
+        Object.defineProperty(types, name, { ...prior, value: wrapper });
+        const { matchesOwnedHistory: matches } =
+          await import('../../src/shims/inputOrder-node');
+        if (restore) Object.defineProperty(types, name, prior);
+        matching = true;
+        matches(input, prepared, prepared);
+      } finally {
+        matching = false;
+        Object.defineProperty(types, name, prior);
+        vi.resetModules();
+      }
+      expect(observed).toBe(0);
+      expect(prepared).toEqual(input);
+    },
+  );
+
+  it.each(
+    (['isProxy', 'isBoxedPrimitive'] as const).flatMap((name) =>
+      (['accessor', 'nonfunction'] as const).map((kind) => ({ name, kind })),
+    ),
+  )('keeps $name unavailable during $kind import', async ({ name, kind }) => {
+    const prior = Object.getOwnPropertyDescriptor(types, name)!;
+    let reads = 0;
+    let accepted = false;
+    try {
+      vi.resetModules();
+      Object.defineProperty(
+        types,
+        name,
+        kind === 'accessor'
+          ? {
+              configurable: true,
+              get() {
+                reads++;
+                throw Error('Classifier accessor');
+              },
+            }
+          : { configurable: true, value: 42 },
+      );
+      const { matchesOwnedHistory: matches } =
+        await import('../../src/shims/inputOrder-node');
+      accepted = matches([], [], []);
+    } finally {
+      Object.defineProperty(types, name, prior);
+      vi.resetModules();
+    }
+    expect(accepted).toBe(false);
+    expect(reads).toBe(0);
+  });
+
+  it.each(
+    (['isProxy', 'isBoxedPrimitive'] as const).flatMap((name) =>
+      [false, true].map((stream) => ({ name, stream })),
+    ),
+  )(
+    'keeps replay items away from a replaced $name (stream: $stream)',
+    async ({ name, stream }) => {
+      const prior = Object.getOwnPropertyDescriptor(types, name)!;
+      const delegate = types[name];
+      const model = new ScriptedModel([[assistantMessage('ok')]]);
+      const runner = new Runner({ tracingDisabled: true });
+      let observed = 0;
+      runner.on('agent_start', (_context, _agent, input) => {
+        Object.defineProperty(types, name, {
+          ...prior,
+          value(value: unknown) {
+            observed++;
+            if (value === input![0])
+              Object.assign(input![0], { content: 'changed by observer' });
+            return delegate(value);
+          },
+        });
+      });
+      try {
+        const agent = new Agent({ name: 'History observer', model });
+        const input: AgentInputItem[] = [{ role: 'user', content: 'original' }];
+        if (stream) {
+          const result = await runner.run(agent, input, { stream: true });
+          for await (const event of result) void event;
+          await result.completed;
+        } else {
+          await runner.run(agent, input);
+        }
+      } finally {
+        Object.defineProperty(types, name, prior);
+      }
+      expect(model.calls[0].request.input[0]).toMatchObject({
+        content: 'original',
+      });
+      expect(observed).toBe(0);
+    },
+  );
+
   it.each(
     (['Function', 'JSON', 'globalThis', 'inherited call'] as const).flatMap(
       (key) => [false, true].map((stream) => ({ key, stream })),

@@ -20,11 +20,19 @@ const traversalGlobals = [
   'Symbol',
 ];
 const isBuffer = descriptor(Buffer, 'isBuffer')?.value;
+const unavailable = () => true;
+const isProxy: (value: unknown) => boolean =
+  'value' in object
+    ? unavailable
+    : (descriptor(types, 'isProxy')?.value ?? unavailable);
+const isBoxedPrimitive: (value: unknown) => boolean =
+  'value' in object
+    ? unavailable
+    : (descriptor(types, 'isBoxedPrimitive')?.value ?? unavailable);
 // Capture the formatter without reading its inherited .call during a run.
 // As with the descriptor reader, use the realm's bootstrap intrinsics only.
 function captureFormatter() {
   if ('value' in object) return;
-  const isProxy = descriptor(types, 'isProxy')?.value;
   if (typeof isProxy !== 'function') return;
   const constructor = descriptor(realm, 'Function')?.value;
   if (typeof constructor !== 'function' || isProxy(constructor)) return;
@@ -45,23 +53,28 @@ function captureFormatter() {
     typeof descriptor(call, 'name')?.value !== 'string'
   )
     return;
-  return {
-    prototype,
-    format,
-    call,
-    source: call.bind(format) as (fn: object) => string,
-  };
+  const source = call.bind(format) as (fn: object) => string;
+  // Bound functions and callable proxies also print as anonymous native
+  // functions. Decline ordinary wrappers before passing them any messages.
+  const ordinaryPredicate = (fn: unknown) =>
+    typeof fn === 'function' &&
+    source(fn) === 'function () { [native code] }' &&
+    !isProxy(fn) &&
+    descriptor(fn, 'name')?.value === '';
+  if (!ordinaryPredicate(isProxy) || !ordinaryPredicate(isBoxedPrimitive))
+    return;
+  return { prototype, format, call, source };
 }
 const formatter = captureFormatter();
 const builtin = (fn: unknown, name: string) =>
   typeof fn === 'function' &&
-  !types.isProxy(fn) &&
+  !isProxy(fn) &&
   formatter?.source(fn) === `function ${name}() { [native code] }`;
 
 function ordinaryInstanceCheck(constructor: object): boolean {
   let current: object | null = constructor;
   while (current) {
-    if (typeof current !== 'function' || types.isProxy(current)) return false;
+    if (typeof current !== 'function' || isProxy(current)) return false;
     const method = descriptor(current, Symbol.hasInstance);
     if (method) return builtin(method.value, '[Symbol.hasInstance]');
     current = Reflect.getPrototypeOf(current);
@@ -80,11 +93,11 @@ function ordinaryMethods(owner: object, names: string[]): boolean {
 // The original passes iterate maps and arrays, including destructuring entries.
 function ordinaryIterator(iterator: object): boolean {
   const prototype = Reflect.getPrototypeOf(iterator);
-  if (!prototype || types.isProxy(prototype)) return false;
+  if (!prototype || isProxy(prototype)) return false;
   const parent = Reflect.getPrototypeOf(prototype);
   if (
     !parent ||
-    types.isProxy(parent) ||
+    isProxy(parent) ||
     Reflect.getPrototypeOf(parent) !== object ||
     'Infinity' in prototype
   )
@@ -118,15 +131,13 @@ function hasIndexedProperties(prototype: object): boolean {
 function ordinaryTraversal(): boolean {
   if ('value' in object || 'get' in object) return false;
   if (
-    typeof descriptor(types, 'isProxy')?.value !== 'function' ||
-    typeof descriptor(types, 'isBoxedPrimitive')?.value !== 'function'
+    !formatter ||
+    descriptor(types, 'isProxy')?.value !== isProxy ||
+    descriptor(types, 'isBoxedPrimitive')?.value !== isBoxedPrimitive
   )
     return false;
   const objectConstructor = descriptor(object, 'constructor')?.value;
-  if (
-    typeof objectConstructor !== 'function' ||
-    types.isProxy(objectConstructor)
-  )
+  if (typeof objectConstructor !== 'function' || isProxy(objectConstructor))
     return false;
   const prototypeOf = descriptor(objectConstructor, 'getPrototypeOf')?.value;
   if (!builtin(prototypeOf, 'getPrototypeOf')) return false;
@@ -138,7 +149,7 @@ function ordinaryTraversal(): boolean {
       !('value' in field) ||
       !field.value ||
       (typeof field.value !== 'object' && typeof field.value !== 'function') ||
-      types.isProxy(field.value) ||
+      isProxy(field.value) ||
       (typeof field.value === 'object' &&
         (prototypeOf(field.value) !== object || 'Infinity' in field.value))
     )
@@ -146,7 +157,6 @@ function ordinaryTraversal(): boolean {
   }
   if (
     descriptor(realm, 'globalThis')?.value !== realm ||
-    !formatter ||
     descriptor(Function, 'prototype')?.value !== formatter.prototype ||
     descriptor(formatter.prototype, 'toString')?.value !== formatter.format ||
     descriptor(formatter.prototype, 'call')?.value !== formatter.call
@@ -273,13 +283,7 @@ function equalData(
       typeof a !== 'symbol'
     );
   }
-  if (
-    !b ||
-    typeof b !== 'object' ||
-    depth === 8 ||
-    types.isProxy(a) ||
-    types.isProxy(b)
-  )
+  if (!b || typeof b !== 'object' || depth === 8 || isProxy(a) || isProxy(b))
     return false;
   const list = Array.isArray(a);
   // Node VM globals have been retaining a non-configurable Infinity despite ordinary
@@ -293,8 +297,8 @@ function equalData(
     'Infinity' in b ||
     'toJSON' in a ||
     'toJSON' in b ||
-    types.isBoxedPrimitive(a) ||
-    types.isBoxedPrimitive(b) ||
+    isBoxedPrimitive(a) ||
+    isBoxedPrimitive(b) ||
     ArrayBuffer.isView(a) ||
     ArrayBuffer.isView(b)
   )
@@ -334,9 +338,9 @@ export function matchesOwnedHistory(
 ): boolean {
   if (
     !ordinaryTraversal() ||
-    types.isProxy(original) ||
-    types.isProxy(prepared) ||
-    types.isProxy(processed) ||
+    isProxy(original) ||
+    isProxy(prepared) ||
+    isProxy(processed) ||
     !Array.isArray(original) ||
     !Array.isArray(prepared) ||
     !Array.isArray(processed) ||
@@ -351,7 +355,7 @@ export function matchesOwnedHistory(
   // Keep the original mapping if reading a position or mapping the list can run user code.
   if (
     positions !== undefined &&
-    (types.isProxy(positions) ||
+    (isProxy(positions) ||
       !Array.isArray(positions) ||
       positions.length !== original.length ||
       !dense(positions))
@@ -364,7 +368,7 @@ export function matchesOwnedHistory(
       if (
         !position ||
         typeof position !== 'object' ||
-        types.isProxy(position) ||
+        isProxy(position) ||
         Reflect.getPrototypeOf(position) !== object ||
         'Infinity' in position ||
         descriptor(position, 'preparedIndex')?.value !== i ||
