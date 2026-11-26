@@ -28,6 +28,97 @@ function begin(input: AgentInputItem[]) {
 }
 
 describe('ownership of a complete input history', () => {
+  it.each(['isBuffer', 'Buffer'] as const)(
+    'keeps the key serializer when %s was wrapped before import',
+    async (key) => {
+      const target = key === 'Buffer' ? globalThis : Buffer;
+      const original = Buffer;
+      const prior = Object.getOwnPropertyDescriptor(target, key)!;
+      const input = [message('original')];
+      const prepared = structuredClone(input);
+      let accepted = false;
+      let reads = 0;
+      try {
+        vi.resetModules();
+        Object.defineProperty(
+          target,
+          key,
+          key === 'Buffer'
+            ? {
+                configurable: true,
+                get() {
+                  reads++;
+                  return original;
+                },
+              }
+            : {
+                ...prior,
+                value(value: unknown) {
+                  reads++;
+                  return prior.value(value);
+                },
+              },
+        );
+        const { matchesOwnedHistory: matches } =
+          await import('../../src/shims/inputOrder-node');
+        reads = 0;
+        accepted = matches(input, prepared, prepared);
+      } finally {
+        Object.defineProperty(target, key, prior);
+        vi.resetModules();
+      }
+      expect(accepted).toBe(false);
+      expect(reads).toBe(0);
+    },
+  );
+
+  it('declines a replacement constructor that keeps the original Buffer predicate', async () => {
+    const original = Buffer;
+    const module = await import('node:buffer');
+    function Replacement() {}
+    Object.setPrototypeOf(Replacement, original);
+    Object.defineProperty(Replacement, 'isBuffer', {
+      value: original.isBuffer,
+    });
+    const input = [message('original')];
+    const prepared = structuredClone(input);
+    let accepted = false;
+    try {
+      vi.resetModules();
+      vi.doMock('node:buffer', () => ({ ...module, Buffer: Replacement }));
+      Reflect.set(globalThis, 'Buffer', Replacement);
+      const { matchesOwnedHistory: matches } =
+        await import('../../src/shims/inputOrder-node');
+      accepted = matches(input, prepared, prepared);
+    } finally {
+      Reflect.set(globalThis, 'Buffer', original);
+      vi.doUnmock('node:buffer');
+      vi.resetModules();
+    }
+    expect(accepted).toBe(false);
+  });
+
+  it.each([
+    { kind: 'null', prototype: null },
+    { kind: 'record', prototype: Object.prototype },
+    { kind: 'array', prototype: Array.prototype },
+  ])(
+    'keeps the key serializer with a $kind Buffer prototype',
+    ({ prototype }) => {
+      const input = [message('original')];
+      const prepared = structuredClone(input);
+      const prior = Object.getOwnPropertyDescriptor(Buffer, 'prototype')!;
+      let accepted = false;
+      try {
+        Object.defineProperty(Buffer, 'prototype', { value: prototype });
+        accepted = matchesOwnedHistory(input, prepared, prepared);
+      } finally {
+        Object.defineProperty(Buffer, 'prototype', prior);
+      }
+      expect(accepted).toBe(false);
+    },
+  );
+
   it.each(
     (['isProxy', 'isBoxedPrimitive'] as const).flatMap((name) =>
       (['method', 'bound', 'proxy'] as const).flatMap((kind) =>

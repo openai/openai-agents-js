@@ -1,9 +1,13 @@
-import { Buffer } from 'node:buffer';
-import { types } from 'node:util';
+import nodeUtil from 'node:util';
 
 const descriptor = Reflect.getOwnPropertyDescriptor;
 const array = Array.prototype;
 const object = Object.prototype;
+// Capture the predicate owner once. A CommonJS named import reads the
+// replaceable util.types export on every match. Importing node:util/types
+// would read each predicate when Node initializes its ESM exports.
+const types =
+  'value' in object ? undefined : descriptor(nodeUtil, 'types')?.value;
 const realm = globalThis;
 const buffer = descriptor(realm, 'Buffer');
 const traversalGlobals = [
@@ -19,14 +23,13 @@ const traversalGlobals = [
   'String',
   'Symbol',
 ];
-const isBuffer = descriptor(Buffer, 'isBuffer')?.value;
 const unavailable = () => true;
 const isProxy: (value: unknown) => boolean =
-  'value' in object
+  !types || typeof types !== 'object'
     ? unavailable
     : (descriptor(types, 'isProxy')?.value ?? unavailable);
 const isBoxedPrimitive: (value: unknown) => boolean =
-  'value' in object
+  !types || typeof types !== 'object'
     ? unavailable
     : (descriptor(types, 'isBoxedPrimitive')?.value ?? unavailable);
 // Capture the formatter without reading its inherited .call during a run.
@@ -63,7 +66,43 @@ function captureFormatter() {
     descriptor(fn, 'name')?.value === '';
   if (!ordinaryPredicate(isProxy) || !ordinaryPredicate(isBoxedPrimitive))
     return;
-  return { prototype, format, call, source };
+  // Only read the global binding used by the serializer. A module export
+  // can be a different constructor, even when it shares the same isBuffer.
+  if (
+    !buffer ||
+    (!('value' in buffer) &&
+      (typeof buffer.get !== 'function' ||
+        source(buffer.get) !== 'get() {\n      return _Buffer;\n    }'))
+  )
+    return;
+  const bufferConstructor = 'value' in buffer ? buffer.value : buffer.get!();
+  // The stock predicate closes over the stock constructor. Decline a
+  // replacement constructor that copies the original static methods.
+  if (
+    typeof bufferConstructor !== 'function' ||
+    isProxy(bufferConstructor) ||
+    source(bufferConstructor) !==
+      `function Buffer(arg, encodingOrOffset, length) {
+  showFlaggedDeprecation();
+  // Common case.
+  if (typeof arg === 'number') {
+    if (typeof encodingOrOffset === 'string') {
+      throw new ERR_INVALID_ARG_TYPE('string', 'string', arg);
+    }
+    return Buffer.alloc(arg);
+  }
+  return Buffer.from(arg, encodingOrOffset, length);
+}`
+  )
+    return;
+  const isBuffer = descriptor(bufferConstructor, 'isBuffer')?.value;
+  if (
+    typeof isBuffer !== 'function' ||
+    source(isBuffer) !==
+      'function isBuffer(b) {\n  return b instanceof Buffer;\n}'
+  )
+    return;
+  return { prototype, format, call, source, bufferConstructor, isBuffer };
 }
 const formatter = captureFormatter();
 const builtin = (fn: unknown, name: string) =>
@@ -76,7 +115,18 @@ function ordinaryInstanceCheck(constructor: object): boolean {
   while (current) {
     if (typeof current !== 'function' || isProxy(current)) return false;
     const method = descriptor(current, Symbol.hasInstance);
-    if (method) return builtin(method.value, '[Symbol.hasInstance]');
+    if (method) {
+      // Even the default instanceof can throw or classify a plain record
+      // or array as binary when the constructor's prototype changes.
+      const prototype = descriptor(constructor, 'prototype')?.value;
+      return (
+        builtin(method.value, '[Symbol.hasInstance]') &&
+        typeof prototype === 'object' &&
+        prototype !== null &&
+        prototype !== object &&
+        prototype !== array
+      );
+    }
     current = Reflect.getPrototypeOf(current);
   }
   return false;
@@ -132,6 +182,7 @@ function ordinaryTraversal(): boolean {
   if ('value' in object || 'get' in object) return false;
   if (
     !formatter ||
+    !types ||
     descriptor(types, 'isProxy')?.value !== isProxy ||
     descriptor(types, 'isBoxedPrimitive')?.value !== isBoxedPrimitive
   )
@@ -164,7 +215,8 @@ function ordinaryTraversal(): boolean {
     return false;
   const globalBuffer = descriptor(realm, 'Buffer');
   const arrayBuffer = descriptor(realm, 'ArrayBuffer')?.value;
-  const isBufferField = descriptor(Buffer, 'isBuffer');
+  const { bufferConstructor, isBuffer } = formatter;
+  const isBufferField = descriptor(bufferConstructor, 'isBuffer');
   if (
     !builtin(descriptor, 'getOwnPropertyDescriptor') ||
     !ordinaryMethods(Reflect, ['ownKeys', 'getPrototypeOf', 'apply']) ||
@@ -185,10 +237,10 @@ function ordinaryTraversal(): boolean {
     !builtin(arrayBuffer, 'ArrayBuffer') ||
     !builtin(descriptor(arrayBuffer, 'isView')?.value, 'isView') ||
     !ordinaryInstanceCheck(arrayBuffer) ||
-    !ordinaryInstanceCheck(Buffer) ||
+    !ordinaryInstanceCheck(bufferConstructor) ||
     !globalBuffer ||
     globalBuffer.get !== buffer?.get ||
-    realm.Buffer !== Buffer ||
+    realm.Buffer !== bufferConstructor ||
     !isBufferField ||
     !('value' in isBufferField) ||
     isBufferField.value !== isBuffer ||
