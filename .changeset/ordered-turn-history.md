@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-perf(core): Match unchanged Node.js input histories in one pass.
+Add regression coverage for public imports and input-history ownership.

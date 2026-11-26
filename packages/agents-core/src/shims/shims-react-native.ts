@@ -12,7 +12,6 @@ export {
   ReadableStreamController,
   TransformStream,
   isTracingLoopRunningByDefault,
-  matchesOwnedHistory,
   randomUUID,
   supportsProcessLifecycleEvents,
 } from './shims-browser';

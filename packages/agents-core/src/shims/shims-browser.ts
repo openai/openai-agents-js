@@ -241,13 +241,3 @@ class BrowserTimer implements Timer {
 }
 const timer = new BrowserTimer();
 export { timer };
-
-// Keep serialized matching where proxy detection is unavailable.
-export function matchesOwnedHistory(
-  _original: unknown[],
-  _prepared: unknown[],
-  _processed: unknown[],
-  _positions?: unknown[],
-): boolean {
-  return false;
-}

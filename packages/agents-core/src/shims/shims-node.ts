@@ -40,5 +40,3 @@ class NodeTimer implements Timer {
 }
 const timer = new NodeTimer();
 export { timer };
-
-export { matchesOwnedHistory } from './inputOrder-node';
