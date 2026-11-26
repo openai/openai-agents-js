@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { Agent, Runner, setTracingDisabled, tool } from '../../src';
 import {
   ScriptedModel,
@@ -15,6 +15,62 @@ import type { StreamedRunResult } from '../../src/result';
 beforeAll(() => setTracingDisabled(true));
 
 describe('captured input copies', () => {
+  it('rejects uncloneable input introduced by an inherited getter before calling the model', async () => {
+    const input = [{ role: 'user' as const, content: 'before' }];
+    const publicInputs = new WeakSet<object>(input);
+    const runner = new Runner();
+    runner.on('agent_start', (_context, _agent, items) => {
+      for (const item of items ?? []) {
+        if (item && typeof item === 'object') publicInputs.add(item);
+      }
+    });
+    const model = new ScriptedModel([[assistantMessage('done')]]);
+    const dispatch = vi.spyOn(model, 'getResponse');
+    let exposed = false;
+    const agent = new Agent({
+      name: 'inherited getter',
+      model,
+      instructions() {
+        Object.defineProperty(Object.prototype, 'type', {
+          configurable: true,
+          get(this: Record<string, unknown>) {
+            if (
+              !publicInputs.has(this) &&
+              Object.prototype.hasOwnProperty.call(this, 'role') &&
+              Object.prototype.hasOwnProperty.call(this, 'content') &&
+              this.role === 'user' &&
+              this.content === 'before'
+            ) {
+              exposed = true;
+              Reflect.deleteProperty(Object.prototype, 'type');
+              // A proxy can look like an ordinary array but cannot be cloned.
+              this.content = new Proxy(
+                [{ type: 'input_text', text: 'changed' }],
+                {},
+              );
+            }
+            return undefined;
+          },
+        });
+        return '';
+      },
+    });
+
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'type');
+    try {
+      await expect(runner.run(agent, input)).rejects.toMatchObject({
+        name: 'DataCloneError',
+      });
+      expect(exposed).toBe(true);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(input[0].content).toBe('before');
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'type');
+      if (previous) Object.defineProperty(Object.prototype, 'type', previous);
+      dispatch.mockRestore();
+    }
+  });
+
   it.each(['accessor', 'proxy'])(
     'preserves public own-map %s behavior',
     async (mode) => {
