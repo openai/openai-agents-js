@@ -722,25 +722,6 @@ function getProviderDataField<T>(
   return undefined;
 }
 
-// Messages without provider metadata already have the final field names.
-function mergeMessageProviderData<T extends object>(
-  fields: T,
-  providerData: unknown,
-  reservedKeys: readonly string[],
-): T {
-  if (providerData === undefined || providerData === null) {
-    return fields;
-  }
-  return {
-    ...fields,
-    ...getSnakeCasedProviderDataWithoutReservedKeys(providerData, reservedKeys),
-  };
-}
-
-const inputMessageKeys = ['id', 'role', 'content', 'phase'];
-const outputMessageKeys = ['type', 'id', 'role', 'content', 'status', 'phase'];
-const outputTextKeys = ['type', 'text', 'annotations'];
-
 function getOutputMessageContent(
   entry: protocol.AssistantContent,
 ): OpenAI.Responses.ResponseOutputMessage['content'][number] {
@@ -750,15 +731,16 @@ function getOutputMessageContent(
     >(entry.providerData, ['annotations']);
     const normalizedAnnotations: OpenAI.Responses.ResponseOutputText['annotations'] =
       Array.isArray(annotations) ? annotations : [];
-    return mergeMessageProviderData(
-      {
-        type: 'output_text' as const,
-        text: entry.text,
-        annotations: normalizedAnnotations,
-      },
-      entry.providerData,
-      outputTextKeys,
-    );
+    return {
+      type: 'output_text',
+      text: entry.text,
+      annotations: normalizedAnnotations,
+      ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
+        'type',
+        'text',
+        'annotations',
+      ]),
+    };
   }
 
   if (entry.type === 'refusal') {
@@ -784,27 +766,45 @@ function getMessageItem(
   | OpenAI.Responses.ResponseOutputMessage
   | OpenAI.Responses.EasyInputMessage {
   if (item.role === 'system') {
-    return mergeMessageProviderData(
-      { id: item.id, role: 'system' as const, content: item.content },
-      item.providerData,
-      inputMessageKeys,
-    );
+    return {
+      id: item.id,
+      role: 'system',
+      content: item.content,
+      ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+        'id',
+        'role',
+        'content',
+        'phase',
+      ]),
+    };
   }
 
   if (item.role === 'user') {
-    const fields =
-      typeof item.content === 'string'
-        ? { id: item.id, role: 'user' as const, content: item.content }
-        : {
-            id: item.id,
-            role: 'user' as const,
-            content: item.content.map(getInputMessageContent),
-          };
-    return mergeMessageProviderData(
-      fields,
-      item.providerData,
-      inputMessageKeys,
-    );
+    if (typeof item.content === 'string') {
+      return {
+        id: item.id,
+        role: 'user',
+        content: item.content,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'id',
+          'role',
+          'content',
+          'phase',
+        ]),
+      };
+    }
+
+    return {
+      id: item.id,
+      role: 'user',
+      content: item.content.map(getInputMessageContent),
+      ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+        'id',
+        'role',
+        'content',
+        'phase',
+      ]),
+    };
   }
 
   if (item.role === 'assistant') {
@@ -825,16 +825,17 @@ function getMessageItem(
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
+      ...(typeof phase === 'undefined' ? {} : { phase }),
+      ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+        'type',
+        'id',
+        'role',
+        'content',
+        'status',
+        'phase',
+      ]),
     };
-    const message =
-      mergeMessageProviderData<OpenAI.Responses.ResponseOutputMessage>(
-        typeof phase === 'undefined'
-          ? assistantMessage
-          : { ...assistantMessage, phase },
-        item.providerData,
-        outputMessageKeys,
-      );
-    return stripSdkGeneratedPlaceholderItemId(message);
+    return stripSdkGeneratedPlaceholderItemId(assistantMessage);
   }
 
   throw new UserError(`Unsupported item ${JSON.stringify(item)}`);

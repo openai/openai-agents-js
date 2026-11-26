@@ -1466,6 +1466,38 @@ describe('getInputItems', () => {
     });
   });
 
+  it('preserves non-message metadata getter order when metadata is absent', () => {
+    const reads: string[] = [];
+    const item = {
+      type: 'function_call' as const,
+      id: 'call',
+      callId: 'call',
+      get name() {
+        reads.push('name');
+        return 'lookup';
+      },
+      get arguments() {
+        reads.push('arguments');
+        return '{}';
+      },
+      get providerData() {
+        reads.push('providerData');
+        return undefined;
+      },
+    };
+    const [converted] = getInputItems([item]);
+    expect(reads).toEqual(['name', 'arguments', 'providerData']);
+    expect(converted).toStrictEqual({
+      id: 'call',
+      type: 'function_call',
+      name: 'lookup',
+      call_id: 'call',
+      arguments: '{}',
+      status: undefined,
+    });
+    expect(converted).not.toBe(item);
+  });
+
   it('returns independent text records when provider data is absent', () => {
     const message = {
       role: 'assistant' as const,
