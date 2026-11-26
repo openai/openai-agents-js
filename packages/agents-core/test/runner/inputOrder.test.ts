@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import { matchesOwnedHistory } from '../../src/shims/inputOrder-node';
@@ -282,6 +283,106 @@ describe('ownership of a complete input history', () => {
     expect(reads).toBe(0);
   });
 
+  it.each(['global Array', 'prototype constructor', 'two Array references'])(
+    'keeps array operations when another realm supplies the %s',
+    (replacement) => {
+      const local = Array;
+      const constructor = local.prototype.constructor;
+      const foreign = runInNewContext('Array') as ArrayConstructor;
+      const input = [message('prior')];
+      const prepared = structuredClone(input);
+      let accepted: boolean;
+      try {
+        if (replacement !== 'prototype constructor') globalThis.Array = foreign;
+        if (replacement !== 'global Array')
+          local.prototype.constructor = foreign;
+        accepted = matchesOwnedHistory(input, prepared, prepared);
+      } finally {
+        globalThis.Array = local;
+        local.prototype.constructor = constructor;
+      }
+      expect(accepted).toBe(false);
+    },
+  );
+
+  it('keeps the original traversal when a borrowed map creates foreign arrays', () => {
+    const input = [message('prior')];
+    const prepared = structuredClone(input);
+    const localMap = Array.prototype.map;
+    const foreignMap = runInNewContext(
+      'Array.prototype.map',
+    ) as typeof localMap;
+    // A borrowed method keeps its creation realm even with a local prototype.
+    Object.setPrototypeOf(foreignMap, Function.prototype);
+    let accepted: boolean;
+    try {
+      Array.prototype.map = foreignMap;
+      accepted = matchesOwnedHistory(input, prepared, prepared);
+    } finally {
+      Array.prototype.map = localMap;
+    }
+    expect(accepted).toBe(false);
+  });
+
+  it('preserves an edit made while iterating a map from another realm', async () => {
+    const foreign = runInNewContext('Map') as MapConstructor;
+    const iterator = foreign.prototype[Symbol.iterator];
+    const prototype = Object.getPrototypeOf(new foreign().entries());
+    const next = Object.getOwnPropertyDescriptor(prototype, 'next')!.value;
+    const local = Map.prototype[Symbol.iterator];
+    const restore = () => {
+      Map.prototype[Symbol.iterator] = local;
+    };
+    const model = new ScriptedModel([
+      modelResponder(() => {
+        restore();
+        return [assistantMessage('ok')];
+      }),
+    ]);
+    const runner = new Runner({ tracingDisabled: true });
+    runner.on('agent_start', (_context, _agent, input) => {
+      Object.defineProperty(prototype, 'next', {
+        configurable: true,
+        get() {
+          restore();
+          Object.assign(input![0], { content: 'edited' });
+          return next;
+        },
+      });
+      Map.prototype[Symbol.iterator] = iterator;
+    });
+    try {
+      await runner.run(new Agent({ name: 'History observer', model }), [
+        { role: 'user', content: 'before' },
+        message('answer'),
+        { role: 'user', content: 'last' },
+      ]);
+      expect(model.calls[0].request.input[0]).toMatchObject({
+        content: 'edited',
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('declines a borrowed async next without creating a rejected promise', () => {
+    const input = [message('prior')];
+    const prepared = structuredClone(input);
+    const prototype = Object.getPrototypeOf(new Map().values());
+    const original = prototype.next;
+    const asyncNext = (async function* () {
+      yield 1;
+    })().next;
+    let accepted: boolean;
+    try {
+      prototype.next = asyncNext;
+      accepted = matchesOwnedHistory(input, prepared, prepared);
+    } finally {
+      prototype.next = original;
+    }
+    expect(accepted).toBe(false);
+  });
+
   it('declines proxy constructor ancestors before invoking their traps', () => {
     const input = [message('prior')];
     const prepared = structuredClone(input);
@@ -299,6 +400,35 @@ describe('ownership of a complete input history', () => {
     } finally {
       Object.setPrototypeOf(Buffer, prior);
     }
+  });
+
+  it('preserves a custom constructor on the retained ownership positions', () => {
+    const input = [message('prior')];
+    const prepared = structuredClone(input);
+    const push = Array.prototype.push;
+    const error = new Error('ownership positions constructor');
+    const tracker = createSessionPersistenceTracker({
+      hasCallModelInputFilter: false,
+    })!;
+    try {
+      Array.prototype.push = function (...entries) {
+        if (entries[0]?.preparedIndex === 0 && entries[0]?.ownerIndex === 0) {
+          Array.prototype.push = push;
+          Object.defineProperty(this, 'constructor', {
+            get() {
+              throw error;
+            },
+          });
+        }
+        return push.apply(this, entries);
+      };
+      tracker.setPreparedItems(undefined, input);
+    } finally {
+      Array.prototype.push = push;
+    }
+    expect(() => tracker.setPreparedTurnItems(prepared, prepared)).toThrow(
+      error,
+    );
   });
 
   it('preserves distinct occurrences on a subsequent rewrite', () => {

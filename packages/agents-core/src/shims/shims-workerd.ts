@@ -58,6 +58,7 @@ export function matchesOwnedHistory(
   _original: unknown[],
   _prepared: unknown[],
   _processed: unknown[],
+  _positions?: unknown[],
 ): boolean {
   return false;
 }

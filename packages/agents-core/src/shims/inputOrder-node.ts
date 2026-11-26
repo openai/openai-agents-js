@@ -82,14 +82,19 @@ function ordinaryIterator(iterator: object): boolean {
   const prototype = Reflect.getPrototypeOf(iterator);
   if (!prototype || types.isProxy(prototype)) return false;
   const parent = Reflect.getPrototypeOf(prototype);
+  const next = descriptor(prototype, 'next')?.value;
   return (
     !!parent &&
     !types.isProxy(parent) &&
     Reflect.getPrototypeOf(parent) === object &&
-    builtin(descriptor(prototype, 'next')?.value, 'next') &&
+    builtin(next, 'next') &&
+    // Generator next methods take a value. Calling an async generator's
+    // method on this iterator would create a rejected promise.
+    descriptor(next, 'length')?.value === 0 &&
     !descriptor(prototype, Symbol.iterator) &&
     builtin(descriptor(parent, Symbol.iterator)?.value, '[Symbol.iterator]') &&
-    !('return' in prototype)
+    !('return' in prototype) &&
+    Reflect.getPrototypeOf(Reflect.apply(next, iterator, [])) === object
   );
 }
 
@@ -138,7 +143,7 @@ function ordinaryTraversal(): boolean {
   const isBufferField = descriptor(Buffer, 'isBuffer');
   if (
     !builtin(descriptor, 'getOwnPropertyDescriptor') ||
-    !ordinaryMethods(Reflect, ['ownKeys', 'getPrototypeOf']) ||
+    !ordinaryMethods(Reflect, ['ownKeys', 'getPrototypeOf', 'apply']) ||
     !ordinaryMethods(JSON, ['stringify']) ||
     !ordinaryMethods(Math, ['min']) ||
     !builtin(Boolean, 'Boolean') ||
@@ -173,7 +178,8 @@ function ordinaryTraversal(): boolean {
   )
     return false;
   if (
-    !builtin(descriptor(array, 'constructor')?.value, 'Array') ||
+    descriptor(array, 'constructor')?.value !== Array ||
+    descriptor(Array, 'prototype')?.value !== array ||
     !ordinaryMethods(array, [
       'entries',
       'map',
@@ -187,13 +193,38 @@ function ordinaryTraversal(): boolean {
       'shift',
     ]) ||
     hasIndexedProperties(array) ||
-    hasIndexedProperties(object) ||
-    !ordinaryIterator(array.values()) ||
-    !ordinaryIterator(new Map().values()) ||
-    !ordinaryIterator(new Set()[Symbol.iterator]())
+    hasIndexedProperties(object)
   )
     return false;
-  return true;
+
+  // A borrowed native method keeps its own realm, even if its visible
+  // prototype has changed. Check where the actual methods allocate their
+  // results before skipping iterations that could invoke application code.
+  // An empty, non-array receiver avoids constructor and species lookups.
+  const empty = { __proto__: null, length: 0 };
+  const callback = () => false;
+  try {
+    const map = new Map();
+    return (
+      Reflect.getPrototypeOf(Reflect.apply(array.map, empty, [callback])) ===
+        array &&
+      Reflect.getPrototypeOf(Reflect.apply(array.filter, empty, [callback])) ===
+        array &&
+      Reflect.getPrototypeOf(
+        Reflect.apply(array.flatMap, empty, [callback]),
+      ) === array &&
+      Reflect.getPrototypeOf(Reflect.apply(array.slice, empty, [])) === array &&
+      ordinaryIterator(Reflect.apply(array.values, empty, [])) &&
+      ordinaryIterator(Reflect.apply(array.entries, empty, [])) &&
+      ordinaryIterator(Reflect.apply(array[Symbol.iterator], empty, [])) &&
+      ordinaryIterator(map.values()) &&
+      ordinaryIterator(map[Symbol.iterator]()) &&
+      ordinaryIterator(new Set()[Symbol.iterator]())
+    );
+  } catch {
+    // A native method can synchronously reject an incompatible receiver.
+    return false;
+  }
 }
 
 function dense(list: unknown[]): boolean {
@@ -280,6 +311,7 @@ export function matchesOwnedHistory(
   original: unknown[],
   prepared: unknown[],
   processed: unknown[],
+  positions?: unknown[],
 ): boolean {
   if (
     !ordinaryTraversal() ||
@@ -296,8 +328,31 @@ export function matchesOwnedHistory(
     !dense(processed)
   )
     return false;
+  // Array hooks can retain the positions while the tracker builds them.
+  // Keep the original mapping if reading a position or mapping the list can run user code.
+  if (
+    positions !== undefined &&
+    (types.isProxy(positions) ||
+      !Array.isArray(positions) ||
+      positions.length !== original.length ||
+      !dense(positions))
+  )
+    return false;
   const references = new Set();
-  for (let i = 0; i < original.length; i++) references.add(original[i]);
+  for (let i = 0; i < original.length; i++) {
+    if (positions !== undefined) {
+      const position = positions[i];
+      if (
+        !position ||
+        typeof position !== 'object' ||
+        types.isProxy(position) ||
+        descriptor(position, 'preparedIndex')?.value !== i ||
+        descriptor(position, 'ownerIndex')?.value !== i
+      )
+        return false;
+    }
+    references.add(original[i]);
+  }
   for (let i = 0; i < original.length; i++) {
     const item = prepared[i];
     if (

@@ -1345,11 +1345,7 @@ export function createSessionPersistenceTracker(options: {
           this.initialPreparedItems,
           preparedItems,
           processedItems,
-        ) &&
-        this.initialSourcePositions.length === processedItems.length &&
-        this.initialSourcePositions.every(
-          ({ preparedIndex, ownerIndex }, i) =>
-            preparedIndex === i && ownerIndex === i,
+          this.initialSourcePositions,
         )
       ) {
         this.preparedSources = processedItems.map((item, ownerIndex) => ({
