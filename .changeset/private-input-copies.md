@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-perf: Specialize copies of privately captured runner inputs.
+perf: Reduce copying overhead when saving session-owned text messages.

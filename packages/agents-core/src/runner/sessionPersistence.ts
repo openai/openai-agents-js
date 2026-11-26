@@ -1,4 +1,3 @@
-import { cloneCapturedInputItem } from './privateInput';
 import {
   getMcpToolBinding,
   matchesFunctionToolRecipient,
@@ -1490,39 +1489,28 @@ function mapPreparedSourcesAfterContextProcessing(
       ownerIndex,
     ]),
   );
-  // A callback can edit a message between traversals. Save what each traversal
-  // observes and reuse only equal strings, including for repeated long messages.
-  const preparedEntries: {
-    index: number;
-    item: AgentInputItem;
-    key: string;
-  }[] = [];
-  const canonicalKeys = new Map<string, string>();
-  function reuseKey(key: string): string {
-    const existing = canonicalKeys.get(key);
-    if (existing !== undefined) return existing;
-    canonicalKeys.set(key, key);
-    return key;
+  const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
+  const preparedIndexesByKey = new Map<string, number[]>();
+  // Remember only the first position of a distinct key. The map already
+  // retains this string. Always serialize again before reusing a key.
+  const firstKeys = Object.create(null) as Record<number, string | undefined>;
+  function reuseKey(index: number, key: string) {
+    const original = typeof index === 'number' ? firstKeys[index] : undefined;
+    return original !== undefined && original === key ? original : key;
   }
   for (const [index, item] of preparedItems.entries()) {
-    preparedEntries.push({
-      index,
-      item,
-      key: reuseKey(getAgentInputItemKey(item)),
-    });
-  }
-  function groupIndexes<T extends { index: number }, K>(
-    entries: T[],
-    identity: (entry: T) => K,
-  ) {
-    const groups = new Map<K, number[]>();
-    for (const entry of entries) {
-      const value = identity(entry);
-      const indexes = groups.get(value);
-      if (indexes) indexes.push(entry.index);
-      else groups.set(value, [entry.index]);
+    const referenceIndexes = preparedIndexesByReference.get(item) ?? [];
+    referenceIndexes.push(index);
+    preparedIndexesByReference.set(item, referenceIndexes);
+
+    const key = getAgentInputItemKey(item);
+    const existing = preparedIndexesByKey.get(key);
+    if (existing === undefined && typeof index === 'number') {
+      firstKeys[index] = key;
     }
-    return groups;
+    const keyIndexes = existing ?? [];
+    keyIndexes.push(index);
+    preparedIndexesByKey.set(key, keyIndexes);
   }
 
   const mappedPreparedIndexes = new Array<number | undefined>(
@@ -1564,48 +1552,13 @@ function mapPreparedSourcesAfterContextProcessing(
     }
   };
 
-  const processedEntries: { index: number; item: AgentInputItem }[] = [];
+  const processedIndexesByReference = new Map<AgentInputItem, number[]>();
   for (const [index, item] of processedItems.entries()) {
-    processedEntries.push({ index, item });
+    const indexes = processedIndexesByReference.get(item) ?? [];
+    indexes.push(index);
+    processedIndexesByReference.set(item, indexes);
   }
-  // Reference identity takes precedence over content. Two common cases need
-  // no occurrence groups. Either every reference is in place, or none match.
-  const hasSequentialIndexes =
-    preparedEntries.every((entry, i) => entry.index === i) &&
-    processedEntries.every((entry, i) => entry.index === i);
-  const sameReferencesInOrder =
-    hasSequentialIndexes &&
-    preparedEntries.length === processedEntries.length &&
-    processedEntries.every(
-      (entry, i) => entry.item === preparedEntries[i]!.item,
-    );
-  const preparedReferences =
-    hasSequentialIndexes && !sameReferencesInOrder
-      ? new Set(preparedEntries.map((entry) => entry.item))
-      : undefined;
-  const noSharedReferences =
-    preparedReferences !== undefined &&
-    processedEntries.every((entry) => !preparedReferences.has(entry.item));
-  const needsReferenceGroups = !sameReferencesInOrder && !noSharedReferences;
-  const preparedIndexesByReference = groupIndexes(
-    needsReferenceGroups ? preparedEntries : [],
-    (entry) => entry.item,
-  );
-  const processedIndexesByReference = groupIndexes(
-    needsReferenceGroups ? processedEntries : [],
-    (entry) => entry.item,
-  );
-  function matchByPosition() {
-    for (let i = 0; i < preparedEntries.length; i++) {
-      mappedPreparedIndexes[i] = i;
-      usedPreparedIndexes.add(i);
-    }
-  }
-  if (sameReferencesInOrder) {
-    matchByPosition();
-  } else {
-    mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
-  }
+  mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
   const referenceMappedPreparedIndexes = new Set(usedPreparedIndexes);
   for (const [item, processedIndexes] of processedIndexesByReference) {
     const preparedIndexes = preparedIndexesByReference.get(item);
@@ -1619,7 +1572,7 @@ function mapPreparedSourcesAfterContextProcessing(
     }
   }
 
-  const processedKeys: { index: number; key: string }[] = [];
+  const processedIndexesByKey = new Map<string, number[]>();
   for (const [index, item] of processedItems.entries()) {
     if (
       mappedPreparedIndexes[index] !== undefined ||
@@ -1627,32 +1580,11 @@ function mapPreparedSourcesAfterContextProcessing(
     ) {
       continue;
     }
-    const key = getAgentInputItemKey(item);
-    const original = preparedEntries[processedKeys.length];
-    processedKeys.push({
-      index,
-      key: original && key === original.key ? original.key : reuseKey(key),
-    });
+    const key = reuseKey(index, getAgentInputItemKey(item));
+    const indexes = processedIndexesByKey.get(key) ?? [];
+    indexes.push(index);
+    processedIndexesByKey.set(key, indexes);
   }
-  // When references do not overlap, equal keys in the same order pair by
-  // position, including repeated messages.
-  const sameKeysInOrder =
-    noSharedReferences &&
-    preparedEntries.length === processedKeys.length &&
-    processedKeys.every(
-      (entry, i) => entry.index === i && entry.key === preparedEntries[i]!.key,
-    );
-  const allMatchedByReference =
-    sameReferencesInOrder && processedKeys.length === 0;
-  const needsKeyGroups = !sameKeysInOrder && !allMatchedByReference;
-  const preparedIndexesByKey = groupIndexes(
-    needsKeyGroups ? preparedEntries : [],
-    (entry) => entry.key,
-  );
-  const processedIndexesByKey = groupIndexes(
-    needsKeyGroups ? processedKeys : [],
-    (entry) => entry.key,
-  );
   const availablePreparedCountByKey = new Map<string, number>();
   for (const [key, indexes] of preparedIndexesByKey) {
     availablePreparedCountByKey.set(
@@ -1683,20 +1615,19 @@ function mapPreparedSourcesAfterContextProcessing(
       ambiguousProcessedIndexes.has(index) ||
       preparedItem === undefined ||
       usedPreparedIndexes.has(index) ||
-      key !== getAgentInputItemKey(preparedItem) ||
-      (processedIndexesByKey.get(key)?.length ?? 0) >=
-        (availablePreparedCountByKey.get(key) ?? 0)
+      key !== getAgentInputItemKey(preparedItem)
+    ) {
+      continue;
+    }
+    const matchingKey = reuseKey(index, key);
+    if (
+      (processedIndexesByKey.get(matchingKey)?.length ?? 0) >=
+      (availablePreparedCountByKey.get(matchingKey) ?? 0)
     ) {
       continue;
     }
     mappedPreparedIndexes[index] = index;
     usedPreparedIndexes.add(index);
-  }
-
-  // Assign positions after the reads above. Assigning them earlier would skip
-  // serialization of the prepared message, including its getters and errors.
-  if (sameKeysInOrder) {
-    matchByPosition();
   }
 
   // Public capabilities may return clones. Resolve remaining occurrences against the complete
@@ -1861,12 +1792,62 @@ function reconcilePersistableFilteredItems(options: {
     persistedInputOrder: nextPersistedInputOrder,
     filteredSnapshot: nextPersistedInputOrder.flatMap((occurrence) => {
       if (occurrence.type === 'injected') {
-        return [cloneCapturedInputItem(occurrence.item)];
+        return [structuredClone(occurrence.item)];
       }
       const item = nextOwnedFilteredItems.get(occurrence.index);
-      return item ? [cloneCapturedInputItem(item)] : [];
+      return item ? [copyOwnedInputItem(item)] : [];
     }),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function isScalar(value: unknown): boolean {
+  return (
+    value === null ||
+    (typeof value !== 'object' &&
+      typeof value !== 'function' &&
+      typeof value !== 'symbol')
+  );
+}
+
+// The owner map holds private native copies. Give the snapshot its own
+// writable copy, including the content part and its annotations.
+function copyOwnedInputItem(item: AgentInputItem): AgentInputItem {
+  const value: unknown = item;
+  if (!isRecord(value)) return structuredClone(item);
+  const result = { ...value };
+  for (const key of Object.keys(result)) {
+    const field = result[key];
+    if (isScalar(field)) continue;
+    if (key !== 'content' || !Array.isArray(field) || field.length !== 1)
+      return structuredClone(item);
+    const keys = Object.keys(field);
+    if (keys.length !== 1 || keys[0] !== '0') return structuredClone(item);
+    const part = field[0];
+    if (!isRecord(part)) return structuredClone(item);
+    const copiedPart = { ...part };
+    for (const partKey of Object.keys(copiedPart)) {
+      const partValue = copiedPart[partKey];
+      if (isScalar(partValue)) continue;
+      if (
+        partKey !== 'annotations' ||
+        !Array.isArray(partValue) ||
+        partValue.length !== 0 ||
+        Object.keys(partValue).length !== 0
+      )
+        return structuredClone(item);
+      copiedPart[partKey] = [];
+    }
+    result[key] = [copiedPart];
+  }
+  return result as unknown as AgentInputItem;
 }
 
 function buildSnapshotForUnfilteredItems(options: {

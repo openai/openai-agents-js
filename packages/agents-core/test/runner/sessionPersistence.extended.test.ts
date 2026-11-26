@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionPersistenceTracker,
+  mapOwnedInputItemsAfterContextProcessing,
   PreparedInputWithSessionResult,
 } from '../../src/runner/sessionPersistence';
 import type { Session } from '../../src/memory/session';
@@ -730,28 +731,62 @@ describe('sessionPersistence tracker (extended)', () => {
   });
 });
 
-describe('matching cloned input in order', () => {
-  it('keeps both occurrences when matching first diverges after a repeated key', () => {
-    const history = { role: 'user', content: 'same' } as const;
-    const current = { ...history };
-    const tail = { ...history, content: 'tail' };
-    const input = [history, current, tail];
-    const tracker = createSessionPersistenceTracker({
-      session: makeSession(),
-      hasCallModelInputFilter: true,
-    })!;
-    tracker.setPreparedItems([current], input);
-    const turn = structuredClone(input);
-    const processed = structuredClone([turn[0]!, turn[2]!, turn[1]!]);
-    tracker.setPreparedTurnItems(turn, processed);
-    tracker.recordTurnItems(processed, [
-      { ...history, content: 'history copy' },
-      tail,
-      { ...current, content: 'current copy' },
-    ]);
-    expect(tracker.getItemsForPersistence()).toEqual([
-      { ...current, content: 'current copy' },
-    ]);
+describe('matching callback effects', () => {
+  it('keeps private matching records from an inherited numeric setter', () => {
+    const prepared = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'user' as const, content: 'second' },
+    ];
+    const processed = structuredClone(prepared);
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, '0');
+    const length = Object.getOwnPropertyDescriptor(Array.prototype, 'length')!;
+    let installed = false;
+    let owned;
+    Object.defineProperty(prepared[0], 'toJSON', {
+      value() {
+        if (!installed) {
+          installed = true;
+          Object.defineProperty(Array.prototype, '0', {
+            configurable: true,
+            set(this: unknown[], value: unknown) {
+              const property = {
+                __proto__: null,
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+              };
+              Object.defineProperty(this, '0', property);
+              if (
+                value &&
+                typeof value === 'object' &&
+                Object.prototype.hasOwnProperty.call(value, 'index') &&
+                Object.prototype.hasOwnProperty.call(value, 'item') &&
+                Object.prototype.hasOwnProperty.call(value, 'key')
+              ) {
+                Reflect.deleteProperty(Array.prototype, '0');
+                (value as { index: number }).index = 1;
+              }
+            },
+          });
+        }
+        return { role: 'user', content: 'first' };
+      },
+    });
+    try {
+      owned = mapOwnedInputItemsAfterContextProcessing(
+        prepared,
+        processed,
+        prepared,
+      );
+    } finally {
+      Reflect.deleteProperty(Array.prototype, '0');
+      if (previous) Object.defineProperty(Array.prototype, '0', previous);
+      Object.defineProperty(Array.prototype, 'length', length);
+    }
+    expect(owned).toEqual(
+      processed.map((item, ownerIndex) => ({ item, ownerIndex })),
+    );
   });
 
   it('propagates a later serialization error after the keys initially match', () => {
@@ -775,27 +810,31 @@ describe('matching cloned input in order', () => {
   });
 });
 
-describe('matching a mixture of references and clones', () => {
-  it('reserves the exact owned reference before matching an equal clone', () => {
-    const history = { role: 'user', content: 'equal' } as const;
-    const current = { ...history };
-    const tail = { ...history, content: 'tail' };
-    const input = [history, current, tail];
-    const tracker = createSessionPersistenceTracker({
-      session: makeSession(),
-      hasCallModelInputFilter: true,
-    })!;
-    tracker.setPreparedItems([current], input);
-    const turn = structuredClone(input);
-    const processed = [turn[1]!, structuredClone(turn[0]!), turn[2]!];
-    tracker.setPreparedTurnItems(turn, processed);
-    tracker.recordTurnItems(processed, [
-      { ...current, content: 'current copy' },
-      { ...history, content: 'history copy' },
-      tail,
-    ]);
-    expect(tracker.getItemsForPersistence()).toEqual([
-      { ...current, content: 'current copy' },
-    ]);
-  });
+describe('live positional matching', () => {
+  it.each([false, true])(
+    'observes a later getter edit before assigning ownership, edit=%s',
+    (edit) => {
+      const anchor = { role: 'user' as const, content: 'anchor' };
+      const history = { role: 'user' as const, content: 'same' };
+      const current = { ...history };
+      const tail = { role: 'user' as const, content: 'tail' };
+      const processed = [anchor, tail, { ...current }];
+      let reads = 0;
+      Object.defineProperty(anchor, 'content', {
+        enumerable: true,
+        get() {
+          if (++reads === 2 && edit) processed[2]!.content = 'edited';
+          return 'anchor';
+        },
+      });
+      const owned = mapOwnedInputItemsAfterContextProcessing(
+        [anchor, history, current, tail],
+        processed,
+        [current],
+      );
+      expect(owned).toEqual(
+        edit ? [] : [{ item: processed[2], ownerIndex: 0 }],
+      );
+    },
+  );
 });

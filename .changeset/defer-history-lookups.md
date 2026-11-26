@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-perf: Defer history lookups when messages already match in order.
+perf: Matching has been reusing equal keys after live serialization.
