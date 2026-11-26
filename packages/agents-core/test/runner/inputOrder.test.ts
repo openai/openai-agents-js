@@ -26,6 +26,68 @@ function begin(input: AgentInputItem[]) {
 }
 
 describe('ownership of a complete input history', () => {
+  it.each(
+    (['Function', 'JSON', 'globalThis', 'inherited call'] as const).flatMap(
+      (key) => [false, true].map((stream) => ({ key, stream })),
+    ),
+  )(
+    'preserves the model input with a $key getter (stream: $stream)',
+    async ({ key, stream }) => {
+      const realm = globalThis;
+      const formatter = Function.prototype.toString;
+      const prototype = Object.getPrototypeOf(formatter);
+      const inherited = key === 'inherited call';
+      const target = inherited ? Object.create(prototype) : realm;
+      const property = inherited ? 'call' : key;
+      const prior = Object.getOwnPropertyDescriptor(
+        inherited ? prototype : realm,
+        property,
+      )!;
+      const restore = () =>
+        inherited
+          ? Object.setPrototypeOf(formatter, prototype)
+          : Object.defineProperty(realm, property, prior);
+      const model = new ScriptedModel([
+        modelResponder(() => {
+          restore();
+          return [assistantMessage('ok')];
+        }),
+      ]);
+      const runner = new Runner({ tracingDisabled: true });
+      runner.on('agent_start', (_context, _agent, input) => {
+        let reads = 0;
+        if (inherited) Object.setPrototypeOf(formatter, target);
+        Object.defineProperty(target, property, {
+          configurable: true,
+          get() {
+            // The original mapper reads JSON repeatedly and needs neither formatter lookup.
+            if (++reads === (key === 'JSON' ? 2 : 1)) {
+              restore();
+              Object.assign(input![0], { content: 'edited' });
+            }
+            return prior.value;
+          },
+        });
+      });
+      try {
+        const agent = new Agent({ name: 'History observer', model });
+        const input: AgentInputItem[] = [{ role: 'user', content: 'before' }];
+        if (stream) {
+          const result = await runner.run(agent, input, { stream: true });
+          for await (const event of result) void event;
+          await result.completed;
+        } else {
+          await runner.run(agent, input);
+        }
+        expect(model.calls[0].request.input[0]).toMatchObject({
+          content: key === 'JSON' || key === 'globalThis' ? 'edited' : 'before',
+        });
+      } finally {
+        restore();
+      }
+    },
+  );
+
   it.each(['value', 'get'] as const)(
     'declines inherited descriptor %s before reading detectors',
     (key) => {
@@ -178,45 +240,47 @@ describe('ownership of a complete input history', () => {
     },
   );
 
-  it.each(['global', 'isView', 'hasInstance', 'isBuffer', 'isArray'] as const)(
-    'declines a binary %s accessor without invoking it',
-    (kind) => {
-      const input = [message('prior')];
-      const prepared = structuredClone(input);
-      const target =
-        kind === 'global'
-          ? globalThis
-          : kind === 'isBuffer'
-            ? Buffer
-            : kind === 'isArray'
-              ? Array
-              : ArrayBuffer;
-      const key =
-        kind === 'global'
-          ? 'ArrayBuffer'
-          : kind === 'hasInstance'
-            ? Symbol.hasInstance
-            : kind;
-      const prior = Object.getOwnPropertyDescriptor(target, key);
-      let reads = 0;
-      Object.defineProperty(target, key, {
-        configurable: true,
-        get() {
-          reads++;
-          return prior?.value ?? Function.prototype[Symbol.hasInstance];
-        },
-      });
-      let accepted = false;
-      try {
-        accepted = matchesOwnedHistory(input, prepared, prepared);
-      } finally {
-        if (prior) Object.defineProperty(target, key, prior);
-        else Reflect.deleteProperty(target, key);
-      }
-      expect(accepted).toBe(false);
-      expect(reads).toBe(0);
-    },
-  );
+  it.each([
+    { target: globalThis, key: 'ArrayBuffer' },
+    { target: ArrayBuffer, key: 'isView' },
+    { target: ArrayBuffer, key: Symbol.hasInstance },
+    { target: Buffer, key: 'isBuffer' },
+    { target: Array, key: 'isArray' },
+    { target: JSON, key: 'stringify' },
+    { target: Reflect, key: 'ownKeys' },
+    { target: Reflect, key: 'getPrototypeOf' },
+    { target: Function.prototype, key: 'toString' },
+    { target: Function.prototype, key: 'call' },
+    { target: Math, key: 'min' },
+    { target: Map.prototype, key: 'get' },
+    { target: Map.prototype, key: Symbol.iterator },
+    { target: Object.getPrototypeOf(new Map().values()), key: 'next' },
+    { target: Array.prototype, key: 'some' },
+    { target: Array.prototype, key: 'shift' },
+    { target: Set.prototype, key: 'add' },
+    { target: Set.prototype, key: 'has' },
+  ])('declines a $key accessor without invoking it', ({ target, key }) => {
+    const input = [message('prior')];
+    const prepared = structuredClone(input);
+    const prior = Object.getOwnPropertyDescriptor(target, key);
+    let reads = 0;
+    Object.defineProperty(target, key, {
+      configurable: true,
+      get() {
+        reads++;
+        return prior?.value ?? Function.prototype[Symbol.hasInstance];
+      },
+    });
+    let accepted = false;
+    try {
+      accepted = matchesOwnedHistory(input, prepared, prepared);
+    } finally {
+      if (prior) Object.defineProperty(target, key, prior);
+      else Reflect.deleteProperty(target, key);
+    }
+    expect(accepted).toBe(false);
+    expect(reads).toBe(0);
+  });
 
   it('declines proxy constructor ancestors before invoking their traps', () => {
     const input = [message('prior')];

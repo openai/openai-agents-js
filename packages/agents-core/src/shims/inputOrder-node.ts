@@ -4,13 +4,59 @@ import { types } from 'node:util';
 const descriptor = Reflect.getOwnPropertyDescriptor;
 const array = Array.prototype;
 const object = Object.prototype;
-const buffer = descriptor(globalThis, 'Buffer');
+const realm = globalThis;
+const buffer = descriptor(realm, 'Buffer');
+const traversalGlobals = [
+  'Array',
+  'ArrayBuffer',
+  'Boolean',
+  'Function',
+  'JSON',
+  'Map',
+  'Math',
+  'Reflect',
+  'Set',
+  'String',
+  'Symbol',
+];
 const isBuffer = descriptor(Buffer, 'isBuffer')?.value;
+// Capture the formatter without reading its inherited .call during a run.
+// As with the descriptor reader, use the realm's bootstrap intrinsics only.
+function captureFormatter() {
+  if ('value' in object) return;
+  const isProxy = descriptor(types, 'isProxy')?.value;
+  if (typeof isProxy !== 'function') return;
+  const constructor = descriptor(realm, 'Function')?.value;
+  if (typeof constructor !== 'function' || isProxy(constructor)) return;
+  const prototype = descriptor(constructor, 'prototype')?.value;
+  if (typeof prototype !== 'function' || isProxy(prototype)) return;
+  const format = descriptor(prototype, 'toString')?.value;
+  const call = descriptor(prototype, 'call')?.value;
+  const bind = descriptor(prototype, 'bind')?.value;
+  if (
+    typeof format !== 'function' ||
+    isProxy(format) ||
+    typeof call !== 'function' ||
+    isProxy(call) ||
+    typeof bind !== 'function' ||
+    isProxy(bind) ||
+    descriptor(call, 'bind') ||
+    typeof descriptor(call, 'length')?.value !== 'number' ||
+    typeof descriptor(call, 'name')?.value !== 'string'
+  )
+    return;
+  return {
+    prototype,
+    format,
+    call,
+    source: call.bind(format) as (fn: object) => string,
+  };
+}
+const formatter = captureFormatter();
 const builtin = (fn: unknown, name: string) =>
   typeof fn === 'function' &&
   !types.isProxy(fn) &&
-  Function.prototype.toString.call(fn) ===
-    `function ${name}() { [native code] }`;
+  formatter?.source(fn) === `function ${name}() { [native code] }`;
 
 function ordinaryInstanceCheck(constructor: object): boolean {
   let current: object | null = constructor;
@@ -23,19 +69,89 @@ function ordinaryInstanceCheck(constructor: object): boolean {
   return false;
 }
 
+function ordinaryMethods(owner: object, names: string[]): boolean {
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (!builtin(descriptor(owner, name)?.value, name)) return false;
+  }
+  return true;
+}
+
+// The original passes iterate maps and arrays, including destructuring entries.
+function ordinaryIterator(iterator: object): boolean {
+  const prototype = Reflect.getPrototypeOf(iterator);
+  if (!prototype || types.isProxy(prototype)) return false;
+  const parent = Reflect.getPrototypeOf(prototype);
+  return (
+    !!parent &&
+    !types.isProxy(parent) &&
+    Reflect.getPrototypeOf(parent) === object &&
+    builtin(descriptor(prototype, 'next')?.value, 'next') &&
+    !descriptor(prototype, Symbol.iterator) &&
+    builtin(descriptor(parent, Symbol.iterator)?.value, '[Symbol.iterator]') &&
+    !('return' in prototype)
+  );
+}
+
+// The original mapper fills sparse position arrays and pushes into empty lists.
+function hasIndexedProperties(prototype: object): boolean {
+  const keys = Reflect.ownKeys(prototype);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (typeof key === 'string' && key.length && key[0] >= '0' && key[0] <= '9')
+      return true;
+  }
+  return false;
+}
+
 // Preserve the matching passes when applications intercept traversal or
 // the binary checks performed by the key serializer.
 function ordinaryTraversal(): boolean {
   if ('value' in object || 'get' in object) return false;
-  const globalBuffer = descriptor(globalThis, 'Buffer');
-  const arrayBuffer = descriptor(globalThis, 'ArrayBuffer')?.value;
+  if (
+    typeof descriptor(types, 'isProxy')?.value !== 'function' ||
+    typeof descriptor(types, 'isBoxedPrimitive')?.value !== 'function'
+  )
+    return false;
+  // Reading a getter here could edit the input or skip an error in the key serializer.
+  for (let i = 0; i < traversalGlobals.length; i++) {
+    const field = descriptor(realm, traversalGlobals[i]);
+    if (
+      !field ||
+      !('value' in field) ||
+      !field.value ||
+      (typeof field.value !== 'object' && typeof field.value !== 'function') ||
+      types.isProxy(field.value)
+    )
+      return false;
+  }
+  if (
+    descriptor(realm, 'globalThis')?.value !== realm ||
+    !formatter ||
+    descriptor(Function, 'prototype')?.value !== formatter.prototype ||
+    descriptor(formatter.prototype, 'toString')?.value !== formatter.format ||
+    descriptor(formatter.prototype, 'call')?.value !== formatter.call
+  )
+    return false;
+  const globalBuffer = descriptor(realm, 'Buffer');
+  const arrayBuffer = descriptor(realm, 'ArrayBuffer')?.value;
   const isBufferField = descriptor(Buffer, 'isBuffer');
   if (
     !builtin(descriptor, 'getOwnPropertyDescriptor') ||
-    !builtin(Reflect.ownKeys, 'ownKeys') ||
-    !builtin(Reflect.getPrototypeOf, 'getPrototypeOf') ||
-    !builtin(JSON.stringify, 'stringify') ||
+    !ordinaryMethods(Reflect, ['ownKeys', 'getPrototypeOf']) ||
+    !ordinaryMethods(JSON, ['stringify']) ||
+    !ordinaryMethods(Math, ['min']) ||
+    !builtin(Boolean, 'Boolean') ||
+    !builtin(Array, 'Array') ||
     !builtin(descriptor(Array, 'isArray')?.value, 'isArray') ||
+    !builtin(String, 'String') ||
+    !builtin(Symbol, 'Symbol') ||
+    !builtin(Map, 'Map') ||
+    !ordinaryMethods(Map.prototype, ['get', 'set', 'has', 'values']) ||
+    !builtin(descriptor(Map.prototype, Symbol.iterator)?.value, 'entries') ||
+    !builtin(Set, 'Set') ||
+    !ordinaryMethods(Set.prototype, ['add', 'has']) ||
+    !builtin(descriptor(Set.prototype, Symbol.iterator)?.value, 'values') ||
     !arrayBuffer ||
     !builtin(arrayBuffer, 'ArrayBuffer') ||
     !builtin(descriptor(arrayBuffer, 'isView')?.value, 'isView') ||
@@ -43,7 +159,7 @@ function ordinaryTraversal(): boolean {
     !ordinaryInstanceCheck(Buffer) ||
     !globalBuffer ||
     globalBuffer.get !== buffer?.get ||
-    globalThis.Buffer !== Buffer ||
+    realm.Buffer !== Buffer ||
     !isBufferField ||
     !('value' in isBufferField) ||
     isBufferField.value !== isBuffer ||
@@ -51,29 +167,32 @@ function ordinaryTraversal(): boolean {
     !builtin(descriptor(array, Symbol.iterator)?.value, 'values') ||
     Reflect.getPrototypeOf(array) !== object ||
     Reflect.getPrototypeOf(object) !== null ||
+    'validateReplacements' in object ||
     'type' in array ||
     'toJSON' in array
   )
     return false;
-  for (const name of [
-    'entries',
-    'map',
-    'filter',
-    'every',
-    'flatMap',
-    'slice',
-    'push',
-    'values',
-    'constructor',
-  ]) {
-    if (
-      !builtin(
-        descriptor(array, name)?.value,
-        name === 'constructor' ? 'Array' : name,
-      )
-    )
-      return false;
-  }
+  if (
+    !builtin(descriptor(array, 'constructor')?.value, 'Array') ||
+    !ordinaryMethods(array, [
+      'entries',
+      'map',
+      'filter',
+      'every',
+      'flatMap',
+      'slice',
+      'push',
+      'values',
+      'some',
+      'shift',
+    ]) ||
+    hasIndexedProperties(array) ||
+    hasIndexedProperties(object) ||
+    !ordinaryIterator(array.values()) ||
+    !ordinaryIterator(new Map().values()) ||
+    !ordinaryIterator(new Set()[Symbol.iterator]())
+  )
+    return false;
   return true;
 }
 
@@ -177,7 +296,8 @@ export function matchesOwnedHistory(
     !dense(processed)
   )
     return false;
-  const references = new Set(original);
+  const references = new Set();
+  for (let i = 0; i < original.length; i++) references.add(original[i]);
   for (let i = 0; i < original.length; i++) {
     const item = prepared[i];
     if (
