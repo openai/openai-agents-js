@@ -404,6 +404,111 @@ function logMcpTransportWarning(
   targetLogger.warn(message, logError);
 }
 
+type MCPConnectionCleanup = {
+  transport: MaybeSessionTransport | null;
+  session: Client | null;
+  retry: boolean;
+};
+
+class MCPConnectionCleanupRegistry {
+  #connections = new Map<
+    MaybeSessionTransport | Client,
+    MCPConnectionCleanup
+  >();
+  #closing = new WeakMap<MaybeSessionTransport | Client, Promise<void>>();
+
+  constructor(
+    private readonly disposeTransport: (
+      transport: MaybeSessionTransport | null,
+      closeLocal: () => Promise<void>,
+    ) => Promise<void>,
+  ) {}
+
+  track(transport: MaybeSessionTransport, session: Client): void {
+    this.#connections.set(transport, { transport, session, retry: false });
+  }
+
+  finishConnect(transport: MaybeSessionTransport | null): void {
+    if (
+      transport &&
+      !this.#closing.has(transport) &&
+      !this.#connections.get(transport)?.retry
+    ) {
+      this.#connections.delete(transport);
+    }
+  }
+
+  async close(
+    transport: MaybeSessionTransport | null,
+    session: Client | null,
+  ): Promise<void> {
+    const results = await Promise.allSettled([
+      ...Array.from(this.#connections, ([key, connection]) => {
+        if (connection.retry) {
+          connection.retry = false;
+          this.#closing.delete(key);
+        }
+        return this.dispose(connection.transport, connection.session);
+      }),
+      this.dispose(transport, session),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason;
+    }
+  }
+
+  dispose(
+    transport: MaybeSessionTransport | null,
+    session: Client | null,
+  ): Promise<void> {
+    const key = transport ?? session;
+    if (!key) return Promise.resolve();
+    const existing = this.#closing.get(key);
+    if (existing) return existing;
+    // Keep active cleanup enumerable so overlapping close calls join it.
+    this.#connections.set(key, { transport, session, retry: false });
+    let remainingTransport = transport;
+    let remainingSession = session;
+    const sessionOwnsTransport =
+      transport !== null && session?.transport === transport;
+    const closing = Promise.resolve()
+      .then(() =>
+        this.disposeTransport(transport, async () => {
+          try {
+            await transport?.close();
+            remainingTransport = null;
+          } finally {
+            try {
+              await session?.close();
+              remainingSession = null;
+              if (sessionOwnsTransport) remainingTransport = null;
+            } finally {
+              if (session && !session.transport) {
+                remainingSession = null;
+                if (sessionOwnsTransport) remainingTransport = null;
+              }
+            }
+          }
+        }),
+      )
+      .finally(() => {
+        // A protected Client can reconnect with a fresh transport after close.
+        if (!transport) this.#closing.delete(key);
+        this.#connections.delete(key);
+        const retryKey = remainingTransport ?? remainingSession;
+        if (retryKey) {
+          this.#connections.set(retryKey, {
+            transport: remainingTransport,
+            session: remainingSession,
+            retry: true,
+          });
+        }
+      });
+    this.#closing.set(key, closing);
+    return closing;
+  }
+}
+
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected session: Client | null = null;
   protected _cacheDirty = true;
@@ -418,6 +523,9 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   private _name: string;
   private transport: MaybeSessionTransport | null = null;
   #connectionVersion = 0;
+  #connections = new MCPConnectionCleanupRegistry((transport, closeLocal) =>
+    this.#disposeTransport(transport, closeLocal),
+  );
 
   constructor(params: MCPServerStdioOptions) {
     super(params);
@@ -478,20 +586,25 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       if (version !== this.#connectionVersion) {
         throw new Error('MCP server changed during connect.');
       }
+      this.#connections.track(transport, session);
       await session.connect(transport, requestOptions);
       if (version !== this.#connectionVersion) {
         throw new Error('MCP server changed during connect.');
       }
     } catch (e) {
       logToolActionError(this.logger, 'Error initializing MCP server:', e);
-      await this.#closeConnection(transport, session).catch((error) =>
-        logToolActionWarning(
-          this.logger,
-          'Failed to close discarded MCP client:',
-          error,
-        ),
-      );
+      await this.#connections
+        .dispose(transport, session)
+        .catch((error) =>
+          logToolActionWarning(
+            this.logger,
+            'Failed to close discarded MCP client:',
+            error,
+          ),
+        );
       throw e;
+    } finally {
+      this.#connections.finishConnect(transport);
     }
     const previousTransport = this.transport;
     const previousSession = this.session;
@@ -504,14 +617,15 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     this.serverInitializeResult = {
       serverInfo: { name: this._name, version: '1.0.0' },
     } as InitializeResult;
-    await this.#closeConnection(previousTransport, previousSession).catch(
-      (error) =>
+    await this.#connections
+      .dispose(previousTransport, previousSession)
+      .catch((error) =>
         logToolActionWarning(
           this.logger,
           'Failed to close replaced MCP client:',
           error,
         ),
-    );
+      );
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
@@ -671,12 +785,12 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     const session = this.session;
     this.transport = null;
     this.session = null;
-    await this.#closeConnection(transport, session);
+    await this.#connections.close(transport, session);
   }
 
-  async #closeConnection(
+  async #disposeTransport(
     transport: MaybeSessionTransport | null,
-    session: Client | null,
+    closeLocal: () => Promise<void>,
   ): Promise<void> {
     if (transport && typeof transport.terminateSession === 'function') {
       try {
@@ -691,11 +805,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         );
       }
     }
-    try {
-      await transport?.close();
-    } finally {
-      await session?.close();
-    }
+    await closeLocal();
   }
 }
 
@@ -713,6 +823,9 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   private _name: string;
   private transport: MaybeSessionTransport | null = null;
   #connectionVersion = 0;
+  #connections = new MCPConnectionCleanupRegistry((transport, closeLocal) =>
+    this.#disposeTransport(transport, closeLocal),
+  );
 
   constructor(params: MCPServerSSEOptions) {
     super(params);
@@ -753,6 +866,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       if (version !== this.#connectionVersion) {
         throw new Error('MCP server changed during connect.');
       }
+      this.#connections.track(transport, session);
       await session.connect(transport, requestOptions);
       if (version !== this.#connectionVersion) {
         throw new Error('MCP server changed during connect.');
@@ -764,14 +878,18 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'SSE connect',
       );
       logToolActionError(this.logger, 'Error initializing MCP server:', error);
-      await this.#closeConnection(transport, session).catch((error) =>
-        logToolActionWarning(
-          this.logger,
-          'Failed to close discarded MCP client:',
-          error,
-        ),
-      );
+      await this.#connections
+        .dispose(transport, session)
+        .catch((error) =>
+          logToolActionWarning(
+            this.logger,
+            'Failed to close discarded MCP client:',
+            error,
+          ),
+        );
       throw error;
+    } finally {
+      this.#connections.finishConnect(transport);
     }
     const previousTransport = this.transport;
     const previousSession = this.session;
@@ -784,14 +902,15 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     this.serverInitializeResult = {
       serverInfo: { name: this._name, version: '1.0.0' },
     } as InitializeResult;
-    await this.#closeConnection(previousTransport, previousSession).catch(
-      (error) =>
+    await this.#connections
+      .dispose(previousTransport, previousSession)
+      .catch((error) =>
         logToolActionWarning(
           this.logger,
           'Failed to close replaced MCP client:',
           error,
         ),
-    );
+      );
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
@@ -959,17 +1078,16 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const session = this.session;
     this.transport = null;
     this.session = null;
-    await this.#closeConnection(transport, session);
+    await this.#connections.close(transport, session);
   }
 
-  async #closeConnection(
+  async #disposeTransport(
     transport: MaybeSessionTransport | null,
-    session: Client | null,
+    closeLocal: () => Promise<void>,
   ): Promise<void> {
     await runMcpTransportOperation(this.params.url, 'SSE cleanup', async () => {
       if (hasSessionTransport(transport)) {
         const sessionId = transport.sessionId;
-
         if (
           sessionId &&
           shouldTerminateTransportSession(transport, this.transport) &&
@@ -990,12 +1108,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
           }
         }
       }
-
-      try {
-        await transport?.close();
-      } finally {
-        await session?.close();
-      }
+      await closeLocal();
     });
   }
 }
