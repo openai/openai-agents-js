@@ -6,6 +6,11 @@ import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import {
+  canCopyMessages,
+  prepareTextInput,
+  type OrderedInput,
+} from './orderedInput';
+import {
   buildAgentInputPool,
   deduplicateAgentInputItemsPreferringLatest,
   extractOutputItemsFromRunItems,
@@ -105,15 +110,27 @@ export async function applyCallModelInputFilter<TContext>(
   context: RunContext<TContext>,
   inputItems: AgentInputItem[],
   systemInstructions: string | undefined,
+  ordered?: OrderedInput,
 ): Promise<FilterApplicationResult> {
   const cloneInputItems = (
     items: AgentInputItem[],
     map?: WeakMap<object, AgentInputItem>,
   ) =>
     items.map((item) => {
-      const cloned = structuredClone(item) as AgentInputItem;
+      const clone = structuredClone;
+      const cloned = clone(item) as AgentInputItem;
       if (map && cloned && typeof cloned === 'object') {
-        map.set(cloned as object, item);
+        // A getter on the live input can temporarily replace either operation
+        // and expose the new item before the next iteration.
+        if (plain) {
+          const register = map.set;
+          const { apply } = plain;
+          if (clone !== plain.clone || register !== plain.register)
+            plain = undefined;
+          apply(register, map, [cloned, item]);
+        } else {
+          map.set(cloned, item);
+        }
       }
       return cloned;
     });
@@ -125,6 +142,15 @@ export async function applyCallModelInputFilter<TContext>(
   // receive deep copies so their mutations cannot affect the cached turn state.
   const preserveInputIdentity =
     callModelInputFilter?.preserveInputIdentity === true;
+  let plain =
+    ordered && !callModelInputFilter && canCopyMessages(inputItems)
+      ? {
+          ordered,
+          clone: structuredClone,
+          register: WeakMap.prototype.set,
+          apply: Reflect.apply,
+        }
+      : undefined;
   const clonedBaseInput = preserveInputIdentity
     ? [...inputItems]
     : cloneInputItems(inputItems, cloneMap);
@@ -140,6 +166,15 @@ export async function applyCallModelInputFilter<TContext>(
     instructions: systemInstructions,
   };
   if (!callModelInputFilter) {
+    if (plain) {
+      const result = prepareTextInput(
+        plain.ordered,
+        clonedBaseInput,
+        cloneMap,
+        systemInstructions,
+      );
+      if (result) return result;
+    }
     const normalizedInput =
       deduplicateAgentInputItemsPreferringLatest(clonedBaseInput);
     return {

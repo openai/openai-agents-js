@@ -3,6 +3,14 @@ import {
   matchesFunctionToolRecipient,
 } from '../toolIdentity';
 import { UserError } from '../errors';
+import type { MessageItem } from '../types/protocol';
+import {
+  canCopyMessages,
+  copyText,
+  matchesOrderedInput,
+  matchesSources,
+  type OrderedInput,
+} from './orderedInput';
 import {
   isOpenAIResponsesCompactionAwareSession,
   isOpenAIResponsesCompactionOwnershipAwareSession,
@@ -1233,6 +1241,7 @@ type PreparedOwnedSourcePosition = {
 };
 
 export type SessionPersistenceTracker = {
+  orderedInput?: OrderedInput;
   setPreparedItems: (
     items?: AgentInputItem[],
     preparedInput?: string | AgentInputItem[],
@@ -1244,6 +1253,11 @@ export type SessionPersistenceTracker = {
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
     filteredItems?: AgentInputItem[],
+    unobserved?: MessageItem[],
+  ) => void;
+  captureInput: (
+    session: Session | undefined,
+    state: RunState<any, any>,
   ) => void;
   getItemsForPersistence: () => AgentInputItem[] | undefined;
   buildPersistInputOnce: (
@@ -1259,8 +1273,10 @@ export function createSessionPersistenceTracker(options: {
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
   resumedSessionInputItems?: AgentInputItem[];
-}): SessionPersistenceTracker | undefined {
+}): SessionPersistenceTracker {
   class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
+    orderedInput?: OrderedInput;
+    #firstOwners?: { items: MessageItem[]; clone: typeof structuredClone };
     private readonly session?: Session;
     private readonly runContext?: RunContext<any>;
     private readonly hasCallModelInputFilter: boolean;
@@ -1294,6 +1310,8 @@ export function createSessionPersistenceTracker(options: {
       items?: AgentInputItem[],
       preparedInput?: string | AgentInputItem[],
     ) => {
+      this.orderedInput = undefined;
+      this.#firstOwners = undefined;
       const sessionItems =
         items ??
         (this.session === undefined && preparedInput !== undefined
@@ -1332,7 +1350,27 @@ export function createSessionPersistenceTracker(options: {
       preparedItems: AgentInputItem[],
       processedItems: AgentInputItem[],
     ) => {
+      this.orderedInput = undefined;
       if (!this.initialPreparedItems || !this.initialSourcePositions) {
+        return;
+      }
+      if (
+        this.session === undefined &&
+        !this.hasCallModelInputFilter &&
+        matchesOrderedInput(
+          this.initialPreparedItems,
+          preparedItems,
+          processedItems,
+          this.initialSourcePositions,
+        )
+      ) {
+        this.preparedSources = processedItems.map((item, ownerIndex) => ({
+          item,
+          ownerIndex,
+        }));
+        if (!this.filteredSnapshot && !this.#firstOwners) {
+          this.orderedInput = { unobserved: undefined };
+        }
         return;
       }
       const preparedSources = mapPreparedSourcesAfterContextProcessing(
@@ -1351,7 +1389,37 @@ export function createSessionPersistenceTracker(options: {
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
+      unobserved?: MessageItem[],
     ) => {
+      const ordered = this.orderedInput;
+      this.orderedInput = undefined;
+      if (
+        ordered &&
+        unobserved &&
+        unobserved === filteredItems &&
+        this.preparedSources &&
+        unobserved.length === this.preparedSources.length &&
+        matchesSources(this.preparedSources, sourceItems)
+      ) {
+        // Defer the writable tracker snapshot under the current copy policy.
+        this.#firstOwners = {
+          items: unobserved.map(copyText),
+          clone: structuredClone,
+        };
+        return;
+      }
+
+      // Position uniquely identifies each owner on the first turn. Build
+      // the ordinary tables only when reconciling a subsequent request.
+      if (this.#firstOwners) {
+        if (filteredItems === undefined) this.getItemsForPersistence();
+        const { items } = this.#firstOwners;
+        for (let index = 0; index < items.length; index++) {
+          this.ownedFilteredItems.set(index, items[index]);
+          this.persistedInputOrder.push({ type: 'owned', index });
+        }
+        this.#firstOwners = undefined;
+      }
       if (filteredItems !== undefined) {
         if (!this.preparedSources) {
           this.filteredSnapshot = cloneItems(filteredItems);
@@ -1382,6 +1450,10 @@ export function createSessionPersistenceTracker(options: {
     };
 
     getItemsForPersistence = () => {
+      if (this.#firstOwners && !this.filteredSnapshot) {
+        const { items, clone } = this.#firstOwners;
+        this.filteredSnapshot = clone(items);
+      }
       if (this.filteredSnapshot !== undefined) {
         return this.filteredSnapshot;
       }
@@ -1390,6 +1462,27 @@ export function createSessionPersistenceTracker(options: {
       }
       return this.originalSnapshot;
     };
+
+    captureInput(session: Session | undefined, state: RunState<any, any>) {
+      const first = this.#firstOwners?.items;
+      // These text records already have their persistent form. Give live
+      // approval and error recovery a separate, writable input prefix.
+      if (
+        session === undefined &&
+        first &&
+        !this.filteredSnapshot &&
+        canCopyMessages(first)
+      ) {
+        state._currentTurnSessionHistoryTransactionInputItems =
+          first.map(copyText);
+        return;
+      }
+      captureSessionHistoryTransactionInputItems(
+        session,
+        state,
+        this.getItemsForPersistence(),
+      );
+    }
 
     buildPersistInputOnce = (serverManagesConversation: boolean) => {
       if (!this.session || serverManagesConversation) {

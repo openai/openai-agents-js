@@ -92,7 +92,7 @@ import {
   bindSessionCompactionState,
   prepareSessionCompactionExchange,
   type SessionCompactionState,
-  captureSessionHistoryTransactionInputItems,
+  type SessionPersistenceTracker,
   markSessionHistoryTransactionInputPersisted,
   prepareSessionHistoryTransactionsForRun,
   prepareResumedSessionWrite,
@@ -958,7 +958,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         } else {
           preparedInput = prepared.preparedInput;
         }
-        sessionPersistence?.setPreparedItems(
+        sessionPersistence.setPreparedItems(
           prepared.sessionItems,
           prepared.preparedInput,
         );
@@ -966,7 +966,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       // Streaming runs persist the input asynchronously, so track a one-shot helper
       // that can be awaited from multiple branches without double-writing.
       const ensureStreamInputPersisted =
-        sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
+        sessionPersistence.buildPersistInputOnce(serverManagesConversation);
 
       const executeRun = async (
         effectiveInvocationSpanParent = invocationSpanParent,
@@ -978,9 +978,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             taskSpanName,
             effectiveOptions,
             ensureStreamInputPersisted,
-            sessionPersistence?.setPreparedTurnItems,
-            sessionPersistence?.recordTurnItems,
-            sessionPersistence?.getItemsForPersistence,
+            sessionPersistence,
             preserveTurnPersistenceOnResume,
             provisionalSessionHistoryTransactionSessionId,
             provisionalSessionHistoryTransactionInputItems,
@@ -988,7 +986,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               sdkSessionId: async () => await session?.getSessionId(),
               inputOverride: () =>
                 session
-                  ? sessionPersistence?.getItemsForPersistence()
+                  ? sessionPersistence.getItemsForPersistence()
                   : undefined,
             },
             effectiveInvocationSpanParent,
@@ -1009,21 +1007,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preparedInput,
           effectiveOptions,
           taskSpanName,
-          sessionPersistence?.setPreparedTurnItems,
-          sessionPersistence?.recordTurnItems,
-          sessionPersistence?.getItemsForPersistence,
+          sessionPersistence,
           preserveTurnPersistenceOnResume,
           provisionalSessionHistoryTransactionSessionId,
           provisionalSessionHistoryTransactionInputItems,
           {
             sdkSessionId: async () => await session?.getSessionId(),
             inputOverride: () =>
-              session
-                ? sessionPersistence?.getItemsForPersistence()
-                : undefined,
+              session ? sessionPersistence.getItemsForPersistence() : undefined,
           },
           effectiveInvocationSpanParent,
-          session && sessionPersistence && !serverManagesConversation
+          session && !serverManagesConversation
             ? async (result, persistenceOptions) => {
                 await saveToSession(
                   session,
@@ -1259,17 +1253,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: NonStreamRunOptions<TContext, TAgent>,
     taskSpanName: string,
-    sessionTurnInputUpdate?: (
-      preparedInput: AgentInputItem[],
-      processedInput: AgentInputItem[],
-    ) => void,
-    // sessionInputUpdate lets the caller adjust queued session items after filters run so we
-    // persist exactly what we send to the model (e.g., after redactions or truncation).
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
-    getSessionInputForPersistence?: () => AgentInputItem[] | undefined,
+    sessionPersistence: SessionPersistenceTracker,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
     provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
@@ -1889,7 +1873,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
-            sessionTurnInputUpdate?.(
+            sessionPersistence.setPreparedTurnItems(
               sessionPreparedTurnInput,
               preparedSandboxAgent.turnInput,
             );
@@ -1911,13 +1895,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               artifacts,
               preparedSandboxAgent.turnInput,
               serverConversationTracker,
-              sessionInputUpdate,
+              sessionPersistence,
             );
-            captureSessionHistoryTransactionInputItems(
-              options.session,
-              state,
-              getSessionInputForPersistence?.(),
-            );
+            sessionPersistence.captureInput(options.session, state);
 
             await guardrailTracker.throwIfError();
 
@@ -2349,16 +2329,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sandboxRuntime: SandboxRuntimeManager<TContext>,
     options: StreamRunOptions<TContext, TAgent>,
     isResumedState: boolean,
-    ensureStreamInputPersisted?: () => Promise<void>,
-    sessionTurnInputUpdate?: (
-      preparedInput: AgentInputItem[],
-      processedInput: AgentInputItem[],
-    ) => void,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
-    getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
+    ensureStreamInputPersisted: (() => Promise<void>) | undefined,
+    sessionPersistence: SessionPersistenceTracker,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
     provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
@@ -2491,14 +2463,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       };
       const finalSessionWritePreparation =
         approvedToolFinalSessionWritePreparation;
-      const sessionInputItems = streamInputPersisted
-        ? undefined
-        : getStreamInputForPersistence?.();
+      const session = options.session;
+      const sessionInputItems =
+        session && !streamInputPersisted
+          ? sessionPersistence.getItemsForPersistence()
+          : undefined;
       // A remote session may commit addItems before rejecting, and compaction happens after the
       // append. Once the combined save starts, retrying the input is therefore unsafe.
       streamInputPersisted = true;
       await saveStreamResultToSession(
-        options.session,
+        session,
         result,
         {
           ...persistenceOptions,
@@ -2945,7 +2919,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             tracingParent:
               currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
-          sessionTurnInputUpdate?.(
+          sessionPersistence.setPreparedTurnItems(
             sessionPreparedTurnInput,
             preparedSandboxAgent.turnInput,
           );
@@ -2968,13 +2942,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             artifacts,
             preparedSandboxAgent.turnInput,
             serverConversationTracker,
-            sessionInputUpdate,
+            sessionPersistence,
           );
-          captureSessionHistoryTransactionInputItems(
-            options.session,
-            result.state,
-            getStreamInputForPersistence?.(),
-          );
+          sessionPersistence.captureInput(options.session, result.state);
 
           await guardrailTracker.throwIfError();
 
@@ -3557,17 +3527,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     taskSpanName: string,
-    options?: StreamRunOptions<TContext, TAgent>,
-    ensureStreamInputPersisted?: () => Promise<void>,
-    sessionTurnInputUpdate?: (
-      preparedInput: AgentInputItem[],
-      processedInput: AgentInputItem[],
-    ) => void,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
-    getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
+    options: StreamRunOptions<TContext, TAgent> | undefined,
+    ensureStreamInputPersisted: (() => Promise<void>) | undefined,
+    sessionPersistence: SessionPersistenceTracker,
     preserveTurnPersistenceOnResume?: boolean,
     provisionalSessionHistoryTransactionSessionId?: string,
     provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
@@ -3686,9 +3648,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         streamOptions,
         isResumedState,
         ensureStreamInputPersisted,
-        sessionTurnInputUpdate,
-        sessionInputUpdate,
-        getStreamInputForPersistence,
+        sessionPersistence,
         preserveTurnPersistenceOnResume,
         provisionalSessionHistoryTransactionSessionId,
         provisionalSessionHistoryTransactionInputItems,
@@ -3742,11 +3702,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: SharedRunOptions<TContext, TAgent>,
     artifacts: AgentArtifacts<TContext>,
     turnInput: AgentInputItem[],
-    serverConversationTracker?: ServerConversationTracker,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
+    serverConversationTracker: ServerConversationTracker | undefined,
+    sessionPersistence: SessionPersistenceTracker,
   ): Promise<PreparedModelCall<TContext>> {
     const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
@@ -3820,24 +3777,27 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         artifacts.serializedHandoffs.length === 0
       );
 
-    const {
-      modelInput,
-      sourceItems,
-      persistedItems,
-      sourceMatchKinds,
-      filterApplied,
-      preserveInputIdentity,
-    } = await applyCallModelInputFilter(
+    const ordered = sessionPersistence.orderedInput;
+    const applied = await applyCallModelInputFilter(
       state._currentAgent,
       options.callModelInputFilter,
       state._context,
       turnInput,
       systemInstructions,
+      ordered,
     );
+    const { modelInput, sourceItems } = applied;
+    const persistedItems =
+      ordered?.unobserved?.(applied) ?? applied.persistedItems;
+    const { sourceMatchKinds, filterApplied, preserveInputIdentity } = applied;
 
     // Persist normalized clones so session history mirrors the exact model payload. An empty array
     // is intentional when a filter removes everything.
-    sessionInputUpdate?.(sourceItems, persistedItems);
+    sessionPersistence.recordTurnItems(
+      sourceItems,
+      persistedItems,
+      ordered?.unobserved?.(applied),
+    );
 
     const previousResponseId =
       serverConversationTracker?.previousResponseId ??
