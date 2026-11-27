@@ -316,9 +316,18 @@ export class OpenAIResponsesCompactionSession
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
     // Refresh after the request so rollback does not revive items that expired during the await.
-    let previousItems: AgentInputItem[];
     try {
-      previousItems = await this.getAllUnderlyingSessionItems();
+      const previousItems = await this.getAllUnderlyingSessionItems();
+      try {
+        await this.replaceUnderlyingSessionItems({
+          outputItems,
+          previousItems,
+        });
+      } finally {
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        this.mutationGeneration = {};
+      }
     } catch (error) {
       const usage = toRequestUsage(compacted.usage);
       attachModelFailureUsage(
@@ -326,15 +335,6 @@ export class OpenAIResponsesCompactionSession
         new Usage({ ...usage, requests: 1, requestUsageEntries: [usage] }),
       );
       throw error;
-    }
-    try {
-      await this.replaceUnderlyingSessionItems({ outputItems, previousItems });
-    } catch (error) {
-      this.compactionCandidateItems = undefined;
-      this.sessionItems = undefined;
-      throw error;
-    } finally {
-      this.mutationGeneration = {};
     }
     this.compactionCandidateItems = outputCompactionCandidateItems;
     this.sessionItems = outputItems;

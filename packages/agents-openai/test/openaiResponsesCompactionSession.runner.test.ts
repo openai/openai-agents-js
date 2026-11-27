@@ -860,6 +860,57 @@ describe('Runner compaction rollback budget', () => {
     },
   );
 
+  it.each([
+    ['clear', false],
+    ['clear', true],
+    ['append', false],
+    ['append', true],
+  ] as const)(
+    'records compaction usage once after a failed replacement %s (stream=%s)',
+    async (operation, stream) => {
+      const failure = new Error('replacement failed');
+      const underlying = new MemorySession();
+      const { session, runner, compact } = setup(underlying, 'input');
+      const clear = underlying.clearSession.bind(underlying);
+      vi.spyOn(underlying, 'clearSession').mockImplementationOnce(async () => {
+        await clear();
+        if (operation === 'clear') throw failure;
+        vi.spyOn(underlying, 'addItems').mockRejectedValueOnce(failure);
+      });
+      const context = new RunContext();
+      const reply = assistantMessage('done');
+      const agent = new Agent({
+        name: 'failed replacement',
+        model: new ScriptedModel([[reply]]),
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const completion = startRun(runner, agent, stream, {
+          session,
+          context,
+        }).then(async (result) => {
+          if ('completed' in result) await result.completed;
+        });
+        await expect(completion).rejects.toBe(failure);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(compact).toHaveBeenCalledTimes(1);
+      await expect(session.getItems()).resolves.toEqual([user('hello'), reply]);
+      expect(context.usage).toMatchObject({
+        requests: 2,
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+      });
+      expect(
+        context.usage.requestUsageEntries?.filter(
+          (entry) => entry.endpoint === 'responses.compact',
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
   it.each([false, true])(
     'honors the budget after turn persistence (stream=%s)',
     async (stream) => {
