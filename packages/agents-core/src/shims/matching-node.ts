@@ -255,6 +255,7 @@ function ordinaryTraversal(runtime: Runtime) {
     'text',
     'annotations',
     'mediaType',
+    'providerData',
     'validateReplacements',
   ].some((key) => key in array);
 }
