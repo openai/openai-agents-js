@@ -1263,6 +1263,39 @@ describe('withTrace & span helpers (integration)', () => {
     expect(processor.tracesEnded.length).toBe(1);
   });
 
+  it('ends the Runner trace after a non-streamed model failure', async () => {
+    const error = new Error('model failed');
+    const agent = new Agent({
+      name: 'TestAgent',
+      model: new ScriptedModel([{ type: 'error', error }]),
+    });
+    const runner = new Runner({ tracingDisabled: false });
+    await expect(runner.run(agent, 'hello')).rejects.toThrow('model failed');
+    expect(processor.tracesStarted).toHaveLength(1);
+    expect(processor.tracesEnded).toEqual(processor.tracesStarted);
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('ends a failed inner trace and restores its parent even if the end hook fails', async () => {
+    const error = new Error('body failed');
+    const innerProcessor = new TestProcessor();
+    const inner = new Trace({ name: 'inner' }, innerProcessor);
+    const ended = vi
+      .spyOn(innerProcessor, 'onTraceEnd')
+      .mockRejectedValue(new Error('end failed'));
+    await withTrace('outer', async (outer) => {
+      await expect(
+        withTrace(inner, async () => {
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(ended).toHaveBeenCalledExactlyOnceWith(inner);
+      expect(getCurrentTrace()).toBe(outer);
+      expect(processor.tracesEnded).toHaveLength(0);
+    });
+    expect(processor.tracesEnded).toEqual(processor.tracesStarted);
+  });
+
   it('uses a supplied tracing context storage implementation', async () => {
     const storage = new StackTracingContextStorage();
     const observed: Array<string | null> = [];
