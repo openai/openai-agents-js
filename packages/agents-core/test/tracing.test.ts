@@ -884,6 +884,52 @@ describe('BatchTraceProcessor', () => {
     await processor.shutdown();
   });
 
+  it.each(['forceFlush', 'shutdown'] as const)(
+    'honors maxBatchSize during %s, including the trailing batch',
+    async (operation) => {
+      const processor = new BatchTraceProcessor(exporter, {
+        maxBatchSize: 2,
+        scheduleDelay: 10000,
+      });
+      const traces = ['a', 'b', 'c'].map((name) => new Trace({ name }));
+      for (const trace of traces) await processor.onTraceStart(trace);
+      await processor[operation]();
+      if (operation === 'forceFlush') await processor.shutdown();
+      expect(exporter.exported).toEqual([[traces[0], traces[1]], [traces[2]]]);
+    },
+  );
+
+  it('continues the flush after a rejected batch and leaves new items queued', async () => {
+    const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    const [first, second, third, late] = ['a', 'b', 'c', 'late'].map(
+      (name) => new Trace({ name }),
+    );
+    const processor = new BatchTraceProcessor(
+      {
+        async export(items) {
+          await exporter.export(items);
+          if (items[0] === first) await processor.onTraceStart(late);
+          if (items[0] === second) throw new Error('batch rejected');
+        },
+      },
+      { maxBatchSize: 1, scheduleDelay: 10000 },
+    );
+    try {
+      for (const trace of [first, second, third]) {
+        await processor.onTraceStart(trace);
+      }
+      const flush = processor.forceFlush();
+      await processor.forceFlush();
+      expect(exporter.exported).toEqual([[first], [second], [third]]);
+      await flush;
+      await processor.forceFlush();
+      expect(exporter.exported).toEqual([[first], [second], [third], [late]]);
+    } finally {
+      await processor.shutdown();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('drops items when the buffer is full', async () => {
     const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
     const processor = new BatchTraceProcessor(exporter, {
