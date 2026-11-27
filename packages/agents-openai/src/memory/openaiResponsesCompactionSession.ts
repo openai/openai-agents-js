@@ -490,7 +490,9 @@ export class OpenAIResponsesCompactionSession
 
   private async getAllUnderlyingSessionItems(): Promise<AgentInputItem[]> {
     if (this.maxRollbackItems === undefined) {
-      return this.underlyingSession.getItems();
+      // An omitted limit can select a backend's default window. Rollback
+      // needs every item that clearSession() is about to remove.
+      return this.underlyingSession.getItems(Number.MAX_SAFE_INTEGER);
     }
     const items = await this.underlyingSession.getItems(
       this.maxRollbackItems + 1,
