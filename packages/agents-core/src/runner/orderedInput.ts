@@ -1,3 +1,4 @@
+/// <reference lib="es2021.weakref" />
 import { matchingRuntime } from '@openai/agents-core/_shims';
 import { user, assistant, system } from '../helpers/message';
 import type { AgentInputItem } from '../types';
@@ -40,18 +41,38 @@ function dense(items: unknown[], runtime: Runtime): boolean {
 function isTextRecord(
   value: unknown,
   runtime: Runtime,
+  proof?: RecordProof,
 ): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  if (!proof) {
+    if (
+      runtime.isProxy(value) ||
+      Array.isArray(value) ||
+      runtime.isBoxedPrimitive(value) ||
+      ArrayBuffer.isView(value)
+    )
+      return false;
+    return (
+      Object.getPrototypeOf(value) === Object.prototype &&
+      !('Infinity' in value) &&
+      !('toJSON' in value)
+    );
+  }
+  if (!proof.known?.has(value)) {
+    proof.known = undefined;
+    if (
+      runtime.isProxy(value) ||
+      Array.isArray(value) ||
+      runtime.isMap(value) ||
+      runtime.isSet(value) ||
+      runtime.isNativeError(value)
+    )
+      return false;
+  }
   return (
-    !!value &&
-    typeof value === 'object' &&
-    !runtime.isProxy(value) &&
     Object.getPrototypeOf(value) === Object.prototype &&
     !('Infinity' in value) &&
-    !Array.isArray(value) &&
-    !runtime.isMap(value) &&
-    !runtime.isSet(value) &&
-    !runtime.isNativeError(value) &&
-    !Object.getOwnPropertySymbols(value).length
+    (!!proof.known || !Object.getOwnPropertySymbols(value).length)
   );
 }
 
@@ -60,33 +81,38 @@ function hasTextFields(
   runtime: Runtime,
   keys: string[],
 ): boolean {
-  const actual = Object.keys(value);
-  if (actual.length !== keys.length) return false;
-  for (let i = 0; i < keys.length; i++) {
-    if (actual[i] !== keys[i] || runtime.lookupGetter.call(value, keys[i]))
+  let index = 0;
+  for (const key in value) {
+    if (key !== keys[index++] || runtime.lookupGetter.call(value, key))
       return false;
   }
-  return true;
+  return index === keys.length;
 }
 
 function isTextList(
   value: unknown,
   runtime: Runtime,
   size: number,
+  proof?: RecordProof,
 ): value is unknown[] {
   if (
     runtime.isProxy(value) ||
     !Array.isArray(value) ||
     Object.getPrototypeOf(value) !== Array.prototype ||
-    value.length !== size ||
-    Object.getOwnPropertySymbols(value).length
+    value.length !== size
   )
     return false;
-  const keys = Object.keys(value);
-  return (
-    keys.length === size &&
-    (!size || (keys[0] === '0' && !runtime.lookupGetter.call(value, 0)))
-  );
+  if (!proof)
+    return (
+      !('type' in value || 'Infinity' in value || 'toJSON' in value) &&
+      (!size || (0 in value && !runtime.lookupGetter.call(value, 0)))
+    );
+  let count = 0;
+  for (const key in value) {
+    if (key !== '0' || runtime.lookupGetter.call(value, 0)) return false;
+    count++;
+  }
+  return count === size;
 }
 
 type WriteText = (text: string) => MessageItem;
@@ -123,8 +149,41 @@ const helpers = {
 const textKeys = ['type', 'text'];
 const annotatedKeys = ['type', 'text', 'annotations'];
 
-function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
-  if (!isTextRecord(item, runtime)) return;
+type RecordProof = { known: WeakSet<object> | undefined };
+let records: WeakMap<object, WeakRef<WeakSet<object>> | undefined> | undefined;
+
+function remember(key: object, items: AgentInputItem[]) {
+  const group: object[] = [...items];
+  for (const item of items) {
+    if ('content' in item && typeof item.content !== 'string')
+      group.push(item.content[0]);
+  }
+  (records ??= new WeakMap()).set(key, new WeakRef(new WeakSet(group)));
+}
+
+function takeRecords(key: object): WeakSet<object> | undefined {
+  const known = records?.get(key)?.deref();
+  if (known) records?.set(key, undefined);
+  return known;
+}
+
+export function captureStateInput(input: string | AgentInputItem[]) {
+  if (records && typeof input !== 'string') {
+    const state = captureTextHistory(input, input, true)?.read();
+    if (state) {
+      remember(state[0], state);
+      return state;
+    }
+  }
+  return structuredClone(input);
+}
+
+function textFormat(
+  item: unknown,
+  runtime: Runtime,
+  proof?: RecordProof,
+): WriteText | undefined {
+  if (!isTextRecord(item, runtime, proof)) return;
   const helper = 'type' in item;
   const reply = 'status' in item;
   const layout = helper ? helpers : plain;
@@ -138,9 +197,9 @@ function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
     if (item.role === 'system') return layout.system;
     if (item.role === 'user' && !helper) return plain.user;
   }
-  if (!isTextList(item.content, runtime, 1)) return;
+  if (!isTextList(item.content, runtime, 1, proof)) return;
   const part = item.content[0];
-  if (!isTextRecord(part, runtime)) return;
+  if (!isTextRecord(part, runtime, proof)) return;
   const annotated = 'annotations' in part;
   if (
     !hasTextFields(part, runtime, annotated ? annotatedKeys : textKeys) ||
@@ -164,7 +223,7 @@ function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
   )
     return;
   if (!annotated) return layout.assistant;
-  if (isTextList(part.annotations, runtime, 0)) return layout.annotated;
+  if (isTextList(part.annotations, runtime, 0, proof)) return layout.annotated;
 }
 
 function messageReader(formats: WriteText[], texts: string[]) {
@@ -178,20 +237,37 @@ function messageReader(formats: WriteText[], texts: string[]) {
 export function captureTextHistory(
   items: AgentInputItem[],
   original?: AgentInputItem[],
+  stateCapture = false,
 ) {
-  if (original && original.length < 32) return;
+  if (!stateCapture && original && original.length < 32) return;
   const runtime = matchingRuntime();
   if (
     !runtime ||
     runtime.isProxy(items) ||
     !Array.isArray(items) ||
     items.length < 32 ||
-    items.length > 32768 ||
-    !dense(items, runtime)
+    items.length > 32768
   )
     return;
+  const proof: RecordProof = {
+    known: stateCapture ? takeRecords(items) : undefined,
+  };
+  if (stateCapture && !proof.known) return;
+  if (!dense(items, runtime)) return;
   const sources = original ?? [...items];
   if (sources.length !== items.length) return;
+  if (!original) proof.known = takeRecords(sources[0]);
+  if (stateCapture) {
+    const keys = Object.keys(items);
+    if (
+      keys.length !== items.length ||
+      keys[keys.length - 1] !== '' + (items.length - 1)
+    )
+      return;
+  }
+  // Supported layouts have one acyclic path. Unique terminals keep every
+  // projected path independent; shared leaves need the native graph copy.
+  const terminals = stateCapture ? new Set<unknown>() : undefined;
   const formats: WriteText[] = [];
   const texts: string[] = [];
   // Bound the temporary native graph. Oversized histories use individual copies.
@@ -199,18 +275,41 @@ export function captureTextHistory(
   for (let index = 0; index < sources.length; index++) {
     const item = sources[index];
     if (item !== items[index]) return;
-    const write = textFormat(item, runtime);
+    const write = textFormat(item, runtime, proof);
     if (!write || !('role' in item)) return;
     formats.push(write);
     const content = item.content;
+    if (terminals) {
+      const last =
+        typeof content === 'string'
+          ? item
+          : 'annotations' in content[0]
+            ? content[0].annotations
+            : content[0];
+      if (!proof.known || terminals.has(last)) return;
+      terminals.add(last);
+    }
     if (typeof content === 'string') texts.push(content);
     else if ('text' in content[0]) texts.push(content[0].text);
     else return;
     textBudget -= texts[index].length;
     if (textBudget < 0) return;
   }
-  // Validate the live native clone policy at each boundary. Built-ins with
-  // ordinary prototypes can still serialize as a different kind of value.
+  // Serialize the known graph before stopping, so late clone marks still throw.
+  if (proof.known) {
+    const checked = {};
+    try {
+      structuredClone({
+        sources,
+        get checked() {
+          throw checked;
+        },
+      });
+    } catch (error) {
+      if (error !== checked) throw error;
+      return { sources, read: messageReader(formats, texts) };
+    }
+  }
   const copies = structuredClone(sources);
   for (let i = 0; i < copies.length; i++) {
     const item = copies[i];
@@ -229,78 +328,57 @@ export function captureTextHistory(
         return;
     }
   }
+  if (original) remember(items, sources);
   return { sources, read: messageReader(formats, texts) };
 }
 
-// Compare only shallow text data. Checking accessors preserves the original
-// serializer's first read of each accessor, including hidden type and toJSON.
-function sameText(
+// Check the usual field lists without allocating keys. Unconventional records
+// use their own ordered keys; hidden lookups retain native collection behavior.
+function sameFields(
   a: unknown,
   b: unknown,
   runtime: Runtime,
   depth: number,
 ): boolean {
   if (typeof a === 'string') return a.length <= 65536 && a === b;
-  if (
-    depth > 3 ||
-    !a ||
-    !b ||
-    typeof a !== 'object' ||
-    typeof b !== 'object' ||
-    runtime.isProxy(a) ||
-    runtime.isProxy(b)
-  )
+  if (depth > 3 || !a || typeof a !== 'object' || runtime.isProxy(a))
     return false;
-  const list = Array.isArray(a);
-  const prototype = list ? Array.prototype : Object.prototype;
-  if (
-    list !== Array.isArray(b) ||
-    Object.getPrototypeOf(a) !== prototype ||
-    Object.getPrototypeOf(b) !== prototype ||
-    'Infinity' in a ||
-    'Infinity' in b ||
-    'toJSON' in a ||
-    'toJSON' in b ||
-    runtime.isBoxedPrimitive(a) ||
-    runtime.isBoxedPrimitive(b) ||
-    ArrayBuffer.isView(a) ||
-    ArrayBuffer.isView(b)
-  )
-    return false;
-  if (list && Array.isArray(b)) {
-    if ('type' in a || 'type' in b || a.length !== b.length || a.length > 1)
-      return false;
-    if (!a.length) return true;
+  if (Array.isArray(a)) {
+    const size = a.length;
     return (
-      0 in a &&
-      0 in b &&
-      !runtime.lookupGetter.call(a, 0) &&
-      !runtime.lookupGetter.call(b, 0) &&
-      sameText(a[0], b[0], runtime, depth + 1)
+      size <= 1 &&
+      isTextList(a, runtime, size) &&
+      isTextList(b, runtime, size) &&
+      (!size || sameFields(a[0], b[0], runtime, depth + 1))
     );
   }
-  const first = Object.keys(a);
-  const second = Object.keys(b);
-  if (first.length !== second.length || first.length > (depth ? 4 : 5))
-    return false;
-  let hasType = false;
-  for (let i = 0; i < first.length; i++) {
-    const key = first[i];
-    if (key !== second[i] || key.length > 32) return false;
-    if (runtime.lookupGetter.call(a, key) || runtime.lookupGetter.call(b, key))
+  if (!isTextRecord(a, runtime) || !isTextRecord(b, runtime)) return false;
+  const layout = 'type' in a ? helpers : plain;
+  let keys =
+    depth === 0
+      ? 'status' in a
+        ? layout.replyKeys
+        : layout.keys
+      : 'annotations' in a
+        ? annotatedKeys
+        : textKeys;
+  if (!hasTextFields(a, runtime, keys)) {
+    keys = Object.keys(a);
+    if (keys.length > (depth ? 4 : 5) || !hasTextFields(a, runtime, keys))
       return false;
-    const left = (a as Record<string, unknown>)[key];
-    const right = (b as Record<string, unknown>)[key];
-    // The message helpers include this field even without provider metadata.
+  }
+  if (!hasTextFields(b, runtime, keys)) return false;
+  if (!keys.includes('type') && ('type' in a || 'type' in b)) return false;
+  for (const key of keys) {
+    if (key.length > 32) return false;
+    const left = a[key],
+      right = b[key];
     if (key === 'providerData' && left === undefined && right === undefined)
       continue;
-    if (key === 'type') {
-      if (left === 'Buffer') return false;
-      hasType = true;
-    }
-    if (!sameText(left, right, runtime, depth + 1)) return false;
+    if (key === 'type' && left === 'Buffer') return false;
+    if (!sameFields(left, right, runtime, depth + 1)) return false;
   }
-  return hasType || (!('type' in a) && !('type' in b));
+  return true;
 }
 
 export function matchesOrderedInput(
@@ -343,7 +421,7 @@ export function matchesOrderedInput(
     }
     if (prepared[i] !== processed[i] || references.has(prepared[i]))
       return false;
-    if (!sameText(original[i], prepared[i], runtime, 0)) return false;
+    if (!sameFields(original[i], prepared[i], runtime, 0)) return false;
   }
   return true;
 }

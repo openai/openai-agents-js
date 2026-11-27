@@ -178,6 +178,8 @@ function ordinaryTraversal(runtime: Runtime) {
     'Symbol',
     'Uint8Array',
     'WeakMap',
+    'WeakRef',
+    'WeakSet',
   ];
   for (let i = 0; i < globals.length; i++) {
     const target = value(realm, globals[i]);
@@ -213,6 +215,10 @@ function ordinaryTraversal(runtime: Runtime) {
     !native(Map, 'Map') ||
     !native(Set, 'Set') ||
     !native(WeakMap, 'WeakMap') ||
+    !native(WeakRef, 'WeakRef') ||
+    !methods(WeakRef.prototype, ['deref']) ||
+    !native(WeakSet, 'WeakSet') ||
+    !methods(WeakSet.prototype, ['add', 'has']) ||
     !native(Boolean, 'Boolean') ||
     !native(ArrayBuffer, 'ArrayBuffer') ||
     !methods(Object, [
