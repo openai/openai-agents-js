@@ -2,6 +2,9 @@ import type { MCPTool } from './mcpShared';
 
 export const cachedMcpTools: Record<string, MCPTool[]> = {};
 export const cachedMcpToolKeysByServer: Record<string, Set<string>> = {};
+type ActiveServerToolsCacheListing = {
+  invalidated: boolean;
+};
 // Wrappers and transports cache separate lists. Dropping a server's set
 // invalidates both layers without retaining the servers or their tool lists.
 const localToolLists = new Map<string, WeakSet<MCPTool[]>>();
@@ -26,9 +29,6 @@ export function localToolsCache(server: {
   };
 }
 
-type ActiveServerToolsCacheListing = {
-  invalidated: boolean;
-};
 const activeServerToolsCacheListings = new Map<
   string,
   Set<ActiveServerToolsCacheListing>
