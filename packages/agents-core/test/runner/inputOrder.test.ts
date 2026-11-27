@@ -41,6 +41,31 @@ function history(): AgentInputItem[] {
 }
 
 describe('ownership of a complete input history', () => {
+  it('revalidates fields, aliases and clone policy when caller identities repeat', () => {
+    const part = { type: 'output_text' as const, text: 'initial' };
+    const input = [assistant([part]), ...history()];
+    const first = input[0];
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Repeated history' });
+    const copy = () =>
+      new RunState(context, input, agent, null)
+        ._originalInput as AgentInputItem[];
+    begin(input);
+    expect(copy()).toEqual(input);
+    input[0] = input[1];
+    const aliased = copy();
+    expect(aliased[0]).toBe(aliased[1]);
+    input[0] = first;
+    part.text = 'updated';
+    const restored = copy();
+    expect(restored).toEqual(input);
+    expect(restored[0]).not.toBe(input[0]);
+    if ('markAsUncloneable' in workers) {
+      workers.markAsUncloneable(Object.freeze(part));
+      expect(copy).toThrow(expect.objectContaining({ name: 'DataCloneError' }));
+    }
+  });
+
   it('falls back before calling a replaced weak dereference', async () => {
     const input = history();
     const model = new ScriptedModel([[assistantMessage('ok')]]);
