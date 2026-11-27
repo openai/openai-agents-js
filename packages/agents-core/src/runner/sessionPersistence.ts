@@ -1491,13 +1491,24 @@ function mapPreparedSourcesAfterContextProcessing(
   );
   const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
   const preparedIndexesByKey = new Map<string, number[]>();
+  // Remember only the first position of a distinct key. The map already
+  // retains this string. Always serialize again before reusing a key.
+  const firstKeys = { __proto__: null } as Record<number, string | undefined>;
+  function reuseKey(index: number, key: string) {
+    const original = typeof index === 'number' ? firstKeys[index] : undefined;
+    return original !== undefined && original === key ? original : key;
+  }
   for (const [index, item] of preparedItems.entries()) {
     const referenceIndexes = preparedIndexesByReference.get(item) ?? [];
     referenceIndexes.push(index);
     preparedIndexesByReference.set(item, referenceIndexes);
 
     const key = getAgentInputItemKey(item);
-    const keyIndexes = preparedIndexesByKey.get(key) ?? [];
+    const existing = preparedIndexesByKey.get(key);
+    if (existing === undefined && typeof index === 'number') {
+      firstKeys[index] = key;
+    }
+    const keyIndexes = existing ?? [];
     keyIndexes.push(index);
     preparedIndexesByKey.set(key, keyIndexes);
   }
@@ -1569,7 +1580,7 @@ function mapPreparedSourcesAfterContextProcessing(
     ) {
       continue;
     }
-    const key = getAgentInputItemKey(item);
+    const key = reuseKey(index, getAgentInputItemKey(item));
     const indexes = processedIndexesByKey.get(key) ?? [];
     indexes.push(index);
     processedIndexesByKey.set(key, indexes);
@@ -1604,9 +1615,14 @@ function mapPreparedSourcesAfterContextProcessing(
       ambiguousProcessedIndexes.has(index) ||
       preparedItem === undefined ||
       usedPreparedIndexes.has(index) ||
-      key !== getAgentInputItemKey(preparedItem) ||
-      (processedIndexesByKey.get(key)?.length ?? 0) >=
-        (availablePreparedCountByKey.get(key) ?? 0)
+      key !== getAgentInputItemKey(preparedItem)
+    ) {
+      continue;
+    }
+    const matchingKey = reuseKey(index, key);
+    if (
+      (processedIndexesByKey.get(matchingKey)?.length ?? 0) >=
+      (availablePreparedCountByKey.get(matchingKey) ?? 0)
     ) {
       continue;
     }

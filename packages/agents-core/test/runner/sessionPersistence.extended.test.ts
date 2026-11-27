@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionPersistenceTracker,
+  mapOwnedInputItemsAfterContextProcessing,
   PreparedInputWithSessionResult,
 } from '../../src/runner/sessionPersistence';
 import type { Session } from '../../src/memory/session';
@@ -728,4 +729,112 @@ describe('sessionPersistence tracker (extended)', () => {
     await ensure?.();
     expect(persist).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('matching callback effects', () => {
+  it('keeps private matching records from an inherited numeric setter', () => {
+    const prepared = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'user' as const, content: 'second' },
+    ];
+    const processed = structuredClone(prepared);
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, '0');
+    const length = Object.getOwnPropertyDescriptor(Array.prototype, 'length')!;
+    let installed = false;
+    let owned;
+    Object.defineProperty(prepared[0], 'toJSON', {
+      value() {
+        if (!installed) {
+          installed = true;
+          Object.defineProperty(Array.prototype, '0', {
+            configurable: true,
+            set(this: unknown[], value: unknown) {
+              const property = {
+                __proto__: null,
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+              };
+              Object.defineProperty(this, '0', property);
+              if (
+                value &&
+                typeof value === 'object' &&
+                Object.prototype.hasOwnProperty.call(value, 'index') &&
+                Object.prototype.hasOwnProperty.call(value, 'item') &&
+                Object.prototype.hasOwnProperty.call(value, 'key')
+              ) {
+                Reflect.deleteProperty(Array.prototype, '0');
+                (value as { index: number }).index = 1;
+              }
+            },
+          });
+        }
+        return { role: 'user', content: 'first' };
+      },
+    });
+    try {
+      owned = mapOwnedInputItemsAfterContextProcessing(
+        prepared,
+        processed,
+        prepared,
+      );
+    } finally {
+      Reflect.deleteProperty(Array.prototype, '0');
+      if (previous) Object.defineProperty(Array.prototype, '0', previous);
+      Object.defineProperty(Array.prototype, 'length', length);
+    }
+    expect(owned).toEqual(
+      processed.map((item, ownerIndex) => ({ item, ownerIndex })),
+    );
+  });
+
+  it('propagates a later serialization error after the keys initially match', () => {
+    const input = toAgentInputList('original');
+    const tracker = createSessionPersistenceTracker({
+      session: makeSession(),
+      hasCallModelInputFilter: false,
+    })!;
+    tracker.setPreparedItems(input, input);
+    const turn = structuredClone(input);
+    const processed = structuredClone(turn);
+    const error = new Error('later serialization');
+    let calls = 0;
+    Object.defineProperty(processed[0], 'toJSON', {
+      value() {
+        if (++calls === 2) throw error;
+        return input[0];
+      },
+    });
+    expect(() => tracker.setPreparedTurnItems(turn, processed)).toThrow(error);
+  });
+});
+
+describe('live positional matching', () => {
+  it.each([false, true])(
+    'observes a later getter edit before assigning ownership, edit=%s',
+    (edit) => {
+      const anchor = { role: 'user' as const, content: 'anchor' };
+      const history = { role: 'user' as const, content: 'same' };
+      const current = { ...history };
+      const tail = { role: 'user' as const, content: 'tail' };
+      const processed = [anchor, tail, { ...current }];
+      let reads = 0;
+      Object.defineProperty(anchor, 'content', {
+        enumerable: true,
+        get() {
+          if (++reads === 2 && edit) processed[2]!.content = 'edited';
+          return 'anchor';
+        },
+      });
+      const owned = mapOwnedInputItemsAfterContextProcessing(
+        [anchor, history, current, tail],
+        processed,
+        [current],
+      );
+      expect(owned).toEqual(
+        edit ? [] : [{ item: processed[2], ownerIndex: 0 }],
+      );
+    },
+  );
 });
