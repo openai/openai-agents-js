@@ -277,7 +277,8 @@ export async function resumeInterruptedTurn<
     state,
     state._lastProcessedResponse!,
   );
-  const approvedToolWillResume = state.getInterruptions().some((item) => {
+  // A rejection also produces a tool result that must survive the next pause or failure.
+  const hasLocalToolDecision = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
     if (rawItem.type === 'hosted_tool_call') {
       return false;
@@ -300,12 +301,12 @@ export async function resumeInterruptedTurn<
         item.agent,
         toolName,
         rawItem,
-      ) === true
+      ) !== undefined
     );
   });
   const pendingHandoffs = state._lastProcessedResponse?.handoffs ?? [];
   const preparation =
-    approvedToolWillResume || pendingHandoffs.length > 0
+    hasLocalToolDecision || pendingHandoffs.length > 0
       ? await beforeResumedSideEffects?.()
       : undefined;
   let unfilteredHandoffInput: ResumedSessionWritePreparation['handoffInput'];
@@ -348,7 +349,7 @@ export async function resumeInterruptedTurn<
         )
       );
     }) ||
-    (approvedToolWillResume &&
+    (hasLocalToolDecision &&
       turnResult.generatedItems.length > state._currentTurnPersistedItemCount);
 
   if (preparation && unfilteredHandoffInput) {

@@ -5,6 +5,7 @@ import {
   Agent,
   computerTool,
   MaxTurnsExceededError,
+  MemorySession,
   RunState,
   ToolGuardrailFunctionOutputFactory,
   Usage,
@@ -221,6 +222,63 @@ describe('resumed Session write recovery', () => {
   beforeAll(() => {
     setTracingDisabled(true);
   });
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'restores rejection-only checkpoints after a pause and a turn limit (%s)',
+    async (mode) => {
+      const session = new MemorySession();
+      const model = new ScriptedModel([
+        [functionToolCall('A'), functionToolCall('B')],
+        [fakeModelMessage('done')],
+      ]);
+      const execute = vi.fn(() => 'unexpected');
+      const agent = new Agent({
+        name: 'Approval agent',
+        model,
+        tools: [
+          tool({
+            name: 'approval_tool',
+            description: 'Requires a decision.',
+            parameters: z.object({}),
+            needsApproval: true,
+            execute,
+          }),
+        ],
+      });
+      const first = await run<typeof agent, unknown>(agent, 'Use both tools', {
+        session,
+        maxTurns: 1,
+      });
+      first.state.reject(first.interruptions[0], { message: 'Denied A' });
+      const paused = await runOnce(mode, agent, first.state, session);
+      const state = await RunState.fromString(agent, paused.state.toString());
+      expect(state.getInterruptions()).toMatchObject([
+        { rawItem: { callId: 'B' } },
+      ]);
+
+      state.reject(state.getInterruptions()[0], { message: 'Denied B' });
+      await expect(runOnce(mode, agent, state, session)).rejects.toBeInstanceOf(
+        MaxTurnsExceededError,
+      );
+      const restored = await RunState.fromString(agent, state.toString());
+      expect(model.calls).toHaveLength(1);
+      const done = await run(agent, restored, { session, maxTurns: 2 });
+      expect(done.finalOutput).toBe('done');
+      expect(execute).not.toHaveBeenCalled();
+      const input = model.calls[1].request.input;
+      if (typeof input === 'string') {
+        throw new Error('Expected the model request to include tool results');
+      }
+      for (const items of [await session.getItems(), input]) {
+        expect(
+          items.filter((item) => item.type === 'function_call_result'),
+        ).toMatchObject([
+          { callId: 'A', output: { text: 'Denied A' } },
+          { callId: 'B', output: { text: 'Denied B' } },
+        ]);
+      }
+    },
+  );
 
   it.each(
     (['non_streamed', 'streamed'] as const).flatMap((failingMode) =>

@@ -405,6 +405,26 @@ describe('createAiSdkUiMessageStreamResponse', () => {
     expect(cancelled).toBe(true);
   });
 
+  test('cancels a pending source read without waiting for another event', async () => {
+    let reading!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    const cancel = vi.fn();
+    const source = new ReadableStream<RunStreamEvent>(
+      { pull: () => reading(), cancel },
+      { highWaterMark: 0 },
+    );
+    const reader = createAiSdkUiMessageStream(source).getReader();
+    const read = reader.read();
+    await pending;
+    await reader.cancel('stop');
+
+    expect(await read).toMatchObject({ done: true });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith('stop');
+    expect(source.locked).toBe(false);
+  });
+
   test('maps run stream events to UI message chunks', async () => {
     const agent = new Agent({ name: 'Test Agent' });
 

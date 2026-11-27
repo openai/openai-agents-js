@@ -54,15 +54,45 @@ function resolveToolCallId(raw: any, toolName: string): string {
   return raw.callId || raw.id || `${toolName}-${createId('call')}`;
 }
 
-function resolveEventSource(
-  source: AiSdkUiMessageStreamSource,
-): AsyncIterable<RunStreamEvent> {
-  if (typeof (source as { toStream?: unknown }).toStream === 'function') {
-    return (
-      source as { toStream: () => ReadableStream<RunStreamEvent> }
-    ).toStream();
+function resolveEventSource(source: AiSdkUiMessageStreamSource): {
+  events: AsyncIterable<RunStreamEvent>;
+  cancel?: (reason?: unknown) => Promise<void>;
+} {
+  const events =
+    'toStream' in source && typeof source.toStream === 'function'
+      ? source.toStream()
+      : (source as AsyncIterable<RunStreamEvent>);
+  const stream = events as ReadableStream<RunStreamEvent>;
+  if (typeof stream.getReader !== 'function') {
+    return { events };
   }
-  return source as AsyncIterable<RunStreamEvent>;
+
+  // An async generator queues return() behind next(). Own the reader so
+  // cancellation can settle a pending read before closing the generator.
+  const reader = stream.getReader();
+  let active = true;
+  async function cancel(reason?: unknown) {
+    if (!active) return;
+    active = false;
+    try {
+      await reader.cancel(reason);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async function* readEvents() {
+    try {
+      while (active) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        yield value;
+      }
+    } finally {
+      await cancel();
+    }
+  }
+  return { events: readEvents(), cancel };
 }
 
 let idCounter = 0;
@@ -551,21 +581,26 @@ async function* buildUiMessageStream(
 export function createAiSdkUiMessageStream(
   source: AiSdkUiMessageStreamSource,
 ): ReadableStream<UIMessageChunk> {
-  const events = resolveEventSource(source);
+  const { events, cancel } = resolveEventSource(source);
   const iterator = buildUiMessageStream(events)[Symbol.asyncIterator]();
+  let cancelled = false;
 
   return new ReadableStream<UIMessageChunk>({
     async pull(controller) {
       const { value, done } = await iterator.next();
+      if (cancelled) return;
       if (done) {
         controller.close();
         return;
       }
       controller.enqueue(value);
     },
-    async cancel() {
-      if (iterator.return) {
-        await iterator.return();
+    async cancel(reason) {
+      cancelled = true;
+      try {
+        await cancel?.(reason);
+      } finally {
+        await iterator.return?.();
       }
     },
   });
