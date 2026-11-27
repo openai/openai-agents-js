@@ -18,7 +18,10 @@ import {
   attachCallToolResultMetadata,
 } from '../../mcpShared';
 import { UserError } from '../../errors';
-import { invalidateServerToolsCache } from '../../mcpToolCache';
+import {
+  invalidateServerToolsCache,
+  localToolsCache,
+} from '../../mcpToolCache';
 import type {
   CallToolResult,
   CallToolResultContent,
@@ -498,7 +501,8 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
+    const cache = localToolsCache(this);
+    if (!this._cacheDirty && cache?.has(this._toolsList)) {
       return this._toolsList;
     }
 
@@ -520,6 +524,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       currentGeneration: this._toolsCacheGeneration,
     });
     const tools = response.tools as MCPTool[];
+    cache?.store(tools);
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
@@ -741,7 +746,8 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
+    const cache = localToolsCache(this);
+    if (!this._cacheDirty && cache?.has(this._toolsList)) {
       return this._toolsList;
     }
 
@@ -763,6 +769,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       currentGeneration: this._toolsCacheGeneration,
     });
     const tools = response.tools as MCPTool[];
+    cache?.store(tools);
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
@@ -1634,7 +1641,8 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
+    const cache = localToolsCache(this);
+    if (!this._cacheDirty && cache?.has(this._toolsList)) {
       return this._toolsList;
     }
 
@@ -1656,6 +1664,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       currentGeneration: this._toolsCacheGeneration,
     });
     const tools = response.tools as MCPTool[];
+    cache?.store(tools);
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
