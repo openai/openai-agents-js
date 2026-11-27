@@ -781,14 +781,23 @@ export class RealtimeSession<
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
+    const generation = this.#connectionGeneration;
+    const isCurrent = () => generation === this.#connectionGeneration;
     const prepared = await this.#prepareAgent(newAgent);
+    if (!isCurrent()) return newAgent;
     this.#currentAgent.emit('agent_handoff', this.#context, newAgent);
+    if (!isCurrent()) return newAgent;
     this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
+    if (!isCurrent()) return newAgent;
 
     this.#applyPreparedAgent(prepared);
-    await this.#transport.updateSessionConfig(
-      await this.#getSessionConfig('update'),
+    const config = await this.#getSessionConfig(
+      'update',
+      {},
+      prepared,
+      generation,
     );
+    if (isCurrent()) await this.#transport.updateSessionConfig(config);
 
     return newAgent;
   }

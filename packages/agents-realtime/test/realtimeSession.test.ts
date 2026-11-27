@@ -1149,6 +1149,59 @@ describe('RealtimeSession', () => {
     filterSpy.mockRestore();
   });
 
+  it.each(['tools', 'instructions'] as const)(
+    'ignores an agent update still preparing %s when the session reconnects',
+    async (pending) => {
+      let started!: () => void;
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => (started = resolve));
+      const released = new Promise<void>((resolve) => (release = resolve));
+      async function pause() {
+        started();
+        await released;
+      }
+      const initial = new RealtimeAgent({
+        name: 'First',
+        instructions: 'First',
+      });
+      const next = new RealtimeAgent({
+        name: 'Next',
+        instructions: async () => {
+          if (pending === 'instructions') await pause();
+          return 'Next';
+        },
+        tools: [
+          tool({
+            name: 'next_only',
+            description: 'Only available to the next agent',
+            parameters: z.object({}),
+            isEnabled: async () => {
+              if (pending === 'tools') await pause();
+              return true;
+            },
+            execute: async () => 'done',
+          }),
+        ],
+      });
+      const transport = new FakeTransport();
+      const session = new RealtimeSession(initial, { transport });
+      await session.connect({ apiKey: 'test' });
+      const updating = session.updateAgent(next);
+      await waiting;
+      session.close();
+      await session.connect({ apiKey: 'test' });
+      release();
+      await updating;
+
+      expect(session.currentAgent).toBe(initial);
+      expect(
+        transport.connectCalls.at(-1)?.initialSessionConfig?.instructions,
+      ).toBe('First');
+      expect(transport.updateSessionConfigCalls).toHaveLength(0);
+      session.close();
+    },
+  );
+
   it('does not apply a handoff that resolves after reconnecting', async () => {
     let markHandoffStarted: () => void = () => {};
     let releaseHandoff: () => void = () => {};
