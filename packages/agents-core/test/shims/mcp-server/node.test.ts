@@ -23,6 +23,10 @@ import {
 } from '@modelcontextprotocol/client';
 import type { Logger } from '../../../src/logger';
 import { connectMcpServers } from '../../../src/mcpServers';
+import {
+  MCPServerStdio as ExportedStdio,
+  MCPServerSSE as ExportedSSE,
+} from '@openai/agents-core/_shims';
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
@@ -231,6 +235,21 @@ beforeEach(() => {
   retainCallToolSignalListener = false;
 });
 
+beforeAll(() => {
+  vi.doMock('@modelcontextprotocol/client/stdio', async (importOriginal) => {
+    return {
+      ...(await importOriginal()),
+      StdioClientTransport: MockStdioClientTransport,
+    };
+  });
+  vi.doMock('@modelcontextprotocol/client', async (importOriginal) => ({
+    ...(await importOriginal()),
+    Client: MockClient,
+    SSEClientTransport: MockSSEClientTransport,
+    StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
+  }));
+});
+
 describe('NodeMCPServerStdio', () => {
   test('forwards the tool page cap and preserves per-page timeouts', async () => {
     listToolsImplementation = async () => ({
@@ -253,20 +272,6 @@ describe('NodeMCPServerStdio', () => {
     }
   });
 
-  beforeAll(() => {
-    vi.doMock('@modelcontextprotocol/client/stdio', async (importOriginal) => {
-      return {
-        ...(await importOriginal()),
-        StdioClientTransport: MockStdioClientTransport,
-      };
-    });
-    vi.doMock('@modelcontextprotocol/client', async (importOriginal) => ({
-      ...(await importOriginal()),
-      Client: MockClient,
-      SSEClientTransport: MockSSEClientTransport,
-      StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
-    }));
-  });
   test('should be available', async () => {
     const server = new NodeMCPServerStdio({
       name: 'test',
@@ -1814,6 +1819,120 @@ describe('NodeMCPServerStreamableHttp', () => {
 
   afterAll(() => {
     vi.clearAllMocks();
+  });
+});
+
+describe('exported Node shim subclass compatibility', () => {
+  class StdioSubclass extends ExportedStdio {
+    connectionVersion = 123;
+    closeConnection = vi.fn(async () => {});
+  }
+
+  class SSESubclass extends ExportedSSE {
+    connectionVersion = 123;
+    closeConnection = vi.fn(async () => {});
+  }
+
+  test.each([
+    ['Stdio', () => new StdioSubclass({ command: 'test' })],
+    ['SSE', () => new SSESubclass({ url: 'http://localhost' })],
+  ] as const)(
+    'preserves %s subclass members during connection cleanup',
+    async (_name, createServer) => {
+      const open = new Set<unknown>();
+      connectImplementation = async (transport) => {
+        open.add(transport);
+        transport.close = async () => {
+          open.delete(transport);
+        };
+      };
+      const server = createServer();
+      await server.connect();
+      await server.connect();
+      await server.close();
+
+      expect(open.size).toBe(0);
+      expect(server.connectionVersion).toBe(123);
+      expect(server.closeConnection).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe.each([
+  [
+    'SSE',
+    () =>
+      new NodeMCPServerSSE({
+        url: 'https://example.test/sse',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'stdio',
+    () =>
+      new NodeMCPServerStdio({
+        command: 'test',
+        logger: createCapturingLogger(),
+      }),
+  ],
+] as const)('%s connection ownership', (_name, createServer) => {
+  test('releases both transports after a reconnect and one close', async () => {
+    const server = createServer();
+    const open = new Set<unknown>();
+    connectImplementation = async (transport) => {
+      open.add(transport);
+      transport.close = async () => {
+        open.delete(transport);
+      };
+    };
+    await server.connect();
+    await server.connect();
+    await server.close();
+    expect(open.size).toBe(0);
+  });
+
+  test('discards a connection that finishes after close', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    let open = false;
+    connectImplementation = async (transport) => {
+      transport.close = async () => {
+        open = false;
+      };
+      started.resolve();
+      await release.promise;
+      open = true;
+    };
+    const pending = server.connect();
+    await started.promise;
+    await server.close();
+    release.resolve();
+    await expect(pending).rejects.toThrow('changed during connect');
+    expect(open).toBe(false);
+    await expect(server.listTools()).rejects.toThrow('not initialized');
+  });
+
+  test('keeps the successful connection when an older connect fails', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    connectImplementation = async () => {
+      connectImplementation = undefined;
+      started.resolve();
+      await release.promise;
+      throw new Error('first setup failed');
+    };
+    const first = server.connect();
+    await started.promise;
+    try {
+      await server.connect();
+      release.resolve();
+      await expect(first).rejects.toThrow('first setup failed');
+      expect((await server.listTools())[0].name).toBe('mock-tool');
+    } finally {
+      await server.close();
+    }
   });
 });
 

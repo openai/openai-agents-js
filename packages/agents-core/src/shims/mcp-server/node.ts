@@ -416,7 +416,8 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
 
   params: DefaultMCPServerStdioOptions;
   private _name: string;
-  private transport: any = null;
+  private transport: MaybeSessionTransport | null = null;
+  #connectionVersion = 0;
 
   constructor(params: MCPServerStdioOptions) {
     super(params);
@@ -443,9 +444,9 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async connect(): Promise<void> {
-    this._toolsCacheGeneration += 1;
-    this._cacheDirty = true;
-    this._toolsList = [];
+    const version = this.#connectionVersion;
+    let transport: MaybeSessionTransport | null = null;
+    let session: Client | null = null;
     try {
       const { StdioClientTransport } =
         await import('@modelcontextprotocol/client/stdio').catch(
@@ -454,13 +455,13 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       const { Client } = await import('@modelcontextprotocol/client').catch(
         failedToImport,
       );
-      this.transport = new StdioClientTransport({
+      transport = new StdioClientTransport({
         command: this.params.command,
         args: this.params.args,
         env: this.params.env,
         cwd: this.params.cwd,
       });
-      this.session = new Client(
+      session = new Client(
         {
           name: this._name,
           version: '1.0.0', // You may want to make this configurable
@@ -473,15 +474,44 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
-      await this.session.connect(this.transport, requestOptions);
-      this.serverInitializeResult = {
-        serverInfo: { name: this._name, version: '1.0.0' },
-      } as InitializeResult;
+      // Imports and the handshake can both outlive a close or another connect.
+      if (version !== this.#connectionVersion) {
+        throw new Error('MCP server changed during connect.');
+      }
+      await session.connect(transport, requestOptions);
+      if (version !== this.#connectionVersion) {
+        throw new Error('MCP server changed during connect.');
+      }
     } catch (e) {
       logToolActionError(this.logger, 'Error initializing MCP server:', e);
-      await this.close();
+      await this.#closeConnection(transport, session).catch((error) =>
+        logToolActionWarning(
+          this.logger,
+          'Failed to close discarded MCP client:',
+          error,
+        ),
+      );
       throw e;
     }
+    const previousTransport = this.transport;
+    const previousSession = this.session;
+    this.#connectionVersion += 1;
+    this.transport = transport;
+    this.session = session;
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
+    this.serverInitializeResult = {
+      serverInfo: { name: this._name, version: '1.0.0' },
+    } as InitializeResult;
+    await this.#closeConnection(previousTransport, previousSession).catch(
+      (error) =>
+        logToolActionWarning(
+          this.logger,
+          'Failed to close replaced MCP client:',
+          error,
+        ),
+    );
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
@@ -633,11 +663,21 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async close(): Promise<void> {
+    this.#connectionVersion += 1;
     this._toolsCacheGeneration += 1;
     this._cacheDirty = true;
     this._toolsList = [];
-    const transport: any = this.transport;
+    const transport = this.transport;
+    const session = this.session;
+    this.transport = null;
+    this.session = null;
+    await this.#closeConnection(transport, session);
+  }
 
+  async #closeConnection(
+    transport: MaybeSessionTransport | null,
+    session: Client | null,
+  ): Promise<void> {
     if (transport && typeof transport.terminateSession === 'function') {
       try {
         // Best-effort cleanup: we do not actively manage session lifecycles,
@@ -651,13 +691,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         );
       }
     }
-    if (transport) {
-      await transport.close();
-      this.transport = null;
-    }
-    if (this.session) {
-      await this.session.close();
-      this.session = null;
+    try {
+      await transport?.close();
+    } finally {
+      await session?.close();
     }
   }
 }
@@ -674,7 +711,8 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
 
   params: MCPServerSSEOptions;
   private _name: string;
-  private transport: any = null;
+  private transport: MaybeSessionTransport | null = null;
+  #connectionVersion = 0;
 
   constructor(params: MCPServerSSEOptions) {
     super(params);
@@ -686,22 +724,22 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async connect(): Promise<void> {
-    this._toolsCacheGeneration += 1;
-    this._cacheDirty = true;
-    this._toolsList = [];
+    const version = this.#connectionVersion;
+    let transport: MaybeSessionTransport | null = null;
+    let session: Client | null = null;
     try {
       const { SSEClientTransport } =
         await import('@modelcontextprotocol/client').catch(failedToImport);
       const { Client } = await import('@modelcontextprotocol/client').catch(
         failedToImport,
       );
-      this.transport = new SSEClientTransport(new URL(this.params.url), {
+      transport = new SSEClientTransport(new URL(this.params.url), {
         authProvider: this.params.authProvider,
         requestInit: this.params.requestInit,
         eventSourceInit: this.params.eventSourceInit,
         fetch: this.params.fetch,
       });
-      this.session = new Client(
+      session = new Client(
         {
           name: this._name,
           version: '1.0.0', // You may want to make this configurable
@@ -711,10 +749,14 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
-      await this.session.connect(this.transport, requestOptions);
-      this.serverInitializeResult = {
-        serverInfo: { name: this._name, version: '1.0.0' },
-      } as InitializeResult;
+      // Imports and the handshake can both outlive a close or another connect.
+      if (version !== this.#connectionVersion) {
+        throw new Error('MCP server changed during connect.');
+      }
+      await session.connect(transport, requestOptions);
+      if (version !== this.#connectionVersion) {
+        throw new Error('MCP server changed during connect.');
+      }
     } catch (e) {
       const error = sanitizeMcpTransportError(
         e,
@@ -722,9 +764,34 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'SSE connect',
       );
       logToolActionError(this.logger, 'Error initializing MCP server:', error);
-      await this.close();
+      await this.#closeConnection(transport, session).catch((error) =>
+        logToolActionWarning(
+          this.logger,
+          'Failed to close discarded MCP client:',
+          error,
+        ),
+      );
       throw error;
     }
+    const previousTransport = this.transport;
+    const previousSession = this.session;
+    this.#connectionVersion += 1;
+    this.transport = transport;
+    this.session = session;
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
+    this.serverInitializeResult = {
+      serverInfo: { name: this._name, version: '1.0.0' },
+    } as InitializeResult;
+    await this.#closeConnection(previousTransport, previousSession).catch(
+      (error) =>
+        logToolActionWarning(
+          this.logger,
+          'Failed to close replaced MCP client:',
+          error,
+        ),
+    );
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
@@ -884,16 +951,30 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async close(): Promise<void> {
+    this.#connectionVersion += 1;
     this._toolsCacheGeneration += 1;
     this._cacheDirty = true;
     this._toolsList = [];
-    await runMcpTransportOperation(this.params.url, 'SSE cleanup', async () => {
-      const transport = this.transport;
+    const transport = this.transport;
+    const session = this.session;
+    this.transport = null;
+    this.session = null;
+    await this.#closeConnection(transport, session);
+  }
 
+  async #closeConnection(
+    transport: MaybeSessionTransport | null,
+    session: Client | null,
+  ): Promise<void> {
+    await runMcpTransportOperation(this.params.url, 'SSE cleanup', async () => {
       if (hasSessionTransport(transport)) {
         const sessionId = transport.sessionId;
 
-        if (sessionId && typeof transport.terminateSession === 'function') {
+        if (
+          sessionId &&
+          shouldTerminateTransportSession(transport, this.transport) &&
+          typeof transport.terminateSession === 'function'
+        ) {
           try {
             // Best-effort cleanup: we do not actively manage session lifecycles,
             // but if the server supports sessions we terminate to avoid leaks.
@@ -910,13 +991,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         }
       }
 
-      if (transport) {
-        await transport.close();
-        this.transport = null;
-      }
-      if (this.session) {
-        await this.session.close();
-        this.session = null;
+      try {
+        await transport?.close();
+      } finally {
+        await session?.close();
       }
     });
   }
