@@ -1493,7 +1493,7 @@ function mapPreparedSourcesAfterContextProcessing(
   const preparedIndexesByKey = new Map<string, number[]>();
   // Remember only the first position of a distinct key. The map already
   // retains this string. Always serialize again before reusing a key.
-  const firstKeys = Object.create(null) as Record<number, string | undefined>;
+  const firstKeys = { __proto__: null } as Record<number, string | undefined>;
   function reuseKey(index: number, key: string) {
     const original = typeof index === 'number' ? firstKeys[index] : undefined;
     return original !== undefined && original === key ? original : key;

@@ -15,6 +15,58 @@ import type { StreamedRunResult } from '../../src/result';
 beforeAll(() => setTracingDisabled(true));
 
 describe('captured input copies', () => {
+  it('runs caller serialization without invoking a new Object.create override', async () => {
+    const originalCreate = Object.create;
+    const sentinel = new Error(
+      'unexpected Object.create during input matching',
+    );
+    const override = (
+      prototype: object | null,
+      properties?: PropertyDescriptorMap,
+    ) => {
+      if (prototype === null) {
+        Object.create = originalCreate;
+        throw sentinel;
+      }
+      return properties === undefined
+        ? originalCreate(prototype)
+        : originalCreate(prototype, properties);
+    };
+    const input = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'user' as const, content: 'second' },
+    ];
+    const serialize = () => {
+      Object.create = override;
+      return { role: 'user', content: 'first' };
+    };
+    Object.defineProperty(input[0], 'toJSON', { value: serialize });
+    const model = new ScriptedModel([[assistantMessage('done')]]);
+    const dispatch = model.getResponse.bind(model);
+    // Restore before ScriptedModel takes its testing-only request snapshot.
+    const dispatchSpy = vi
+      .spyOn(model, 'getResponse')
+      .mockImplementation((request) => {
+        Object.create = originalCreate;
+        return dispatch(request);
+      });
+    try {
+      const result = await new Runner({ tracingDisabled: true }).run(
+        new Agent({ name: 'Caller serialization', model }),
+        input,
+      );
+      expect(result.finalOutput).toBe('done');
+      expect(model.calls).toHaveLength(1);
+      expect(model.calls[0]?.request.input).toEqual(input);
+      expect(Object.getOwnPropertyDescriptor(input[0]!, 'toJSON')?.value).toBe(
+        serialize,
+      );
+    } finally {
+      Object.create = originalCreate;
+      dispatchSpy.mockRestore();
+    }
+  });
+
   it('rejects uncloneable input introduced by an inherited getter before calling the model', async () => {
     const input = [{ role: 'user' as const, content: 'before' }];
     const publicInputs = new WeakSet<object>(input);
