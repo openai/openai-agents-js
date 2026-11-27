@@ -36,8 +36,7 @@ export type TracingContextStorage<TStore = any> = {
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 let localFallbackAls:
-  | TracingContextStorage<ContextState | undefined>
-  | undefined;
+  TracingContextStorage<ContextState | undefined> | undefined;
 
 // Global symbols ensure that if multiple copies of agents-core are loaded
 // (e.g., via different npm resolution paths or bundlers), they all share the
@@ -109,8 +108,7 @@ export function setTracingContextStorage(
 
 function getActiveContext() {
   const store = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
   if (store?.active === true) {
     return store;
   }
@@ -271,7 +269,6 @@ function _wrapFunctionWithTraceLifecycle<T>(
     }
 
     let cleanupDeferred = false;
-    let started = false;
 
     const cleanupContext = () => {
       currentContext.active = false;
@@ -283,9 +280,15 @@ function _wrapFunctionWithTraceLifecycle<T>(
 
     try {
       await trace.start();
-      started = true;
 
-      const result = await fn(trace);
+      let result: T;
+      try {
+        result = await fn(trace);
+      } catch (error) {
+        // Keep the workflow error even if a custom trace processor also fails.
+        await trace.end().catch(() => {});
+        throw error;
+      }
 
       // If result is a StreamedRunResult, defer trace end until stream loop completes
       if (result instanceof StreamedRunResult) {
@@ -294,9 +297,7 @@ function _wrapFunctionWithTraceLifecycle<T>(
           cleanupDeferred = true;
           streamLoopPromise.finally(async () => {
             try {
-              if (started) {
-                await trace.end();
-              }
+              await trace.end();
             } finally {
               cleanupContext();
             }
@@ -307,9 +308,7 @@ function _wrapFunctionWithTraceLifecycle<T>(
       }
 
       // For non-streaming results, end trace synchronously
-      if (started) {
-        await trace.end();
-      }
+      await trace.end();
 
       return result;
     } finally {
@@ -349,8 +348,7 @@ export async function withTrace<T>(
     active: true,
   };
   const previousAlsStore = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
 
   return getContextAsyncLocalStorage().run(
     context,
@@ -381,8 +379,7 @@ export async function getOrCreateTrace<T>(
     active: true,
   };
   const previousAlsStore = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
   return getContextAsyncLocalStorage().run(
     newContext,
     _wrapFunctionWithTraceLifecycle(fn, newContext, previousAlsStore),
