@@ -51,6 +51,51 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tools cache invalidation', () => {
+  it.each(['after', 'during'] as const)(
+    'refreshes a persistent server invalidated by name %s a listing',
+    async (timing) => {
+      const name = 'named-http-cache';
+      let listings = 0;
+      const server = new MCPServerStreamableHttp({
+        name,
+        url: 'https://example.test/mcp',
+        sessionId: 'persistent',
+        cacheToolsList: true,
+        fetch: async (_url: string | URL | Request, init?: RequestInit) => {
+          if (init?.method === 'DELETE') return new Response(null);
+          const message = JSON.parse(String(init?.body));
+          if (message.id === undefined)
+            return new Response(null, { status: 202 });
+          expect(message.method).toBe('tools/list');
+          const first = ++listings === 1;
+          if (first && timing === 'during')
+            await invalidateServerToolsCache(name);
+          return Response.json({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { tools: [toolNamed(first ? 'old' : 'new')] },
+          });
+        },
+      });
+      await server.connect();
+      try {
+        const names = async () =>
+          (await getAllMcpTools([server])).map((t) => t.name);
+        if (timing === 'after') {
+          expect(await names()).toEqual(['old']);
+          await invalidateServerToolsCache(name);
+        } else {
+          await expect(names()).rejects.toThrow('listing became stale');
+        }
+        expect(await names()).toEqual(['new']);
+        expect((await server.listTools()).map((t) => t.name)).toEqual(['new']);
+        expect(listings).toBe(2);
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   it.each([false, true])(
     'preserves colon-suffixed server caches when the base server was cached=%s',
     async (cacheBaseServer) => {

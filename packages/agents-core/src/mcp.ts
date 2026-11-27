@@ -50,6 +50,7 @@ import {
 } from './mcpShared';
 import {
   beginServerToolsCacheListing,
+  localToolsCache,
   cachedMcpToolKeysByServer as _cachedToolKeysByServer,
   cachedMcpTools as _cachedTools,
 } from './mcpToolCache';
@@ -342,13 +343,14 @@ export class MCPServerStdio
   }
   async listTools(): Promise<MCPTool[]> {
     const listingGeneration = this.toolsLifecycle.beginListing();
-    if (this.cacheToolsList && this._cachedTools) {
+    const cache = localToolsCache(this);
+    if (this._cachedTools && cache?.has(this._cachedTools)) {
       return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
-    if (this.cacheToolsList) {
-      this._cachedTools = snapshotMcpTools(tools);
+    if (cache) {
+      this._cachedTools = cache.store(snapshotMcpTools(tools));
       return snapshotMcpTools(this._cachedTools);
     }
     return snapshotMcpTools(tools);
@@ -436,17 +438,18 @@ export class MCPServerStreamableHttp
       return snapshotMcpTools(tools);
     }
 
+    const cache = localToolsCache(this);
     if (
-      this.cacheToolsList &&
       this._cachedTools &&
+      cache?.has(this._cachedTools) &&
       this._cachedToolsSessionId === sessionId
     ) {
       return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
-    if (this.cacheToolsList) {
-      this._cachedTools = snapshotMcpTools(tools);
+    if (cache) {
+      this._cachedTools = cache.store(snapshotMcpTools(tools));
       this._cachedToolsSessionId = sessionId;
       return snapshotMcpTools(this._cachedTools);
     }
@@ -532,13 +535,14 @@ export class MCPServerSSE
   }
   async listTools(): Promise<MCPTool[]> {
     const listingGeneration = this.toolsLifecycle.beginListing();
-    if (this.cacheToolsList && this._cachedTools) {
+    const cache = localToolsCache(this);
+    if (this._cachedTools && cache?.has(this._cachedTools)) {
       return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
-    if (this.cacheToolsList) {
-      this._cachedTools = snapshotMcpTools(tools);
+    if (cache) {
+      this._cachedTools = cache.store(snapshotMcpTools(tools));
       return snapshotMcpTools(this._cachedTools);
     }
     return snapshotMcpTools(tools);
