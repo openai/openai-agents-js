@@ -468,6 +468,39 @@ describe('model timeout', () => {
     expect(model.calls).toBe(2);
   });
 
+  it('honors an unsafe stream verdict even when the SDK times out before output', async () => {
+    vi.useFakeTimers();
+    const model = Object.assign(new TimeoutThenStreamModel(), {
+      getRetryAdvice: () => ({ replaySafety: 'unsafe' as const }),
+    });
+    const policy = vi.fn(approveUnsafeTimeoutRetry);
+    const agent = new Agent({
+      name: 'StreamingTimeoutAgent',
+      model,
+      modelSettings: {
+        timeoutMs: 25,
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy,
+        },
+      },
+    });
+
+    const result = await run(agent, 'hello', { stream: true });
+    const consume = (async () => {
+      for await (const _event of result) {
+        // Surface the stream failure.
+      }
+    })();
+    const failure = consume.catch((error) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(model.calls).toBe(1);
+    expect(policy).not.toHaveBeenCalled();
+    await expect(failure).resolves.toBeInstanceOf(ModelTimeoutError);
+  });
+
   it('does not retry a streaming timeout after stream output', async () => {
     vi.useFakeTimers();
     const model = new EventThenTimeoutStreamModel();
