@@ -160,7 +160,7 @@ export class BatchTraceProcessor implements TracingProcessor {
     }: BatchTraceProcessorOptions = {},
   ) {
     this.#maxQueueSize = maxQueueSize;
-    this.#maxBatchSize = maxBatchSize;
+    this.#maxBatchSize = maxBatchSize >= 1 ? Math.floor(maxBatchSize) : 1;
     this.#scheduleDelay = scheduleDelay;
     this.#exportTriggerSize = maxQueueSize * exportTriggerRatio;
     this.#exporter = exporter;
@@ -220,46 +220,45 @@ export class BatchTraceProcessor implements TracingProcessor {
       `Exporting batches. Force: ${force}. Buffer size: ${this.#buffer.length}`,
     );
 
-    const exportBatch = async (batch: Array<Trace | Span>): Promise<void> => {
-      this.#exportInProgress = true;
-      const activeExportAbortController = new AbortController();
-      this.#activeExportAbortControllers.add(activeExportAbortController);
-      const combinedSignal = combineAbortSignals(
-        signal,
-        activeExportAbortController.signal,
-      );
-      const exportPromise = (async () => {
-        try {
-          await this.#exporter.export(batch, combinedSignal.signal);
-        } catch (error) {
-          logModelAndToolActionError(
-            logger,
-            'Tracing exporter failed to export batch',
-            error,
-          );
-        } finally {
-          combinedSignal.cleanup();
-          this.#activeExportAbortControllers.delete(
-            activeExportAbortController,
-          );
-          this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
-        }
-      })();
-      this.#activeExportPromises.add(exportPromise);
+    // Detach a single snapshot so later arrivals stay queued. Track all of
+    // its batches together for concurrent flushes and shutdown.
+    const items = this.#buffer.splice(
+      0,
+      force ? this.#buffer.length : this.#maxBatchSize,
+    );
+    this.#exportInProgress = true;
+    const activeExportAbortController = new AbortController();
+    this.#activeExportAbortControllers.add(activeExportAbortController);
+    const combinedSignal = combineAbortSignals(
+      signal,
+      activeExportAbortController.signal,
+    );
+    const exportPromise = (async () => {
       try {
-        await exportPromise;
+        for (let i = 0; i < items.length; i += this.#maxBatchSize) {
+          if (combinedSignal.signal?.aborted) break;
+          const batch = items.slice(i, i + this.#maxBatchSize);
+          try {
+            await this.#exporter.export(batch, combinedSignal.signal);
+          } catch (error) {
+            logModelAndToolActionError(
+              logger,
+              'Tracing exporter failed to export batch',
+              error,
+            );
+          }
+        }
       } finally {
-        this.#activeExportPromises.delete(exportPromise);
+        combinedSignal.cleanup();
+        this.#activeExportAbortControllers.delete(activeExportAbortController);
+        this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
       }
-    };
-
-    if (force || this.#buffer.length < this.#maxBatchSize) {
-      const toExport = [...this.#buffer];
-      this.#buffer = [];
-      await exportBatch(toExport);
-    } else if (this.#buffer.length > 0) {
-      const batch = this.#buffer.splice(0, this.#maxBatchSize);
-      await exportBatch(batch);
+    })();
+    this.#activeExportPromises.add(exportPromise);
+    try {
+      await exportPromise;
+    } finally {
+      this.#activeExportPromises.delete(exportPromise);
     }
   }
 
