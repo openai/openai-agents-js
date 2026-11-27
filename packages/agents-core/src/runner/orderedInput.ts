@@ -81,7 +81,8 @@ function sameText(
   }
   const first = Object.keys(a);
   const second = Object.keys(b);
-  if (first.length !== second.length || first.length > 4) return false;
+  if (first.length !== second.length || first.length > (depth ? 4 : 5))
+    return false;
   let hasType = false;
   for (let i = 0; i < first.length; i++) {
     const key = first[i];
@@ -90,6 +91,13 @@ function sameText(
     const right = Object.getOwnPropertyDescriptor(b, key);
     if (!left || !right || !('value' in left) || !('value' in right))
       return false;
+    // The message helpers include this field even without provider metadata.
+    if (
+      key === 'providerData' &&
+      left.value === undefined &&
+      right.value === undefined
+    )
+      continue;
     if (key === 'type') {
       if (left.value === 'Buffer') return false;
       hasType = true;
@@ -148,8 +156,10 @@ function isTextMessage(item: AgentInputItem): item is MessageItem {
     Object.getPrototypeOf(item) !== Object.prototype ||
     !('role' in item) ||
     !('content' in item) ||
-    Object.keys(item).some(
-      (key) => !['role', 'content', 'type', 'status'].includes(key),
+    Object.keys(item).some((key) =>
+      key === 'providerData'
+        ? item.providerData !== undefined
+        : !['role', 'content', 'type', 'status'].includes(key),
     )
   )
     return false;

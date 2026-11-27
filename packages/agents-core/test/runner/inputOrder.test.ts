@@ -3,7 +3,7 @@ import { types } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
-import { Agent, Runner } from '../../src';
+import { Agent, Runner, assistant, system, user } from '../../src';
 import {
   assistantMessage,
   modelResponder,
@@ -56,29 +56,60 @@ describe('ownership of a complete input history', () => {
     }
   });
 
-  it('separates repeated input from the request and recovery snapshot', async () => {
-    const shared = message('shared');
-    const input = [shared, shared, ...history()];
-    const model = new ScriptedModel([
-      modelResponder(({ request }) => {
-        const first = request.input[0] as typeof shared;
-        if ('content' in first && Array.isArray(first.content)) {
-          Object.assign(first.content[0], { text: 'edited' });
-        }
-        expect(request.input[1]).toEqual(message('shared'));
-        return [assistantMessage('ok')];
-      }),
-    ]);
-    const result = await new Runner({ tracingDisabled: true }).run(
-      new Agent({ name: 'History', model }),
-      input,
-    );
-    expect(shared).toEqual(message('shared'));
-    expect(result.input[0]).toEqual(message('shared'));
-    expect(result.input[1]).toBe(result.input[0]);
-    expect(
-      result.state._currentTurnSessionHistoryTransactionInputItems?.[0],
-    ).toEqual(message('shared'));
+  it.each([message, assistant])(
+    'separates repeated input from the request and recovery snapshot',
+    async (create) => {
+      const shared = create('shared');
+      const expected = create('shared');
+      const input = [shared, shared, ...history()];
+      const model = new ScriptedModel([
+        modelResponder(({ request }) => {
+          const first = request.input[0] as typeof shared;
+          if ('content' in first && Array.isArray(first.content)) {
+            Object.assign(first.content[0], { text: 'edited' });
+          }
+          expect(request.input[1]).toStrictEqual(expected);
+          return [assistantMessage('ok')];
+        }),
+      ]);
+      const result = await new Runner({ tracingDisabled: true }).run(
+        new Agent({ name: 'History', model }),
+        input,
+      );
+      expect(shared).toStrictEqual(expected);
+      expect(result.input[0]).toStrictEqual(expected);
+      expect(result.input[1]).toBe(result.input[0]);
+      expect(
+        result.state._currentTurnSessionHistoryTransactionInputItems?.[0],
+      ).toStrictEqual(expected);
+    },
+  );
+
+  it('preserves a metadata setter installed before saving helper messages', async () => {
+    const input = [system('instructions'), user('question'), ...history()];
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const failure = new Error('metadata write');
+    const agent = new Agent({
+      name: 'Metadata',
+      model,
+      instructions() {
+        Object.defineProperty(Object.prototype, 'providerData', {
+          configurable: true,
+          set() {
+            throw failure;
+          },
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      await expect(
+        new Runner({ tracingDisabled: true }).run(agent, input),
+      ).rejects.toBe(failure);
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'providerData');
+    }
   });
 
   it('rejects an uncloneable model item after a temporary clone replacement', async () => {
