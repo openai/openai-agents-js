@@ -250,7 +250,7 @@ export function captureTextHistory(
   )
     return;
   const proof: RecordProof = {
-    known: stateCapture ? takeRecords(items) : undefined,
+    known: original ? records?.get(items)?.deref() : undefined,
   };
   if (stateCapture && !proof.known) return;
   if (!dense(items, runtime)) return;
