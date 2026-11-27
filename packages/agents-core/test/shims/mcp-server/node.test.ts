@@ -19,10 +19,16 @@ import { UserError } from '../../../src/errors';
 import {
   DEFAULT_REQUEST_TIMEOUT_MSEC,
   type JSONRPCMessage,
+  type Client,
+  type Transport,
   type TransportSendOptions,
 } from '@modelcontextprotocol/client';
 import type { Logger } from '../../../src/logger';
 import { connectMcpServers } from '../../../src/mcpServers';
+import {
+  MCPServerStdio as ExportedStdio,
+  MCPServerSSE as ExportedSSE,
+} from '@openai/agents-core/_shims';
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
@@ -231,6 +237,21 @@ beforeEach(() => {
   retainCallToolSignalListener = false;
 });
 
+beforeAll(() => {
+  vi.doMock('@modelcontextprotocol/client/stdio', async (importOriginal) => {
+    return {
+      ...(await importOriginal()),
+      StdioClientTransport: MockStdioClientTransport,
+    };
+  });
+  vi.doMock('@modelcontextprotocol/client', async (importOriginal) => ({
+    ...(await importOriginal()),
+    Client: MockClient,
+    SSEClientTransport: MockSSEClientTransport,
+    StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
+  }));
+});
+
 describe('NodeMCPServerStdio', () => {
   test('forwards the tool page cap and preserves per-page timeouts', async () => {
     listToolsImplementation = async () => ({
@@ -253,20 +274,6 @@ describe('NodeMCPServerStdio', () => {
     }
   });
 
-  beforeAll(() => {
-    vi.doMock('@modelcontextprotocol/client/stdio', async (importOriginal) => {
-      return {
-        ...(await importOriginal()),
-        StdioClientTransport: MockStdioClientTransport,
-      };
-    });
-    vi.doMock('@modelcontextprotocol/client', async (importOriginal) => ({
-      ...(await importOriginal()),
-      Client: MockClient,
-      SSEClientTransport: MockSSEClientTransport,
-      StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
-    }));
-  });
   test('should be available', async () => {
     const server = new NodeMCPServerStdio({
       name: 'test',
@@ -1814,6 +1821,633 @@ describe('NodeMCPServerStreamableHttp', () => {
 
   afterAll(() => {
     vi.clearAllMocks();
+  });
+});
+
+describe('exported Node shim subclass compatibility', () => {
+  class StdioSubclass extends ExportedStdio {
+    connectionVersion = 123;
+    pendingConnections = 'subclass pending';
+    closingConnections = 'subclass closing';
+    closeConnection = vi.fn(async () => {});
+  }
+
+  class SSESubclass extends ExportedSSE {
+    connectionVersion = 123;
+    pendingConnections = 'subclass pending';
+    closingConnections = 'subclass closing';
+    closeConnection = vi.fn(async () => {});
+  }
+
+  test.each([
+    ['Stdio', () => new StdioSubclass({ command: 'test' })],
+    ['SSE', () => new SSESubclass({ url: 'http://localhost' })],
+  ] as const)(
+    'preserves %s subclass members during connection cleanup',
+    async (_name, createServer) => {
+      const open = new Set<unknown>();
+      connectImplementation = async (transport) => {
+        open.add(transport);
+        transport.close = async () => {
+          open.delete(transport);
+        };
+      };
+      const server = createServer();
+      await server.connect();
+      await server.connect();
+      await server.close();
+
+      expect(open.size).toBe(0);
+      expect(server.connectionVersion).toBe(123);
+      expect(server.pendingConnections).toBe('subclass pending');
+      expect(server.closingConnections).toBe('subclass closing');
+      expect(server.closeConnection).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe.each([
+  [
+    'SSE',
+    () =>
+      new NodeMCPServerSSE({
+        url: 'https://example.test/sse',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'stdio',
+    () =>
+      new NodeMCPServerStdio({
+        command: 'test',
+        logger: createCapturingLogger(),
+      }),
+  ],
+] as const)('%s connection ownership', (_name, createServer) => {
+  test('releases both transports after a reconnect and one close', async () => {
+    const server = createServer();
+    const open = new Set<unknown>();
+    connectImplementation = async (transport) => {
+      open.add(transport);
+      transport.close = async () => {
+        open.delete(transport);
+      };
+    };
+    await server.connect();
+    await server.connect();
+    await server.close();
+    expect(open.size).toBe(0);
+  });
+
+  test('discards a connection that finishes after close', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    let open = false;
+    connectImplementation = async (transport) => {
+      transport.close = async () => {
+        open = false;
+      };
+      open = true;
+      started.resolve();
+      await release.promise;
+    };
+    const pending = server.connect();
+    await started.promise;
+    await server.close();
+    expect(open).toBe(false);
+    release.resolve();
+    await expect(pending).rejects.toThrow('changed during connect');
+    expect(open).toBe(false);
+    await expect(server.listTools()).rejects.toThrow('not initialized');
+  });
+
+  test('keeps the successful connection when an older connect fails', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    connectImplementation = async () => {
+      connectImplementation = undefined;
+      started.resolve();
+      await release.promise;
+      throw new Error('first setup failed');
+    };
+    const first = server.connect();
+    await started.promise;
+    try {
+      await server.connect();
+      release.resolve();
+      await expect(first).rejects.toThrow('first setup failed');
+      expect((await server.listTools())[0].name).toBe('mock-tool');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe.each([
+  [
+    'SSE',
+    () =>
+      new NodeMCPServerSSE({
+        url: 'https://example.test/sse',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'stdio',
+    () =>
+      new NodeMCPServerStdio({
+        command: 'test',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'exported SSE',
+    () =>
+      new ExportedSSE({
+        url: 'https://example.test/sse',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'exported stdio',
+    () =>
+      new ExportedStdio({ command: 'test', logger: createCapturingLogger() }),
+  ],
+] as const)('%s pending handshake cleanup', (_name, createServer) => {
+  test('closes a pending transport before its handshake settles and deduplicates failure cleanup', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    const closeTransport = vi.fn(async () => {});
+    const closeClient = vi.spyOn(MockClient.prototype, 'close');
+    connectImplementation = async (transport) => {
+      transport.close = closeTransport;
+      started.resolve();
+      await release.promise;
+      throw new Error('cancelled handshake');
+    };
+    const outcome = server.connect().catch((error: Error) => error);
+    try {
+      await started.promise;
+      await Promise.all([server.close(), server.close()]);
+      expect(closeTransport).toHaveBeenCalledTimes(1);
+      expect(closeClient).toHaveBeenCalledTimes(1);
+      release.resolve();
+      expect(await outcome).toMatchObject({
+        message: expect.stringContaining('cancelled handshake'),
+      });
+      expect(closeTransport).toHaveBeenCalledTimes(1);
+      expect(closeClient).toHaveBeenCalledTimes(1);
+      await expect(server.listTools()).rejects.toThrow('not initialized');
+    } finally {
+      release.resolve();
+      await outcome;
+      closeClient.mockRestore();
+    }
+  });
+
+  test('can reconnect after disposing a handshake that never settles', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const closeTransport = vi.fn(async () => {});
+    connectImplementation = async (transport) => {
+      connectImplementation = undefined;
+      transport.close = closeTransport;
+      started.resolve();
+      await new Promise<void>(() => {});
+    };
+    void server.connect().catch(() => {});
+    await started.promise;
+    await server.close();
+    expect(closeTransport).toHaveBeenCalledTimes(1);
+    try {
+      await server.connect();
+      expect((await server.listTools())[0].name).toBe('mock-tool');
+    } finally {
+      await server.close();
+    }
+    expect(closeTransport).toHaveBeenCalledTimes(1);
+  });
+
+  test('closes every parallel pending attempt without waiting for the handshakes', async () => {
+    const server = createServer();
+    const bothStarted = createDeferred();
+    const release = createDeferred();
+    const closes: Array<ReturnType<typeof vi.fn>> = [];
+    connectImplementation = async (transport) => {
+      const close = vi.fn(async () => {});
+      closes.push(close);
+      transport.close = close;
+      if (closes.length === 2) bothStarted.resolve();
+      await release.promise;
+    };
+    const first = server.connect().catch((error: Error) => error);
+    const second = server.connect().catch((error: Error) => error);
+    try {
+      await bothStarted.promise;
+      await server.close();
+      expect(closes).toHaveLength(2);
+      for (const close of closes) expect(close).toHaveBeenCalledTimes(1);
+      release.resolve();
+      for (const outcome of await Promise.all([first, second])) {
+        expect(outcome).toBeInstanceOf(Error);
+        expect(outcome).toMatchObject({
+          message: expect.stringContaining('changed during connect'),
+        });
+      }
+      for (const close of closes) expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await Promise.all([first, second]);
+    }
+  });
+
+  test('keeps a new connection while an older pending cleanup is draining', async () => {
+    const server = createServer();
+    const started = createDeferred();
+    const cleanupStarted = createDeferred();
+    const releaseCleanup = createDeferred();
+    const releaseHandshake = createDeferred();
+    connectImplementation = async (transport) => {
+      connectImplementation = undefined;
+      transport.close = async () => {
+        cleanupStarted.resolve();
+        await releaseCleanup.promise;
+      };
+      started.resolve();
+      await releaseHandshake.promise;
+      throw new Error('old handshake failed');
+    };
+    const oldConnect = server.connect().catch((error: Error) => error);
+    let closing: Promise<void> | undefined;
+    try {
+      await started.promise;
+      closing = server.close();
+      await cleanupStarted.promise;
+      await server.connect();
+      releaseHandshake.resolve();
+      releaseCleanup.resolve();
+      await closing;
+      expect(await oldConnect).toMatchObject({
+        message: expect.stringContaining('old handshake failed'),
+      });
+      expect((await server.listTools())[0].name).toBe('mock-tool');
+    } finally {
+      releaseHandshake.resolve();
+      releaseCleanup.resolve();
+      await oldConnect;
+      await closing;
+      await server.close();
+    }
+  });
+
+  test('drains all pending cleanup when one transport close rejects', async () => {
+    const server = createServer();
+    const bothStarted = createDeferred();
+    const secondCleanupStarted = createDeferred();
+    const releaseCleanup = createDeferred();
+    const releaseHandshake = createDeferred();
+    const closes: Array<ReturnType<typeof vi.fn>> = [];
+    connectImplementation = async (transport) => {
+      const index = closes.length;
+      const close = vi.fn(async () => {
+        if (index === 0) throw new Error('close failed');
+        secondCleanupStarted.resolve();
+        await releaseCleanup.promise;
+      });
+      closes.push(close);
+      transport.close = close;
+      if (closes.length === 2) bothStarted.resolve();
+      await releaseHandshake.promise;
+      throw new Error('cancelled handshake');
+    };
+    const attempts = [server.connect(), server.connect()].map((attempt) =>
+      attempt.catch((error: Error) => error),
+    );
+    let closing: Promise<unknown> | undefined;
+    let settled = false;
+    try {
+      await bothStarted.promise;
+      closing = server
+        .close()
+        .catch((error: Error) => error)
+        .finally(() => {
+          settled = true;
+        });
+      await secondCleanupStarted.promise;
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      releaseCleanup.resolve();
+      expect(await closing).toMatchObject({
+        message: expect.stringContaining('close failed'),
+      });
+      releaseHandshake.resolve();
+      for (const attempt of await Promise.all(attempts)) {
+        expect(attempt).toMatchObject({
+          message: expect.stringContaining('cancelled handshake'),
+        });
+      }
+      for (const close of closes) expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseCleanup.resolve();
+      releaseHandshake.resolve();
+      await closing;
+      await Promise.all(attempts);
+    }
+  });
+
+  test('lets a manager timeout dispose a pending handshake promptly', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    const server = createServer();
+    const started = createDeferred();
+    const release = createDeferred();
+    const closeTransport = vi.fn(async () => {
+      release.resolve();
+    });
+    connectImplementation = async (transport) => {
+      transport.close = closeTransport;
+      started.resolve();
+      await release.promise;
+      throw new Error('cancelled handshake');
+    };
+    try {
+      const opening = connectMcpServers([server], {
+        connectTimeoutMs: 5,
+        closeTimeoutMs: 50,
+      });
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(5);
+      const manager = await opening;
+      expect(manager.failed).toEqual([server]);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy.mock.calls[0][0]).toContain('Failed to connect');
+      await manager.close();
+      expect(closeTransport).toHaveBeenCalledTimes(1);
+      await expect(server.listTools()).rejects.toThrow('not initialized');
+    } finally {
+      release.resolve();
+      await server.close();
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+class ProtectedStdioOwner extends ExportedStdio {
+  useClient(client: Client) {
+    this.session = client;
+  }
+}
+
+class ProtectedSSEOwner extends ExportedSSE {
+  useClient(client: Client) {
+    this.session = client;
+  }
+}
+
+async function createOwnedClient(
+  failure: 'before' | 'after' | 'none',
+  beforeFirstClose?: () => Promise<void>,
+  reusableClient?: Client,
+) {
+  const { Client } = await vi.importActual<
+    typeof import('@modelcontextprotocol/client')
+  >('@modelcontextprotocol/client');
+  let attempts = 0;
+  let open = true;
+  const transport: Transport = {
+    async start() {},
+    async send(message) {
+      if (!('method' in message) || !('id' in message) || message.id == null)
+        return;
+      const id = message.id;
+      queueMicrotask(() =>
+        transport.onmessage?.({
+          jsonrpc: '2.0',
+          id,
+          ...(message.method === 'server/discover'
+            ? { error: { code: -32601, message: 'Not supported' } }
+            : {
+                result:
+                  message.method === 'initialize'
+                    ? {
+                        protocolVersion: '2025-06-18',
+                        capabilities: { tools: {} },
+                        serverInfo: { name: 'synthetic', version: '1' },
+                      }
+                    : { tools: [] },
+              }),
+        }),
+      );
+    },
+    async close() {
+      attempts += 1;
+      if (attempts === 1) {
+        await beforeFirstClose?.();
+        if (failure === 'before')
+          throw new Error('transient client transport close failure');
+      }
+      open = false;
+      transport.onclose?.();
+      if (attempts === 1 && failure === 'after')
+        throw new Error('close reported after release');
+    },
+  };
+  const client =
+    reusableClient ?? new Client({ name: 'protected-owner', version: '1' });
+  await client.connect(transport);
+  return {
+    client,
+    get attempts() {
+      return attempts;
+    },
+    get open() {
+      return open;
+    },
+  };
+}
+
+describe.each([
+  [
+    'stdio',
+    () =>
+      new ProtectedStdioOwner({
+        command: 'unused',
+        logger: createCapturingLogger(),
+      }),
+  ],
+  [
+    'SSE',
+    () =>
+      new ProtectedSSEOwner({
+        url: 'https://example.test/sse',
+        logger: createCapturingLogger(),
+      }),
+  ],
+] as const)('%s protected Client cleanup', (_name, createServer) => {
+  test('joins an active protected Client cleanup until resource release', async () => {
+    const started = createDeferred();
+    const release = createDeferred();
+    const owned = await createOwnedClient('none', async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const server = createServer();
+    server.useClient(owned.client);
+    const firstClose = server.close();
+    await started.promise;
+    let secondSettled = false;
+    const secondClose = server.close().then(() => {
+      secondSettled = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(secondSettled).toBe(false);
+      expect(owned.open).toBe(true);
+      expect(owned.attempts).toBe(1);
+    } finally {
+      release.resolve();
+      await Promise.all([firstClose, secondClose]);
+      await owned.client.close();
+    }
+    expect(owned.open).toBe(false);
+    expect(owned.attempts).toBe(1);
+  });
+
+  test.each([
+    ['none', 'none'],
+    ['before', 'none'],
+    ['after', 'none'],
+    ['none', 'before'],
+    ['before', 'before'],
+    ['after', 'before'],
+  ] as const)(
+    'closes a reused Client after %s then %s cleanup with concurrent callers',
+    async (firstFailure, nextFailure) => {
+      const first = await createOwnedClient(firstFailure);
+      const server = createServer();
+      server.useClient(first.client);
+      if (firstFailure === 'none') await server.close();
+      else await expect(server.close()).rejects.toThrow();
+      if (firstFailure === 'before') await server.close();
+      expect(first.open).toBe(false);
+      const started = createDeferred();
+      const release = createDeferred();
+      const next = await createOwnedClient(
+        nextFailure,
+        async () => {
+          started.resolve();
+          await release.promise;
+        },
+        first.client,
+      );
+      server.useClient(next.client);
+      const closing = server.close();
+      await started.promise;
+      let overlapSettled = false;
+      const overlap = server.close().finally(() => {
+        overlapSettled = true;
+      });
+      const results = Promise.allSettled([closing, overlap]);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(overlapSettled).toBe(false);
+        expect(next.open).toBe(true);
+        expect(next.attempts).toBe(1);
+      } finally {
+        release.resolve();
+        await results;
+      }
+      if (nextFailure === 'before') {
+        expect((await results).map((result) => result.status)).toEqual([
+          'rejected',
+          'rejected',
+        ]);
+        expect(next.open).toBe(true);
+        await Promise.all([server.close(), server.close()]);
+        expect(next.attempts).toBe(2);
+      } else {
+        expect((await results).map((result) => result.status)).toEqual([
+          'fulfilled',
+          'fulfilled',
+        ]);
+        expect(next.attempts).toBe(1);
+      }
+      expect(next.open).toBe(false);
+      await server.close();
+      await first.client.close();
+    },
+  );
+
+  test('retries still-owned cleanup only after another explicit close', async () => {
+    const owned = await createOwnedClient('before');
+    const server = createServer();
+    server.useClient(owned.client);
+    try {
+      await expect(server.close()).rejects.toThrow(
+        'transient client transport close failure',
+      );
+      expect(owned.open).toBe(true);
+      expect(owned.attempts).toBe(1);
+      await Promise.all([server.close(), server.close()]);
+      expect(owned.open).toBe(false);
+      expect(owned.attempts).toBe(2);
+      await server.close();
+      expect(owned.attempts).toBe(2);
+    } finally {
+      await owned.client.close();
+    }
+  });
+
+  test('does not retain a failed close that already released its connection', async () => {
+    const owned = await createOwnedClient('after');
+    const server = createServer();
+    server.useClient(owned.client);
+    await expect(server.close()).rejects.toThrow(
+      'close reported after release',
+    );
+    expect(owned.open).toBe(false);
+    await server.close();
+    expect(owned.attempts).toBe(1);
+  });
+
+  test('keeps a newer protected Client while failed cleanup awaits an explicit retry', async () => {
+    const started = createDeferred();
+    const release = createDeferred();
+    const old = await createOwnedClient('before', async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const newer = await createOwnedClient('none');
+    const server = createServer();
+    server.useClient(old.client);
+    const firstClose = server.close().catch((error: Error) => error);
+    try {
+      await started.promise;
+      server.useClient(newer.client);
+      release.resolve();
+      expect(await firstClose).toMatchObject({
+        message: expect.stringContaining(
+          'transient client transport close failure',
+        ),
+      });
+      expect(old.open).toBe(true);
+      expect(newer.open).toBe(true);
+      expect(await server.listTools()).toEqual([]);
+      await server.close();
+      expect(old.open).toBe(false);
+      expect(newer.open).toBe(false);
+      expect(old.attempts).toBe(2);
+      expect(newer.attempts).toBe(1);
+    } finally {
+      release.resolve();
+      await firstClose;
+      await old.client.close();
+      await newer.client.close();
+    }
   });
 });
 
