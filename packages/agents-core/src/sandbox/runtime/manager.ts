@@ -944,73 +944,91 @@ export class SandboxRuntimeManager<TContext> {
       configuredManifest.manifest,
       tracingParent,
     );
-    if (resumed) {
-      this.applyArchiveLimits(resumed);
-      await this.ensureSessionStarted(resumed, agent, 'resume', {
-        tracingParent,
-      });
-      this.registerSessionForAgent(agent, resumed, { owned: true });
-      return resumed;
-    }
-
-    if (!client.create) {
-      throw new UserError(
-        'Sandbox execution requires a sandbox client with create() support.',
-      );
-    }
+    let session = resumed;
+    let createManifest: Manifest | undefined;
     const clientPreparesEnvironment =
       client.environmentPreparation === 'client';
-    if (clientPreparesEnvironment) {
-      validateMountEnvironmentCredentialBoundaries(
-        configuredManifest.manifest,
-        {},
-        { preserveDeferredValuePresence: true },
+    if (!session) {
+      if (!client.create) {
+        throw new UserError(
+          'Sandbox execution requires a sandbox client with create() support.',
+        );
+      }
+      if (clientPreparesEnvironment) {
+        validateMountEnvironmentCredentialBoundaries(
+          configuredManifest.manifest,
+          {},
+          { preserveDeferredValuePresence: true },
+        );
+      }
+      createManifest = clientPreparesEnvironment
+        ? cloneManifest(configuredManifest.manifest)
+        : await resolveAndValidateMountEnvironment(configuredManifest.manifest);
+      const createSession = client.create.bind(client);
+      const createArgs: SandboxClientCreateArgs = {
+        snapshot: this.resolveSnapshotSpec(client),
+        options: this.sandboxConfig?.options,
+        concurrencyLimits: this.sandboxConfig?.concurrencyLimits,
+        archiveLimits: this.sandboxConfig?.archiveLimits,
+      };
+      if (configuredManifest.passToCreate) {
+        createArgs.manifest = createManifest;
+      }
+
+      session = await withSandboxSpan(
+        'sandbox.create_session',
+        {
+          agent_name: agent.name,
+          backend_id: client.backendId,
+        },
+        async () => await createSession(createArgs),
+        tracingParent,
       );
-    }
-    const createManifest = clientPreparesEnvironment
-      ? cloneManifest(configuredManifest.manifest)
-      : await resolveAndValidateMountEnvironment(configuredManifest.manifest);
-    const createSession = client.create.bind(client);
-    const createArgs: SandboxClientCreateArgs = {
-      snapshot: this.resolveSnapshotSpec(client),
-      options: this.sandboxConfig?.options,
-      concurrencyLimits: this.sandboxConfig?.concurrencyLimits,
-      archiveLimits: this.sandboxConfig?.archiveLimits,
-    };
-    if (configuredManifest.passToCreate) {
-      createArgs.manifest = createManifest;
     }
 
-    const session = await withSandboxSpan(
-      'sandbox.create_session',
-      {
-        agent_name: agent.name,
-        backend_id: client.backendId,
-      },
-      async () => await createSession(createArgs),
-      tracingParent,
-    );
-    if (clientPreparesEnvironment) {
-      bindClientPreparedTrustedManifest(session, configuredManifest.manifest);
-    } else if (configuredManifest.passToCreate) {
-      session.state.environment = {
-        ...(session.state.environment ?? {}),
-        ...(await createManifest.resolveEnvironment()),
-      };
-      const manifestWithTrustedPolicies = manifestWithTrustedRuntimePolicies(
-        session.state.manifest,
-        configuredManifest.manifest,
+    try {
+      if (createManifest && clientPreparesEnvironment) {
+        bindClientPreparedTrustedManifest(session, configuredManifest.manifest);
+      } else if (createManifest && configuredManifest.passToCreate) {
+        session.state.environment = {
+          ...(session.state.environment ?? {}),
+          ...(await createManifest.resolveEnvironment()),
+        };
+        const manifestWithTrustedPolicies = manifestWithTrustedRuntimePolicies(
+          session.state.manifest,
+          configuredManifest.manifest,
+        );
+        recordLiveMountCredentialAuthority(
+          manifestWithTrustedPolicies,
+          session.state.manifest,
+        );
+        session.state.manifest = manifestWithTrustedPolicies;
+      }
+      this.applyArchiveLimits(session);
+      await this.ensureSessionStarted(
+        session,
+        agent,
+        resumed ? 'resume' : 'create',
+        {
+          tracingParent,
+        },
       );
-      recordLiveMountCredentialAuthority(
-        manifestWithTrustedPolicies,
-        session.state.manifest,
-      );
-      session.state.manifest = manifestWithTrustedPolicies;
+    } catch (error) {
+      // An unready session must not be serialized. Registered aliases already
+      // belong to the run's cleanup path.
+      if (![...this.sessionsByAgentKey.values()].includes(session)) {
+        try {
+          await cleanupSandboxSession(session);
+        } catch (cleanupError) {
+          logModelAndToolActionWarning(
+            logger,
+            'Failed to clean up sandbox after startup failure:',
+            cleanupError,
+          );
+        }
+      }
+      throw error;
     }
-    this.applyArchiveLimits(session);
-    await this.ensureSessionStarted(session, agent, 'create', {
-      tracingParent,
-    });
     this.registerSessionForAgent(agent, session, { owned: true });
     return session;
   }

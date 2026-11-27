@@ -12,6 +12,7 @@ import { Agent, type AgentOutputType } from '../src/agent';
 import { handoff } from '../src/handoff';
 import type { MCPServer } from '../src/mcp';
 import { UserError } from '../src/errors';
+import logger from '../src/logger';
 import type {
   ApplyPatchOperation,
   ApplyPatchResult,
@@ -8724,6 +8725,54 @@ describe('sandbox runner integration', () => {
     expect(client.createCalls).toHaveLength(0);
     expect(state._sandbox?.sessionsByAgent.SandboxWorker).toBeDefined();
   });
+
+  it.each(['create', 'resume', 'provided', 'close failure'] as const)(
+    'respects %s session ownership when sandbox startup fails',
+    async (mode) => {
+      const failure = new Error('Cannot start sandbox');
+      const session = scriptedSandboxSession([
+        { method: 'running', result: false },
+        { method: 'start', error: failure },
+        mode === 'close failure'
+          ? { method: 'close', error: new Error('Cannot close sandbox') }
+          : { method: 'close', result: undefined },
+      ]);
+      const serializeSessionState = vi.fn(async () => ({ id: 'unready' }));
+      const client: SandboxClient = {
+        backendId: 'test',
+        create: async () => session,
+        resume: async () => session,
+        serializeSessionState,
+      };
+      const model = new ScriptedModel([]);
+      const agent = new SandboxAgent({
+        name: 'Worker',
+        capabilities: [],
+        model,
+      });
+      const sandbox =
+        mode === 'provided'
+          ? { session }
+          : mode === 'resume'
+            ? { client, sessionState: session.state }
+            : { client };
+
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        await expect(run(agent, 'Hello', { sandbox })).rejects.toBe(failure);
+        expect(warn).toHaveBeenCalledTimes(mode === 'close failure' ? 1 : 0);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(model.calls).toHaveLength(0);
+      expect(serializeSessionState).not.toHaveBeenCalled();
+      expect(session.calls.map((call) => call.method)).toEqual(
+        mode === 'provided'
+          ? ['running', 'start']
+          : ['running', 'start', 'close'],
+      );
+    },
+  );
 
   it('does not restart provided sandbox sessions that report running', async () => {
     const client = new StartableFakeSandboxClient();
