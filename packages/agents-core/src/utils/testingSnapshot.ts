@@ -23,10 +23,16 @@ function isCloneableBuffer(value: object): value is ArrayBuffer {
   return tag === '[object ArrayBuffer]' || tag === '[object SharedArrayBuffer]';
 }
 
+function copyToJSON(source: object, snapshot: object): void {
+  const descriptor = Object.getOwnPropertyDescriptor(source, 'toJSON');
+  if (typeof descriptor?.value === 'function') {
+    Object.defineProperty(snapshot, 'toJSON', descriptor);
+  }
+}
+
 /**
- * Copies mutable data containers used by public testing call records while
- * preserving runtime identities such as signals, callbacks, and class
- * instances. Cycles and shared references are preserved within the snapshot.
+ * Copies mutable data containers while preserving runtime identities such as
+ * signals, callbacks, and class instances. Cycles and shared references are preserved within the snapshot.
  *
  */
 export function snapshotTestingValue<T>(
@@ -45,6 +51,7 @@ export function snapshotTestingValue<T>(
   if (isCloneableBuffer(value)) {
     const snapshot = value.slice(0);
     seen.set(value, snapshot);
+    copyToJSON(value, snapshot);
     return snapshot as T;
   }
 
@@ -63,6 +70,7 @@ export function snapshotTestingValue<T>(
       snapshot = new TypedArray(buffer, value.byteOffset, length);
     }
     seen.set(value, snapshot);
+    copyToJSON(value, snapshot);
     return snapshot as T;
   }
 
@@ -72,6 +80,7 @@ export function snapshotTestingValue<T>(
     for (const entry of value) {
       snapshot.push(snapshotTestingValue(entry, seen));
     }
+    copyToJSON(value, snapshot);
     return snapshot as T;
   }
 
@@ -99,5 +108,6 @@ export function snapshotTestingValue<T>(
       writable: true,
     });
   }
+  copyToJSON(value, snapshot);
   return snapshot as T;
 }

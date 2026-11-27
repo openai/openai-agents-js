@@ -4,6 +4,7 @@ import {
   MemorySession,
   UserError,
   type AgentInputItem,
+  type Session,
 } from '@openai/agents-core';
 
 import { OpenAIResponsesCompactionSession } from '../src';
@@ -510,6 +511,143 @@ describe('OpenAIResponsesCompactionSession', () => {
       ]);
     },
   );
+
+  it('preserves opaque provider metadata through a custom JSON session', async () => {
+    class Key {
+      constructor(readonly value: string) {}
+      toJSON() {
+        return this.value;
+      }
+    }
+    const url = new URL('https://example.test/record');
+    const key = new Key('key-42');
+    const jsonHook = { toJSON: () => 'note-42' };
+    const hiddenHook = Object.defineProperty({ value: 'hidden-42' }, 'toJSON', {
+      value() {
+        return this.value;
+      },
+    });
+    const jsonList = Object.defineProperty(['entry'], 'toJSON', {
+      value() {
+        return { values: [...this] };
+      },
+    });
+    const date = new Date('2026-01-01T00:00:00.000Z');
+    const map = new Map([['key', 'value']]);
+    let stored: AgentInputItem[] = [];
+    let received: AgentInputItem[] = [];
+    const underlyingSession: Session = {
+      getSessionId: async () => 'custom-json',
+      getItems: async () => JSON.parse(JSON.stringify(stored)),
+      addItems: async (items) => {
+        received = items;
+        stored.push(...JSON.parse(JSON.stringify(items)));
+      },
+      popItem: async () => stored.pop(),
+      clearSession: async () => {
+        stored = [];
+      },
+    };
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession,
+      client: { responses: { compact: vi.fn() } } as any,
+    });
+    const metadata = { url, key, jsonHook, hiddenHook, jsonList, date, map };
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+        providerData: metadata,
+      },
+    ]);
+    const receivedMetadata = received[0].providerData!;
+    expect(receivedMetadata).not.toBe(metadata);
+    expect(receivedMetadata.url).toBe(url);
+    expect(receivedMetadata.key).toBe(key);
+    expect(receivedMetadata.jsonHook.toJSON).toBe(jsonHook.toJSON);
+    expect(receivedMetadata.hiddenHook).not.toBe(hiddenHook);
+    expect(
+      Object.getOwnPropertyDescriptor(receivedMetadata.hiddenHook, 'toJSON')
+        ?.enumerable,
+    ).toBe(false);
+    expect(receivedMetadata.jsonList).not.toBe(jsonList);
+    expect(receivedMetadata.jsonList.toJSON()).toEqual({ values: ['entry'] });
+    jsonList.push('edited');
+    expect(receivedMetadata.jsonList.toJSON()).toEqual({ values: ['entry'] });
+    hiddenHook.value = 'edited';
+    expect(receivedMetadata.hiddenHook.toJSON()).toBe('hidden-42');
+    expect(receivedMetadata.date).toBe(date);
+    expect(receivedMetadata.map).toBe(map);
+    expect((await session.getItems())[0].providerData).toEqual({
+      url: 'https://example.test/record',
+      key: 'key-42',
+      jsonHook: 'note-42',
+      hiddenHook: 'hidden-42',
+      jsonList: { values: ['entry'] },
+      date: '2026-01-01T00:00:00.000Z',
+      map: {},
+    });
+  });
+
+  it('detaches binary metadata while preserving shared view backing buffers', async () => {
+    let received: AgentInputItem[] = [];
+    const underlyingSession: Session = {
+      getSessionId: async () => 'binary',
+      getItems: async () => received,
+      addItems: async (items) => {
+        received = items;
+      },
+      popItem: async () => received.pop(),
+      clearSession: async () => {
+        received = [];
+      },
+    };
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession,
+      client: { responses: { compact: vi.fn() } } as any,
+    });
+    const buffer = new SharedArrayBuffer(4);
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer, 1, 2);
+    bytes.set([1, 2, 3, 4]);
+    Object.defineProperty(bytes, 'toJSON', {
+      value() {
+        return Array.from(this);
+      },
+    });
+    Object.defineProperty(view, 'toJSON', {
+      value() {
+        return this.getUint8(0);
+      },
+    });
+    Object.defineProperty(buffer, 'toJSON', {
+      value() {
+        return this.byteLength;
+      },
+    });
+    const append = session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+        providerData: { bytes, view, buffer },
+      },
+    ]);
+    bytes.fill(9);
+    await append;
+    const metadata = received[0].providerData!;
+    expect(Array.from(metadata.bytes)).toEqual([1, 2, 3, 4]);
+    expect(metadata.view.getUint8(0)).toBe(2);
+    expect(metadata.bytes.buffer).toBe(metadata.view.buffer);
+    expect(metadata.bytes.buffer).not.toBe(buffer);
+    expect(metadata.bytes.buffer).toBe(metadata.buffer);
+    expect(JSON.parse(JSON.stringify(metadata))).toEqual({
+      bytes: [1, 2, 3, 4],
+      view: 2,
+      buffer: 4,
+    });
+  });
 
   it('reloads cached input history after an underlying append commits and rejects', async () => {
     const initialItem = {

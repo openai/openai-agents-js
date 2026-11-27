@@ -20,6 +20,7 @@ import {
   getModelVisibleSessionItems,
   hasCompleteApprovalGroups,
   logModelAndToolActionWarning,
+  snapshotTestingValue,
 } from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
@@ -395,8 +396,8 @@ export class OpenAIResponsesCompactionSession
     }
 
     // Detach caller-owned input before queuing the write so storage and both
-    // compaction views see the same values.
-    const snapshot = structuredClone(items);
+    // compaction views see the same values, preserving opaque provider metadata.
+    const snapshot = snapshotTestingValue(items);
     await this.runMutationOperation(async () => {
       const ownsGeneration = this.ownsCompaction(ownership);
       try {
