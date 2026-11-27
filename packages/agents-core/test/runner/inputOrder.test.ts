@@ -1,9 +1,10 @@
 import { runInNewContext } from 'node:vm';
 import { types } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { applyCallModelInputFilter } from '../../src/runner/conversation';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
-import { Agent, Runner, assistant, system, user } from '../../src';
+import { Agent, RunContext, Runner, assistant, system, user } from '../../src';
 import {
   assistantMessage,
   modelResponder,
@@ -31,6 +32,32 @@ function history(): AgentInputItem[] {
 }
 
 describe('ownership of a complete input history', () => {
+  it('keeps saved messages and their owners when the model input changes before the first read', async () => {
+    const input = history();
+    const tracker = begin(input);
+    const processed = structuredClone(input);
+    const first = processed[0];
+    tracker.setPreparedTurnItems(processed.slice(), processed);
+    const prepared = await applyCallModelInputFilter(
+      new Agent({ name: 'History' }),
+      undefined,
+      new RunContext(),
+      processed,
+      undefined,
+      tracker.orderedInput,
+    );
+    processed[0] = message('replacement');
+    prepared.modelInput.input[0] = message('model edit');
+    const saved = prepared.persistedItems;
+    expect(saved[0]).toStrictEqual(input[0]);
+    saved[0] = message('saved edit');
+    expect(prepared.persistedItems).toBe(saved);
+    tracker.recordTurnItems([first, processed[0]], [saved[0], processed[0]]);
+    expect(tracker.getItemsForPersistence()).toStrictEqual([
+      message('saved edit'),
+    ]);
+  });
+
   it('keeps each initial occurrence independent when recovery is read late', () => {
     const part = {
       type: 'output_text' as const,

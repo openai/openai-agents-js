@@ -407,9 +407,14 @@ export function copyText(item: MessageItem): MessageItem {
   return { ...item, content: [part] } as MessageItem;
 }
 
-export type OrderedInput = {
+export type OrderedSnapshot = {
+  length: number;
+  read: () => MessageItem[];
   restore?: () => MessageItem[];
-  unobserved?: (result: FilterApplicationResult) => MessageItem[] | undefined;
+};
+
+export type OrderedInput = {
+  unobserved?: (result: FilterApplicationResult) => OrderedSnapshot | undefined;
 };
 
 export function prepareTextInput(
@@ -420,15 +425,23 @@ export function prepareTextInput(
   restore?: () => MessageItem[],
 ): FilterApplicationResult | undefined {
   if (!canCopyMessages(input)) return;
-  const saved: MessageItem[] = restore ? restore() : [];
+  let saved: MessageItem[] | undefined;
   if (!restore) {
+    saved = [];
     for (const item of input) {
       if (!isTextMessage(item)) return;
       saved.push(copyText(item));
     }
   }
-  let visible: AgentInputItem[] = saved;
-  let unobserved: MessageItem[] | undefined = saved;
+  // The two preparation stages see the same writable array. Recovery uses
+  // restore separately so edits to this array can't change its snapshot.
+  const read = () => (saved ??= restore!());
+  let visible: () => AgentInputItem[] = read;
+  let unobserved: OrderedSnapshot | undefined = {
+    length: input.length,
+    read,
+    restore,
+  };
   // Promise observers can edit or mark these items before the runner resumes.
   // Any such read restores the regular per-item native capture.
   const result: FilterApplicationResult = {
@@ -438,11 +451,11 @@ export function prepareTextInput(
       : input.map((item) => originals.get(item)),
     get persistedItems() {
       unobserved = undefined;
-      return visible;
+      return visible();
     },
     set persistedItems(items) {
       unobserved = undefined;
-      visible = items;
+      visible = () => items;
     },
     sourceMatchKinds: input.map(() => 'identity'),
     filterApplied: false,
@@ -457,12 +470,11 @@ export function prepareTextInput(
     )
       return unobserved;
   };
-  ordered.restore = restore;
   return result;
 }
 
 export function matchesSources(
-  prepared: { item: AgentInputItem; ownerIndex: number }[],
+  prepared: AgentInputItem[],
   sources: (AgentInputItem | undefined)[],
 ): boolean {
   const runtime = matchingRuntime();
@@ -470,9 +482,6 @@ export function matchesSources(
     !!runtime &&
     dense(sources, runtime) &&
     prepared.length === sources.length &&
-    prepared.every(
-      ({ item, ownerIndex }, index) =>
-        ownerIndex === index && sources[index] === item,
-    )
+    prepared.every((item, index) => sources[index] === item)
   );
 }
