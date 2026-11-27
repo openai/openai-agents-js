@@ -53,6 +53,7 @@ import {
   toolSearchOutputLoadsHostedMcpTool,
 } from './toolSearch';
 import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMessage';
+import { getCurrentTurnFunctionOutputs } from './currentTurnFunctionOutputs';
 
 type BlockedPairKind = 'tool' | 'handoff';
 
@@ -1586,7 +1587,6 @@ function buildCurrentFunctionPairPlan(
     }
 
     const callKeys: string[] = [];
-    const resultKeys: string[] = [];
     const callIndexes = new Map<string, number>();
     const resultIndexes = new Map<string, number>();
     const sanitizedItems: RunItem[] = [];
@@ -1614,7 +1614,6 @@ function buildCurrentFunctionPairPlan(
       ) {
         const key = functionResultKey(item.rawItem);
         if (!key || resultIndexes.has(key)) return undefined;
-        resultKeys.push(key);
         resultIndexes.set(key, index);
         sanitizedItems.push(
           new RunToolCallOutputItem(
@@ -1632,9 +1631,8 @@ function buildCurrentFunctionPairPlan(
 
     if (
       callKeys.length !== responseKeys.length ||
-      resultKeys.length !== responseKeys.length ||
+      resultIndexes.size !== responseKeys.length ||
       callKeys.some((key, index) => key !== responseKeys[index]) ||
-      resultKeys.some((key, index) => key !== responseKeys[index]) ||
       responseKeys.some(
         (key) =>
           callIndexes.get(key) === undefined ||
@@ -1643,6 +1641,20 @@ function buildCurrentFunctionPairPlan(
       )
     ) {
       return undefined;
+    }
+
+    // Partial approvals can finish out of order. Accept that order only for
+    // results with matching invocation evidence from this model turn.
+    if ([...resultIndexes.keys()].some((key, i) => key !== responseKeys[i])) {
+      const completed = new Set(getCurrentTurnFunctionOutputs(state).values());
+      if (
+        selection.primary.some(
+          (item) =>
+            item instanceof RunToolCallOutputItem && !completed.has(item),
+        )
+      ) {
+        return undefined;
+      }
     }
 
     const replacements = new Map<RunItem, RunItem>();
