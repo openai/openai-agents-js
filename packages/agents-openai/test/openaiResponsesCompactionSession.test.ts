@@ -482,6 +482,35 @@ describe('OpenAIResponsesCompactionSession', () => {
     await expect(session.getItems()).resolves.toEqual([]);
   });
 
+  it.each(['while queued', 'after append'] as const)(
+    'compacts the original message if the caller edits it %s',
+    async (timing) => {
+      const compact = vi.fn().mockResolvedValue({ output: [] });
+      const session = new OpenAIResponsesCompactionSession({
+        client: { responses: { compact } } as any,
+        compactionMode: 'input',
+        shouldTriggerCompaction: () => false,
+      });
+      await session.runCompaction();
+      const content = [{ type: 'input_text' as const, text: 'original' }];
+      const items: AgentInputItem[] = [
+        { type: 'message', role: 'user', content },
+      ];
+      const append = session.addItems(items);
+      if (timing === 'after append') await append;
+      content[0].text = 'edited';
+      items.length = 0;
+      await append;
+
+      const stored = await session.getItems();
+      expect(stored).toMatchObject([{ content: [{ text: 'original' }] }]);
+      await session.runCompaction({ force: true });
+      expect(compact.mock.calls[0][0].input).toMatchObject([
+        { content: [{ text: 'original' }] },
+      ]);
+    },
+  );
+
   it('reloads cached input history after an underlying append commits and rejects', async () => {
     const initialItem = {
       type: 'message',

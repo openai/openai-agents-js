@@ -394,10 +394,13 @@ export class OpenAIResponsesCompactionSession
       return;
     }
 
+    // Detach caller-owned input before queuing the write so storage and both
+    // compaction views see the same values.
+    const snapshot = structuredClone(items);
     await this.runMutationOperation(async () => {
       const ownsGeneration = this.ownsCompaction(ownership);
       try {
-        await this.underlyingSession.addItems(items);
+        await this.underlyingSession.addItems(snapshot);
       } catch (error) {
         // The backend may have committed before its acknowledgement was lost. Cached history
         // cannot distinguish that outcome, so force the next compaction decision to reload it.
@@ -411,7 +414,7 @@ export class OpenAIResponsesCompactionSession
         this.compactionOwnership.set(ownership, this.mutationGeneration);
       }
       if (this.compactionCandidateItems) {
-        const candidates = selectCompactionCandidateItems(items);
+        const candidates = selectCompactionCandidateItems(snapshot);
         if (candidates.length > 0) {
           this.compactionCandidateItems = [
             ...this.compactionCandidateItems,
@@ -420,7 +423,7 @@ export class OpenAIResponsesCompactionSession
         }
       }
       if (this.sessionItems) {
-        this.sessionItems = [...this.sessionItems, ...items];
+        this.sessionItems = [...this.sessionItems, ...snapshot];
       }
     });
   }
