@@ -1407,6 +1407,10 @@ export async function* getStreamedResponseWithRetry(
           throwIfTimedModelCallParentAborted(request.signal, timeoutMs);
           throw retryAdviceError;
         }
+        // Policy may approve an ambiguous timeout, but the provider's
+        // explicit unsafe stream verdict must survive timeout normalization.
+        const allowUnsafeStreamReplayApproval =
+          attemptScope.timedOut() && providerAdvice?.replaySafety !== 'unsafe';
         providerAdvice = withTimeoutReplayAuthority(
           providerAdvice,
           attemptScope.timedOut(),
@@ -1444,7 +1448,7 @@ export async function* getStreamedResponseWithRetry(
               emittedVisibleEvent,
               emittedRawModelEvent,
               providerAdvice,
-              allowUnsafeStreamReplayApproval: attemptScope.timedOut(),
+              allowUnsafeStreamReplayApproval,
             }),
             request.signal,
             timeoutMs,
