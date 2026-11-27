@@ -1238,6 +1238,80 @@ describe('output guardrails with Session persistence', () => {
     },
   );
 
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'replays redacted results after out-of-order partial approvals (%s)',
+    async (mode) => {
+      const effects: string[] = [];
+      const model = new ScriptedModel([
+        ['A', 'B'].map((key) => functionCall('echo', { key }, { callId: key })),
+        [assistantMessage('done')],
+      ]);
+      const agent = new Agent({
+        name: 'Approval agent',
+        model,
+        tools: [
+          tool({
+            name: 'echo',
+            description: 'Return a private value.',
+            parameters: z.object({ key: z.string() }),
+            needsApproval: true,
+            execute: ({ key }) => {
+              effects.push(key);
+              return `private result ${key}`;
+            },
+          }),
+        ],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block',
+            execute: async () => ({
+              tripwireTriggered: true,
+              outputInfo: null,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input, { session });
+      };
+      const first = await runOnce('Use both tools');
+      first.state.approve(first.interruptions[1]);
+      const partial = await runOnce(first.state);
+      partial.state.approve(partial.interruptions[0]);
+      await expect(runOnce(partial.state)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(effects).toEqual(['B', 'A']);
+      expect(partial.state.toString()).not.toContain('private result');
+
+      const stored = await session.getItems();
+      await run(new Agent({ name: 'Next', model }), 'Continue', { session });
+      for (const items of [stored, model.calls[1].request.input]) {
+        if (typeof items === 'string')
+          throw new Error('Expected session items');
+        expect(JSON.stringify(items)).not.toContain('private result');
+        expect(items.filter((i) => i.type === 'function_call')).toMatchObject([
+          { callId: 'A' },
+          { callId: 'B' },
+        ]);
+        const results = items.filter((i) => i.type === 'function_call_result');
+        expect(results.map((item) => item.callId).sort()).toEqual(['A', 'B']);
+        for (const item of results) {
+          expect(item.output).toBe('Output withheld by an output guardrail.');
+        }
+      }
+    },
+  );
+
   it.each(
     (['non_streamed', 'streamed'] as const).flatMap((mode) =>
       (['pass', 'trip', 'error'] as const).map((verdict) => ({
