@@ -6,6 +6,7 @@ import { UserError } from '../errors';
 import type { MessageItem } from '../types/protocol';
 import {
   canCopyMessages,
+  captureTextHistory,
   copyText,
   matchesOrderedInput,
   matchesSources,
@@ -1276,7 +1277,12 @@ export function createSessionPersistenceTracker(options: {
 }): SessionPersistenceTracker {
   class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
     orderedInput?: OrderedInput;
-    #firstOwners?: { items: MessageItem[]; clone: typeof structuredClone };
+    #readOriginal?: () => MessageItem[];
+    #expandPositions?: () => PreparedOwnedSourcePosition[];
+    #firstOwners?: {
+      items: MessageItem[] | (() => MessageItem[]);
+      clone: typeof structuredClone;
+    };
     private readonly session?: Session;
     private readonly runContext?: RunContext<any>;
     private readonly hasCallModelInputFilter: boolean;
@@ -1285,7 +1291,8 @@ export function createSessionPersistenceTracker(options: {
     private filteredSnapshot: AgentInputItem[] | undefined;
     private preparedSources: PreparedOwnedSource[] | undefined;
     private initialPreparedItems: AgentInputItem[] | undefined;
-    private initialSourcePositions: PreparedOwnedSourcePosition[] | undefined;
+    private initialSourcePositions:
+      PreparedOwnedSourcePosition[] | number | undefined;
     private ownedFilteredItems = new Map<number, AgentInputItem>();
     private persistedInputOrder: PersistedInputOccurrence[] = [];
     private persistedInput = false;
@@ -1317,16 +1324,38 @@ export function createSessionPersistenceTracker(options: {
         (this.session === undefined && preparedInput !== undefined
           ? toAgentInputList(preparedInput)
           : []);
-      this.originalSnapshot = cloneItems(
-        deduplicateAgentInputItemsPreferringLatest(sessionItems),
-      );
+      // Without a session or filter, each plain message owns its position.
+      const history =
+        !this.hasCallModelInputFilter &&
+        this.session === undefined &&
+        items === undefined &&
+        preparedInput !== undefined &&
+        typeof preparedInput !== 'string'
+          ? captureTextHistory(preparedInput, sessionItems)
+          : undefined;
+      this.#readOriginal = history?.read;
+      this.#expandPositions = undefined;
+      this.originalSnapshot = history
+        ? undefined
+        : cloneItems(deduplicateAgentInputItemsPreferringLatest(sessionItems));
       if (Array.isArray(preparedInput)) {
         this.preparedSources = undefined;
         this.initialPreparedItems = preparedInput;
-        this.initialSourcePositions = findOwnedItemIndexes(
-          preparedInput,
-          sessionItems,
-        );
+        if (history) {
+          const from = Array.from;
+          const range = { __proto__: null, length: preparedInput.length };
+          this.initialSourcePositions = range.length;
+          this.#expandPositions = () =>
+            from(range, (_, index) => ({
+              preparedIndex: index,
+              ownerIndex: index,
+            }));
+        } else {
+          this.initialSourcePositions = findOwnedItemIndexes(
+            preparedInput,
+            sessionItems,
+          );
+        }
       } else if (typeof preparedInput === 'string') {
         this.preparedSources = undefined;
         this.initialPreparedItems = sessionItems;
@@ -1369,9 +1398,13 @@ export function createSessionPersistenceTracker(options: {
           ownerIndex,
         }));
         if (!this.filteredSnapshot && !this.#firstOwners) {
-          this.orderedInput = { unobserved: undefined };
+          this.orderedInput = { unobserved: undefined, restore: undefined };
         }
         return;
+      }
+      if (typeof this.initialSourcePositions === 'number') {
+        this.initialSourcePositions = this.#expandPositions!();
+        this.#expandPositions = undefined;
       }
       const preparedSources = mapPreparedSourcesAfterContextProcessing(
         this.initialPreparedItems,
@@ -1402,8 +1435,9 @@ export function createSessionPersistenceTracker(options: {
         matchesSources(this.preparedSources, sourceItems)
       ) {
         // Defer the writable tracker snapshot under the current copy policy.
+        this.#readOriginal = undefined;
         this.#firstOwners = {
-          items: unobserved.map(copyText),
+          items: ordered.restore ?? unobserved.map(copyText),
           clone: structuredClone,
         };
         return;
@@ -1413,7 +1447,8 @@ export function createSessionPersistenceTracker(options: {
       // the ordinary tables only when reconciling a subsequent request.
       if (this.#firstOwners) {
         if (filteredItems === undefined) this.getItemsForPersistence();
-        const { items } = this.#firstOwners;
+        const first = this.#firstOwners.items;
+        const items = typeof first === 'function' ? first() : first;
         for (let index = 0; index < items.length; index++) {
           this.ownedFilteredItems.set(index, items[index]);
           this.persistedInputOrder.push({ type: 'owned', index });
@@ -1452,7 +1487,8 @@ export function createSessionPersistenceTracker(options: {
     getItemsForPersistence = () => {
       if (this.#firstOwners && !this.filteredSnapshot) {
         const { items, clone } = this.#firstOwners;
-        this.filteredSnapshot = clone(items);
+        this.filteredSnapshot =
+          typeof items === 'function' ? items() : clone(items);
       }
       if (this.filteredSnapshot !== undefined) {
         return this.filteredSnapshot;
@@ -1460,21 +1496,25 @@ export function createSessionPersistenceTracker(options: {
       if (this.hasCallModelInputFilter) {
         return undefined;
       }
+      if (this.#readOriginal) {
+        this.originalSnapshot = this.#readOriginal();
+        this.#readOriginal = undefined;
+      }
       return this.originalSnapshot;
     };
 
     captureInput(session: Session | undefined, state: RunState<any, any>) {
-      const first = this.#firstOwners?.items;
+      const owners = this.#firstOwners?.items;
       // These text records already have their persistent form. Give live
       // approval and error recovery a separate, writable input prefix.
       if (
         session === undefined &&
-        first &&
+        owners &&
         !this.filteredSnapshot &&
-        canCopyMessages(first)
+        canCopyMessages(typeof owners === 'function' ? [] : owners)
       ) {
         state._currentTurnSessionHistoryTransactionInputItems =
-          first.map(copyText);
+          typeof owners === 'function' ? owners() : owners.map(copyText);
         return;
       }
       captureSessionHistoryTransactionInputItems(

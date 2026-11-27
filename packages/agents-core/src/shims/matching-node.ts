@@ -3,6 +3,10 @@ import process from 'node:process';
 type Runtime = {
   isProxy: (value: unknown) => boolean;
   isBoxedPrimitive: (value: unknown) => boolean;
+  lookupGetter: (this: object, key: string | number) => unknown;
+  isMap: (value: unknown) => boolean;
+  isSet: (value: unknown) => boolean;
+  isNativeError: (value: unknown) => boolean;
 };
 
 const descriptor = Reflect.getOwnPropertyDescriptor;
@@ -64,13 +68,29 @@ function classifiers(util: typeof import('node:util')): Runtime | undefined {
       return;
     proxyDetector = isProxy;
   }
+  if (proxyDetector !== isProxy || isProxy(types)) return;
+  const isMap = value(types, 'isMap');
+  const isSet = value(types, 'isSet');
+  const isNativeError = value(types, 'isNativeError');
+  const predicates = [isBoxedPrimitive, isMap, isSet, isNativeError];
+  for (let index = 0; index < predicates.length; index++) {
+    const predicate = predicates[index];
+    if (isProxy(predicate) || !native(predicate, '')) return;
+  }
+  const lookupGetter = value(object, '__lookupGetter__');
   if (
-    proxyDetector !== isProxy ||
-    isProxy(isBoxedPrimitive) ||
-    !native(isBoxedPrimitive, '')
+    !native(lookupGetter, '__lookupGetter__') ||
+    descriptor(lookupGetter, 'call')
   )
     return;
-  return { isProxy, isBoxedPrimitive };
+  return {
+    lookupGetter,
+    isProxy,
+    isBoxedPrimitive,
+    isMap,
+    isSet,
+    isNativeError,
+  };
 }
 
 // The binary-aware serializer reads the global binding on each visit.
@@ -200,9 +220,10 @@ function ordinaryTraversal(runtime: Runtime) {
       'entries',
       'getPrototypeOf',
       'getOwnPropertyDescriptor',
+      'getOwnPropertySymbols',
     ]) ||
     !methods(object, ['hasOwnProperty']) ||
-    !methods(Array, ['isArray']) ||
+    !methods(Array, ['isArray', 'from']) ||
     !methods(array, [
       'entries',
       'values',
@@ -239,6 +260,11 @@ function ordinaryTraversal(runtime: Runtime) {
     }
   }
   // Some foreign allocators have been given a local Function prototype.
+  if (
+    parent(apply(Array.from, undefined, [{ __proto__: null, length: 0 }])) !==
+    array
+  )
+    return false;
   for (const name of ['map', 'flatMap', 'filter', 'slice']) {
     if (
       parent(apply(value(array, name), { length: 0 }, [() => false])) !== array

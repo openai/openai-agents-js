@@ -31,6 +31,38 @@ function history(): AgentInputItem[] {
 }
 
 describe('ownership of a complete input history', () => {
+  it('keeps each initial occurrence independent when recovery is read late', () => {
+    const part = {
+      type: 'output_text' as const,
+      text: 'before',
+      annotations: [],
+    };
+    const shared = assistant([part]);
+    const tracker = begin([shared, shared, ...history()]);
+    part.text = 'after';
+    const saved = tracker.getItemsForPersistence()!;
+    expect(saved[0]).toStrictEqual(assistant([{ ...part, text: 'before' }]));
+    Object.assign((saved[0] as typeof shared).content[0], { text: 'edited' });
+    expect(saved[1]).toStrictEqual(assistant([{ ...part, text: 'before' }]));
+    expect(tracker.getItemsForPersistence()).toBe(saved);
+  });
+
+  it('keeps recovery in the local realm with a foreign array allocator', () => {
+    const input = history();
+    const foreign = runInNewContext('Array.from') as typeof Array.from;
+    Object.setPrototypeOf(foreign, Function.prototype);
+    const original = Array.from;
+    let saved;
+    try {
+      Array.from = foreign;
+      saved = begin(input).getItemsForPersistence();
+    } finally {
+      Array.from = original;
+    }
+    expect(Object.getPrototypeOf(saved)).toBe(Array.prototype);
+    expect(saved).toStrictEqual(input);
+  });
+
   it('avoids calling an application wrapper for the proxy detector', async () => {
     const original = types.isProxy;
     const runner = new Runner({ tracingDisabled: true });
