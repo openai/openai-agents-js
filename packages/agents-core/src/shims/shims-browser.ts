@@ -4,6 +4,10 @@ export { EventEmitter, EventEmitterEvents } from './interface';
 import { EventEmitter, Timeout, Timer } from './interface';
 export { isBrowserEnvironment, loadEnv } from './config-browser';
 
+export function matchingRuntime(): undefined {
+  return undefined;
+}
+
 type EventMap = Record<string, any[]>;
 
 export class BrowserEventEmitter<

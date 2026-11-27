@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-Add regression coverage for public imports and input-history ownership.
+Reduce matching and snapshot work on long, ordered text histories in Node.js runs without a session or an input filter.

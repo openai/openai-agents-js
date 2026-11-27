@@ -40,8 +40,38 @@ async function importWithoutBufferReads(format) {
     throw new Error('Import observed the application Buffer binding');
 }
 
+async function preserveClonePolicy(format) {
+  const { markAsUncloneable } = module.require('node:worker_threads');
+  const clone = globalThis.structuredClone;
+  globalThis.structuredClone = (input, ...options) => {
+    const copy = clone(input, ...options);
+    if (copy?.role === 'user') markAsUncloneable(copy);
+    return copy;
+  };
+  const { Agent, Runner } = await importPublicEntry(format);
+  const agent = new Agent({
+    name: 'Clone policy',
+    model: {
+      getResponse() {
+        throw new Error('Unexpected dispatch');
+      },
+    },
+  });
+  const history = Array.from({ length: 40 }, () => ({
+    role: 'user',
+    content: 'text',
+  }));
+  await module
+    .require('node:assert/strict')
+    .rejects(new Runner({ tracingDisabled: true }).run(agent, history), {
+      name: 'DataCloneError',
+    });
+}
+
 async function runCase(scenario, format) {
-  if (scenario === 'buffer-uninitialized') {
+  if (scenario === 'clone-policy') {
+    await preserveClonePolicy(format);
+  } else if (scenario === 'buffer-uninitialized') {
     await importBeforeBufferInitialization(format);
   } else if (scenario === 'buffer-observed') {
     await importWithoutBufferReads(format);

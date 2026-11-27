@@ -3,6 +3,7 @@ import { Timeout, Timer } from './interface';
 export { EventEmitter, EventEmitterEvents } from './interface';
 export { EventEmitter as RuntimeEventEmitter } from 'node:events';
 export { isBrowserEnvironment, loadEnv } from './config-node';
+export { matchingRuntime } from './matching-node';
 
 export { randomUUID } from 'node:crypto';
 export { Readable } from 'node:stream';

@@ -1,4 +1,5 @@
 import { runInNewContext } from 'node:vm';
+import { types } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
@@ -25,7 +26,96 @@ function begin(input: AgentInputItem[]) {
   return tracker;
 }
 
+function history(): AgentInputItem[] {
+  return Array.from({ length: 40 }, (_, i) => message(String(i)));
+}
+
 describe('ownership of a complete input history', () => {
+  it('avoids calling an application wrapper for the proxy detector', async () => {
+    const original = types.isProxy;
+    const runner = new Runner({ tracingDisabled: true });
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    runner.on('agent_start', () => {
+      types.isProxy = new Proxy(original, {
+        apply() {
+          throw new Error('Unexpected classifier call');
+        },
+      });
+    });
+    try {
+      const result = await runner.run(
+        new Agent({ name: 'Classifier', model }),
+        history(),
+      );
+      expect(result.finalOutput).toBe('ok');
+      expect(
+        result.state._currentTurnSessionHistoryTransactionInputItems?.[0],
+      ).toEqual(message('0'));
+    } finally {
+      types.isProxy = original;
+    }
+  });
+
+  it('separates repeated input from the request and recovery snapshot', async () => {
+    const shared = message('shared');
+    const input = [shared, shared, ...history()];
+    const model = new ScriptedModel([
+      modelResponder(({ request }) => {
+        const first = request.input[0] as typeof shared;
+        if ('content' in first && Array.isArray(first.content)) {
+          Object.assign(first.content[0], { text: 'edited' });
+        }
+        expect(request.input[1]).toEqual(message('shared'));
+        return [assistantMessage('ok')];
+      }),
+    ]);
+    const result = await new Runner({ tracingDisabled: true }).run(
+      new Agent({ name: 'History', model }),
+      input,
+    );
+    expect(shared).toEqual(message('shared'));
+    expect(result.input[0]).toEqual(message('shared'));
+    expect(result.input[1]).toBe(result.input[0]);
+    expect(
+      result.state._currentTurnSessionHistoryTransactionInputItems?.[0],
+    ).toEqual(message('shared'));
+  });
+
+  it('rejects an uncloneable model item after a temporary clone replacement', async () => {
+    const clone = globalThis.structuredClone;
+    const runner = new Runner({ tracingDisabled: true });
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    let live: AgentInputItem[] = [];
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const agent = new Agent({
+      name: 'Clone observer',
+      model,
+      instructions: () => {
+        Object.defineProperty(live[0], 'content', {
+          enumerable: true,
+          get() {
+            globalThis.structuredClone = <T>(value: T) => {
+              globalThis.structuredClone = clone;
+              return new Proxy(clone(value) as object, {}) as T;
+            };
+            return 'before';
+          },
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      await expect(
+        runner.run(agent, [{ role: 'user', content: 'before' }, ...history()]),
+      ).rejects.toMatchObject({ name: 'DataCloneError' });
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      globalThis.structuredClone = clone;
+    }
+  });
+
   it.each([false, true])(
     'preserves public Buffer getter edits and errors (throws: %s)',
     async (throws) => {
@@ -49,6 +139,7 @@ describe('ownership of a complete input history', () => {
       try {
         const run = runner.run(new Agent({ name: 'Buffer observer', model }), [
           { role: 'user', content: 'before' },
+          ...history(),
         ]);
         if (throws) {
           await expect(run).rejects.toBe(error);
@@ -95,6 +186,7 @@ describe('ownership of a complete input history', () => {
     try {
       await runner.run(new Agent({ name: 'History observer', model }), [
         { role: 'user', content: 'before' },
+        ...history(),
         message('answer'),
         { role: 'user', content: 'last' },
       ]);
@@ -147,7 +239,7 @@ describe('ownership of a complete input history', () => {
   });
 
   it('keeps serialization errors from hidden hooks', () => {
-    const input = [message('prior'), message('other')];
+    const input = history();
     const tracker = begin(input);
     const prepared = structuredClone(input);
     Object.defineProperty(input[0], 'toJSON', {

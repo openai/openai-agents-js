@@ -5,6 +5,10 @@ import { Timeout, Timer } from './interface';
 export { EventEmitter, EventEmitterEvents } from './interface';
 export { isBrowserEnvironment, loadEnv } from './config-workerd';
 
+export function matchingRuntime(): undefined {
+  return undefined;
+}
+
 export { randomUUID } from 'node:crypto';
 export { Readable } from 'node:stream';
 
