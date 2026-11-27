@@ -473,6 +473,39 @@ describe('MCP tools cache invalidation', () => {
     });
   });
 
+  it.each([
+    ['constructor', 'tools-a'],
+    ['toString', 'tools-b'],
+    ['__proto__', 'tools-c'],
+    ['custom-a', 'constructor'],
+    ['custom-b', 'toString'],
+    ['custom-c', '__proto__'],
+  ])(
+    'caches and invalidates prototype keys (server=%s, key=%s)',
+    async (name, key) => {
+      await invalidateServerToolsCache(name);
+      const server = new StubServer(name, [toolNamed('first')]);
+      const listTools = vi.spyOn(server, 'listTools');
+      const fetchNames = async () =>
+        (
+          await getAllMcpTools({
+            mcpServers: [server],
+            generateMCPToolCacheKey: () => key,
+          })
+        ).map((tool) => tool.name);
+      try {
+        expect(await fetchNames()).toEqual(['first']);
+        server.toolList = [toolNamed('second')];
+        expect(await fetchNames()).toEqual(['first']);
+        expect(listTools).toHaveBeenCalledTimes(1);
+        await server.invalidateToolsCache();
+        expect(await fetchNames()).toEqual(['second']);
+      } finally {
+        await invalidateServerToolsCache(name);
+      }
+    },
+  );
+
   it('does not cache a callable filter result that crosses invalidation', async () => {
     let markFilterStarted!: () => void;
     let resumeFilter!: () => void;
