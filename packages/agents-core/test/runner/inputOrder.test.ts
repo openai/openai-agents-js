@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import { types } from 'node:util';
+import * as workers from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
@@ -34,7 +35,107 @@ function history(): AgentInputItem[] {
   return Array.from({ length: 40 }, (_, i) => message(String(i)));
 }
 
+const blobCloneKey = Object.getOwnPropertySymbols(Blob.prototype).find(
+  (key) => {
+    const value = Object.getOwnPropertyDescriptor(Blob.prototype, key)?.value;
+    return (
+      typeof value === 'function' &&
+      Function.prototype.toString.call(value).includes('deserializeInfo')
+    );
+  },
+);
+
 describe('ownership of a complete input history', () => {
+  it('preserves native rejection after transient clone registration', async () => {
+    const input = history();
+    let live: AgentInputItem[] = [];
+    const saved = Object.getOwnPropertyDescriptor(globalThis, 'WeakMap')!;
+    const NativeWeakMap = WeakMap;
+    const restore = () => Object.defineProperty(globalThis, 'WeakMap', saved);
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const agent = new Agent({
+      name: 'Registration',
+      model,
+      instructions() {
+        Object.defineProperty(globalThis, 'WeakMap', {
+          configurable: true,
+          get() {
+            restore();
+            return class extends NativeWeakMap<object, unknown> {
+              set(key: object, value: unknown) {
+                if (value === live[0]) workers.markAsUncloneable(live[1]);
+                return super.set(key, value);
+              }
+            };
+          },
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      await expect(runner.run(agent, input)).rejects.toThrow(/clone/i);
+      expect(model.calls).toHaveLength(0);
+      expect(() => structuredClone(input)).not.toThrow();
+    } finally {
+      restore();
+    }
+  });
+
+  it.skipIf(!blobCloneKey)('preserves inherited clone hook reads', async () => {
+    const key = blobCloneKey!;
+    const clone = Object.getOwnPropertyDescriptor(Blob.prototype, key)!.value;
+    const prior = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    const input = history();
+    const host = new Blob(['host']);
+    for (const key of Object.getOwnPropertySymbols(host))
+      Reflect.deleteProperty(host, key);
+    Object.setPrototypeOf(host, Object.prototype);
+    Object.assign(host, { role: 'user', content: 'host' });
+    const pristine = new Blob(['pristine']);
+    let live: AgentInputItem[] = [];
+    let reads = 0;
+    const runner = new Runner({ tracingDisabled: true });
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const agent = new Agent({
+      name: 'Native clone',
+      model,
+      instructions() {
+        live[5] = host as unknown as AgentInputItem;
+        Object.defineProperty(Object.prototype, key, {
+          configurable: true,
+          get() {
+            reads++;
+            return () => Reflect.apply(clone, pristine, []);
+          },
+        });
+        const part = (live[35] as ReturnType<typeof assistant>).content[0];
+        Object.defineProperty(part, 'text', {
+          enumerable: true,
+          configurable: true,
+          get: () => '35',
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      const result = await runner.run(agent, input, { stream: true });
+      await result.completed;
+      expect(result.finalOutput).toBe('ok');
+      expect(reads).toBe(1);
+      expect(input[5]).toStrictEqual(message('5'));
+    } finally {
+      if (prior) Object.defineProperty(Object.prototype, key, prior);
+      else Reflect.deleteProperty(Object.prototype, key);
+    }
+  });
+
   it('keeps each initial occurrence independent when recovery is read late', () => {
     const part = {
       type: 'output_text' as const,
@@ -238,6 +339,172 @@ describe('ownership of a complete input history', () => {
       tagged.content = 'caller edit';
       expect(result.input).toStrictEqual(expected);
     }
+  });
+
+  it('keeps nested text order and interim copies independent', async () => {
+    for (const status of ['completed', 'in_progress', 'incomplete'] as const) {
+      for (const reverse of [false, true, false]) {
+        const part = reverse
+          ? { annotations: [], text: 'reply', type: 'output_text' as const }
+          : { type: 'output_text' as const, text: 'reply', annotations: [] };
+        const inputPart = reverse
+          ? { text: 'question', type: 'input_text' as const }
+          : { type: 'input_text' as const, text: 'question' };
+        const roots: AgentInputItem[] = [
+          {
+            role: 'assistant' as const,
+            content: [part],
+            status,
+            providerData: undefined,
+          },
+          Object.assign(assistant([part]), { status }),
+          {
+            role: 'user' as const,
+            content: [inputPart],
+            providerData: undefined,
+          },
+        ].map((item) =>
+          reverse
+            ? (Object.fromEntries(
+                Object.entries(item).reverse(),
+              ) as AgentInputItem)
+            : item,
+        );
+        const input = [...roots, roots[0], ...history()];
+        const expected = structuredClone(input);
+        const check = (items: AgentInputItem[]) => {
+          expect(items).toStrictEqual(expected);
+          for (let i = 0; i < roots.length + 1; i++) {
+            expect(Object.keys(items[i])).toEqual(Object.keys(expected[i]));
+            const item = items[i],
+              saved = expected[i];
+            if (
+              'content' in item &&
+              Array.isArray(item.content) &&
+              'content' in saved &&
+              Array.isArray(saved.content)
+            )
+              expect(Object.keys(item.content[0])).toEqual(
+                Object.keys(saved.content[0]),
+              );
+          }
+          const first = items[0];
+          if ('content' in first && Array.isArray(first.content))
+            Object.assign(first.content[0], { text: 'edited' });
+          Object.assign(first, { providerData: { edited: true } });
+          expect(items[1]).toStrictEqual(expected[1]);
+          expect(items[roots.length]).toStrictEqual(expected[0]);
+          expect(input).toStrictEqual(expected);
+        };
+        const model = new ScriptedModel([
+          modelResponder(({ request }) => {
+            if (typeof request.input === 'string')
+              throw new Error('Expected a list');
+            check(request.input);
+            return [assistantMessage('ok')];
+          }),
+        ]);
+        const result = await new Runner({ tracingDisabled: true }).run(
+          new Agent({ name: 'Nested history', model }),
+          input,
+        );
+        check(result.state._currentTurnSessionHistoryTransactionInputItems!);
+        expect(result.input).toStrictEqual(expected);
+        Object.assign(input[0], { status: 'incomplete' });
+        expect(result.input).toStrictEqual(expected);
+      }
+    }
+  });
+
+  it.each(['edit', 'mark-before', 'mark-after', 'mark-first'] as const)(
+    'preserves late getter copy order: %s',
+    async (action) => {
+      const input = Array.from({ length: 40 }, (_, i) => ({
+        role: 'user' as const,
+        content: String(i),
+      }));
+      let live: AgentInputItem[] = [];
+      let reads = 0;
+      const runner = new Runner({ tracingDisabled: true });
+      runner.on('agent_start', (_context, _agent, items) => {
+        live = items!;
+      });
+      const model = new ScriptedModel([[assistantMessage('ok')]]);
+      const agent = new Agent({
+        name: 'Copy order',
+        model,
+        instructions() {
+          if (action === 'mark-first') workers.markAsUncloneable(live[1]);
+          Object.defineProperty(live[35], 'content', {
+            enumerable: true,
+            configurable: true,
+            get() {
+              reads++;
+              Object.assign(live[1], { content: 'earlier' });
+              Object.assign(live[39], { content: 'later' });
+              if (action === 'mark-before') workers.markAsUncloneable(live[1]);
+              if (action === 'mark-after') workers.markAsUncloneable(live[39]);
+              return '35';
+            },
+          });
+          return 'Reply';
+        },
+      });
+      const result = await runner.run(agent, input, { stream: true });
+      if (action === 'mark-first' || action === 'mark-after') {
+        await expect(result.completed).rejects.toThrow(/clone/i);
+        expect(model.calls).toHaveLength(0);
+        expect(reads).toBe(action === 'mark-first' ? 0 : 1);
+      } else {
+        await result.completed;
+        const expected = input.map((item, i) =>
+          i === 39 ? { ...item, content: 'later' } : item,
+        );
+        expect(model.calls[0].request.input).toStrictEqual(expected);
+        expect(
+          result.state._currentTurnSessionHistoryTransactionInputItems,
+        ).toStrictEqual(expected);
+        expect(reads).toBe(1);
+      }
+      expect(live).toHaveLength(40);
+      expect(input[1].content).toBe('1');
+      expect(input[39].content).toBe('39');
+    },
+  );
+
+  it('preserves one native getter read after instructions', async () => {
+    const input = [{ role: 'user' as const, content: 'before' }, ...history()];
+    let reads = 0;
+    let live: AgentInputItem[] = [];
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const result = await runner.run(
+      new Agent({
+        name: 'Getter history',
+        model,
+        instructions: () => {
+          Object.defineProperty(live[0], 'content', {
+            enumerable: true,
+            configurable: true,
+            get() {
+              reads++;
+              return 'before';
+            },
+          });
+          return 'Reply';
+        },
+      }),
+      input,
+    );
+    expect(reads).toBe(1);
+    expect(model.calls[0].request.input).toStrictEqual(input);
+    expect(
+      result.state._currentTurnSessionHistoryTransactionInputItems,
+    ).toStrictEqual(input);
+    expect(result.input).toStrictEqual(input);
   });
 
   it('preserves restored helper fields and independent copies', async () => {

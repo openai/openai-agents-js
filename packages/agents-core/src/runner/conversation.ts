@@ -6,7 +6,6 @@ import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import {
-  canCopyMessages,
   captureTextHistory,
   prepareTextInput,
   type OrderedInput,
@@ -116,47 +115,27 @@ export async function applyCallModelInputFilter<TContext>(
   const cloneInputItems = (
     items: AgentInputItem[],
     map?: WeakMap<object, AgentInputItem>,
+    prefix?: AgentInputItem[],
   ) =>
-    items.map((item) => {
-      const clone = structuredClone;
-      const cloned = clone(item) as AgentInputItem;
+    items.map((item, index) => {
+      const cloned =
+        prefix && index < prefix.length
+          ? prefix[index]
+          : (structuredClone(item) as AgentInputItem);
       if (map && cloned && typeof cloned === 'object') {
-        // A getter on the live input can temporarily replace either operation
-        // and expose the new item before the next iteration.
-        if (plain) {
-          const register = map.set;
-          const { apply } = plain;
-          if (clone !== plain.clone || register !== plain.register)
-            plain = undefined;
-          apply(register, map, [cloned, item]);
-        } else {
-          map.set(cloned, item);
-        }
+        map.set(cloned as object, item);
       }
       return cloned;
     });
 
-  // Record the relationship between the array passed to filters and the original inputs.
-  const cloneMap = new WeakMap<object, AgentInputItem>();
-
-  // Identity-preserving filters may opt into stable item identities. Other filters still
-  // receive deep copies so their mutations cannot affect the cached turn state.
-  const preserveInputIdentity =
-    callModelInputFilter?.preserveInputIdentity === true;
-  let plain =
-    ordered && !callModelInputFilter && canCopyMessages(inputItems)
-      ? {
-          ordered,
-          clone: structuredClone,
-          register: WeakMap.prototype.set,
-          apply: Reflect.apply,
-        }
-      : undefined;
-  if (plain) {
-    const history = captureTextHistory(inputItems);
-    if (history) {
+  let prefix: AgentInputItem[] | undefined;
+  if (ordered && !callModelInputFilter) {
+    const history = captureTextHistory(inputItems, undefined, 'model');
+    if (history && history.sources.length < inputItems.length) {
+      prefix = history.read();
+    } else if (history) {
       const result = prepareTextInput(
-        plain.ordered,
+        ordered,
         history.read(),
         history.sources,
         systemInstructions,
@@ -165,9 +144,16 @@ export async function applyCallModelInputFilter<TContext>(
       if (result) return result;
     }
   }
+  // Record the relationship between the array passed to filters and the original inputs.
+  const cloneMap = new WeakMap<object, AgentInputItem>();
+
+  // Identity-preserving filters may opt into stable item identities. Other filters still
+  // receive deep copies so their mutations cannot affect the cached turn state.
+  const preserveInputIdentity =
+    callModelInputFilter?.preserveInputIdentity === true;
   const clonedBaseInput = preserveInputIdentity
     ? [...inputItems]
-    : cloneInputItems(inputItems, cloneMap);
+    : cloneInputItems(inputItems, cloneMap, prefix);
   if (preserveInputIdentity) {
     for (const item of inputItems) {
       if (item && typeof item === 'object') {
@@ -180,22 +166,23 @@ export async function applyCallModelInputFilter<TContext>(
     instructions: systemInstructions,
   };
   if (!callModelInputFilter) {
-    if (plain) {
+    const normalizedInput =
+      deduplicateAgentInputItemsPreferringLatest(clonedBaseInput);
+    const sourceItems = normalizedInput.map(
+      (item) => cloneMap.get(item as object) ?? item,
+    );
+    if (ordered) {
       const result = prepareTextInput(
-        plain.ordered,
-        clonedBaseInput,
-        cloneMap,
+        ordered,
+        normalizedInput,
+        sourceItems,
         systemInstructions,
       );
       if (result) return result;
     }
-    const normalizedInput =
-      deduplicateAgentInputItemsPreferringLatest(clonedBaseInput);
     return {
       modelInput: { ...base, input: normalizedInput },
-      sourceItems: normalizedInput.map(
-        (item) => cloneMap.get(item as object) ?? item,
-      ),
+      sourceItems,
       persistedItems: cloneInputItems(normalizedInput),
       sourceMatchKinds: normalizedInput.map(() => 'identity'),
       filterApplied: false,

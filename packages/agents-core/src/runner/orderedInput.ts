@@ -1,7 +1,7 @@
 import { matchingRuntime } from '@openai/agents-core/_shims';
 import { user, assistant, system } from '../helpers/message';
 import type { AgentInputItem } from '../types';
-import type { MessageItem } from '../types/protocol';
+import type { AssistantMessageItem, MessageItem } from '../types/protocol';
 import type { FilterApplicationResult } from './conversation';
 
 type Runtime = NonNullable<ReturnType<typeof matchingRuntime>>;
@@ -102,22 +102,37 @@ function userWithTextPart(text: string): MessageItem {
 }
 
 // These layouts differ in both field order and own undefined metadata.
+function statusWriters<Writer extends (text: string) => AssistantMessageItem>(
+  write: Writer,
+) {
+  return {
+    completed: write,
+    in_progress: (text: string): AssistantMessageItem => ({
+      ...write(text),
+      status: 'in_progress',
+    }),
+    incomplete: (text: string): AssistantMessageItem => ({
+      ...write(text),
+      status: 'incomplete',
+    }),
+  };
+}
 const plain = {
   keys: ['role', 'content'],
   replyKeys: ['role', 'content', 'status'],
   user: (content: string): MessageItem => ({ role: 'user', content }),
   userWithTextPart,
   system: (content: string): MessageItem => ({ role: 'system', content }),
-  assistant: (text: string): MessageItem => ({
+  assistant: statusWriters((text: string): AssistantMessageItem => ({
     role: 'assistant',
     content: [{ type: 'output_text', text }],
     status: 'completed',
-  }),
-  annotated: (text: string): MessageItem => ({
+  })),
+  annotated: statusWriters((text: string): AssistantMessageItem => ({
     role: 'assistant',
     content: [annotatedPart(text)],
     status: 'completed',
-  }),
+  })),
 };
 const helpers = {
   keys: ['type', 'role', 'content', 'providerData'],
@@ -130,9 +145,10 @@ const helpers = {
   }),
   userWithTextPart: user,
   system,
-  assistant,
-  annotated: (text: string): MessageItem =>
-    helpers.assistant([annotatedPart(text)]),
+  assistant: statusWriters(assistant),
+  annotated: statusWriters((text: string): AssistantMessageItem =>
+    helpers.assistant.completed([annotatedPart(text)]),
+  ),
 };
 const textKeys = ['type', 'text'];
 const annotatedKeys = ['type', 'text', 'annotations'];
@@ -152,6 +168,31 @@ function writerForOrder(names: string[], write: WriteText): WriteText {
     ({ ...template, content: write(text).content }) as MessageItem;
 }
 
+let partOrders:
+  Map<WriteText, Record<string, WriteText | null | undefined>> | undefined;
+
+function writerForPartOrder(names: string[], write: WriteText): WriteText {
+  partOrders ??= new Map();
+  const variants: Record<string, WriteText | null | undefined> = partOrders.get(
+    write,
+  ) ?? { __proto__: null };
+  const key = names[0] + ',' + names[1] + ',' + (names[2] ?? '');
+  const saved = variants[key];
+  if (saved) return saved;
+  const ordered: Record<string, unknown> = { __proto__: null };
+  for (const name of names) ordered[name] = undefined;
+  const template = { ...ordered };
+  const restore: WriteText = (text) => {
+    const row = write(text);
+    if (typeof row.content !== 'string')
+      row.content[0] = { ...template, ...row.content[0] };
+    return row;
+  };
+  variants[key] = restore;
+  partOrders.set(write, variants);
+  return restore;
+}
+
 function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
   if (!isTextRecord(item, runtime)) return;
   const helper = 'type' in item;
@@ -162,11 +203,16 @@ function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
     return selectWriter(item, layout, reply, runtime);
   alternateOrders ??= new Map();
   let order = alternateOrders.get(keys);
-  // Require true absence: hidden metadata must still count.
+  const field = helper
+    ? undefined
+    : Object.getOwnPropertyDescriptor(item, 'providerData');
+  const metadata =
+    field?.enumerable === true && 'value' in field && field.value === undefined;
+  // Require true absence: hidden helper metadata must still count.
   const count =
-    layout === helpers && !('providerData' in item)
+    helper && !('providerData' in item)
       ? keys.length - 1
-      : keys.length;
+      : keys.length + (metadata ? 1 : 0);
   if (
     !order ||
     order.names.length !== count ||
@@ -175,7 +221,9 @@ function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
     const names = Object.keys(item);
     if (
       names.length !== count ||
-      !names.every((key) => keys.includes(key)) ||
+      !names.every(
+        (key) => keys.includes(key) || (metadata && key === 'providerData'),
+      ) ||
       !hasTextFields(item, runtime, names)
     )
       return;
@@ -209,24 +257,35 @@ function selectWriter(
   const part = item.content[0];
   if (!isTextRecord(part, runtime)) return;
   const annotated = 'annotations' in part;
-  if (
-    !hasTextFields(part, runtime, annotated ? annotatedKeys : textKeys) ||
-    typeof part.text !== 'string'
-  )
-    return;
+  const keys = annotated ? annotatedKeys : textKeys;
+  let names: string[] | undefined;
+  if (!hasTextFields(part, runtime, keys)) {
+    names = Object.keys(part);
+    if (
+      names.length !== keys.length ||
+      !names.every((key) => keys.includes(key)) ||
+      !hasTextFields(part, runtime, names)
+    )
+      return;
+  }
+  if (typeof part.text !== 'string') return;
+  let write: WriteText | undefined;
   if (!reply) {
     if (item.role === 'user' && part.type === 'input_text' && !annotated)
-      return layout.userWithTextPart;
-    return;
+      write = layout.userWithTextPart;
+  } else if (item.role === 'assistant' && part.type === 'output_text') {
+    const status = item.status;
+    if (
+      status !== 'completed' &&
+      status !== 'in_progress' &&
+      status !== 'incomplete'
+    )
+      return;
+    if (!annotated) write = layout.assistant[status];
+    else if (isTextList(part.annotations, runtime, 0))
+      write = layout.annotated[status];
   }
-  if (
-    item.role !== 'assistant' ||
-    item.status !== 'completed' ||
-    part.type !== 'output_text'
-  )
-    return;
-  if (!annotated) return layout.assistant;
-  if (isTextList(part.annotations, runtime, 0)) return layout.annotated;
+  if (write) return names ? writerForPartOrder(names, write) : write;
 }
 
 function messageReader(formats: WriteText[], texts: string[]) {
@@ -240,6 +299,7 @@ function messageReader(formats: WriteText[], texts: string[]) {
 export function captureTextHistory(
   items: AgentInputItem[],
   original?: AgentInputItem[],
+  mode?: 'model',
 ) {
   if (original && original.length < 32) return;
   const runtime = matchingRuntime();
@@ -248,7 +308,7 @@ export function captureTextHistory(
     runtime.isProxy(items) ||
     !Array.isArray(items) ||
     items.length < 32 ||
-    items.length > 32768 ||
+    (original !== undefined && items.length > 32768) ||
     !dense(items, runtime)
   )
     return;
@@ -262,22 +322,39 @@ export function captureTextHistory(
     const item = sources[index];
     if (item !== items[index]) return;
     const write = textFormat(item, runtime);
-    if (!write || !('role' in item)) return;
+    if (!write || !('role' in item)) {
+      if (
+        mode !== 'model' ||
+        original !== undefined ||
+        index < 32 ||
+        index > 32768 ||
+        textBudget < 0
+      )
+        return;
+      // Only the local model copy can stop at a validated text prefix.
+      sources.length = index;
+      break;
+    }
     formats.push(write);
     const content = item.content;
     if (typeof content === 'string') texts.push(content);
     else if ('text' in content[0]) texts.push(content[0].text);
     else return;
     textBudget -= texts[index].length;
-    if (textBudget < 0) return;
+    if (textBudget < 0 && original) return;
   }
+  const individual = texts.length > 32768 || textBudget < 0;
   // Validate the live native clone policy at each boundary. Built-ins with
   // ordinary prototypes can still serialize as a different kind of value.
-  const copies = structuredClone(sources);
+  const copies = individual ? sources : structuredClone(sources);
   if (!Array.isArray(copies)) return;
   for (let i = 0; i < copies.length; i++) {
-    const item = copies[i];
-    if (Object.getPrototypeOf(item) !== Object.prototype || !('role' in item))
+    const item = individual ? structuredClone(copies[i]) : copies[i];
+    if (
+      !item ||
+      Object.getPrototypeOf(item) !== Object.prototype ||
+      !('role' in item)
+    )
       return;
     if (typeof item.content === 'string') {
       if (item.content !== texts[i]) return;
@@ -411,65 +488,6 @@ export function matchesOrderedInput(
   return true;
 }
 
-// Called on fresh native copies. Other fields, including provider metadata,
-// need normal deduplication, binary handling and independent native copies.
-function isTextMessage(item: AgentInputItem): item is MessageItem {
-  if (
-    !item ||
-    Object.getPrototypeOf(item) !== Object.prototype ||
-    !('role' in item) ||
-    !('content' in item) ||
-    Object.keys(item).some((key) =>
-      key === 'providerData'
-        ? item.providerData !== undefined
-        : !['role', 'content', 'type', 'status'].includes(key),
-    )
-  )
-    return false;
-  if (item.type !== undefined && item.type !== 'message') return false;
-  if ('status' in item && typeof item.status !== 'string') return false;
-  if (typeof item.content === 'string')
-    return item.role === 'user' || item.role === 'system';
-  if (item.role !== 'assistant' && item.role !== 'user') return false;
-  const content = item.content;
-  if (
-    !Array.isArray(content) ||
-    content.length !== 1 ||
-    Object.keys(content).length !== 1 ||
-    !(0 in content)
-  )
-    return false;
-  const part = content[0];
-  if (
-    !part ||
-    Object.getPrototypeOf(part) !== Object.prototype ||
-    (part.type !== 'output_text' && part.type !== 'input_text') ||
-    typeof part.text !== 'string' ||
-    Object.keys(part).some(
-      (key) => !['type', 'text', 'annotations'].includes(key),
-    )
-  )
-    return false;
-  return (
-    !('annotations' in part) ||
-    (Array.isArray(part.annotations) &&
-      part.annotations.length === 0 &&
-      Object.keys(part.annotations).length === 0)
-  );
-}
-
-export function copyText(item: MessageItem): MessageItem {
-  if (typeof item.content === 'string') return { ...item };
-  const part = { ...item.content[0] };
-  if (
-    'annotations' in part &&
-    Object.prototype.hasOwnProperty.call(part, 'annotations')
-  ) {
-    part.annotations = [];
-  }
-  return { ...item, content: [part] } as MessageItem;
-}
-
 export type OrderedInput = {
   restore?: () => MessageItem[];
   unobserved?: (result: FilterApplicationResult) => MessageItem[] | undefined;
@@ -478,27 +496,19 @@ export type OrderedInput = {
 export function prepareTextInput(
   ordered: OrderedInput,
   input: AgentInputItem[],
-  originals: WeakMap<object, AgentInputItem> | AgentInputItem[],
+  originals: AgentInputItem[],
   instructions: string | undefined,
-  restore?: () => MessageItem[],
+  restore = captureTextHistory(input)?.read,
 ): FilterApplicationResult | undefined {
-  if (!canCopyMessages(input)) return;
-  const saved: MessageItem[] = restore ? restore() : [];
-  if (!restore) {
-    for (const item of input) {
-      if (!isTextMessage(item)) return;
-      saved.push(copyText(item));
-    }
-  }
+  if (!restore || !canCopyMessages(input)) return;
+  const saved = restore();
   let visible: AgentInputItem[] = saved;
   let unobserved: MessageItem[] | undefined = saved;
   // Promise observers can edit or mark these items before the runner resumes.
   // Any such read restores the regular per-item native capture.
   const result: FilterApplicationResult = {
     modelInput: { input, instructions },
-    sourceItems: Array.isArray(originals)
-      ? originals
-      : input.map((item) => originals.get(item)),
+    sourceItems: originals,
     get persistedItems() {
       unobserved = undefined;
       return visible;
