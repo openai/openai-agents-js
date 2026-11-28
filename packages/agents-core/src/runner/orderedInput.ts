@@ -393,6 +393,8 @@ export function matchesOrderedInput(
   const runtime = matchingRuntime();
   if (
     !runtime ||
+    // Inherited fields must not replace missing own fields.
+    Object.keys(Object.prototype).length !== 0 ||
     !dense(original, runtime) ||
     !dense(prepared, runtime) ||
     (prepared !== processed && !dense(processed, runtime)) ||

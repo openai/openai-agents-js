@@ -477,6 +477,54 @@ describe('ownership of a complete input history', () => {
     expect(input).toStrictEqual(expected);
   });
 
+  it('preserves recovery rows when state inherits a removed own field', async () => {
+    const input = Array.from({ length: 40 }, (_, i) => ({
+      role: 'user' as const,
+      content: `note ${i}`,
+      sourceLabel: 'saved',
+    }));
+    const model = new ScriptedModel([[assistantMessage('done')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    const prior = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'sourceLabel',
+    );
+    const restore = () => {
+      if (prior) Object.defineProperty(Object.prototype, 'sourceLabel', prior);
+      else Reflect.deleteProperty(Object.prototype, 'sourceLabel');
+    };
+    const agent = new Agent({
+      name: 'History',
+      model,
+      instructions: () => {
+        restore();
+        return 'Test';
+      },
+    });
+    runner.on('agent_start', (_context, _agent, items) => {
+      Object.defineProperty(Object.prototype, 'sourceLabel', {
+        value: 'saved',
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+      Reflect.deleteProperty(items![1], 'sourceLabel');
+    });
+    try {
+      const result = await runner.run(agent, input, { stream: true });
+      await result.completed;
+      expect(
+        result.state._currentTurnSessionHistoryTransactionInputItems,
+      ).toStrictEqual(input.filter((_, i) => i !== 1));
+      expect(
+        Object.prototype.hasOwnProperty.call(input[1], 'sourceLabel'),
+      ).toBe(true);
+      expect(result.finalOutput).toBe('done');
+    } finally {
+      restore();
+    }
+  });
+
   it('does not observe an inherited matching getter during capture', async () => {
     const prior = Object.getOwnPropertyDescriptor(Object.prototype, 'matching');
     let reads = 0;
