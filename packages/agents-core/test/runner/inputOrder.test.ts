@@ -18,6 +18,10 @@ function message(text: string): AgentInputItem {
   };
 }
 
+function userWithTextPart(text: string): AgentInputItem {
+  return { role: 'user', content: [{ type: 'input_text', text }] };
+}
+
 function begin(input: AgentInputItem[]) {
   const tracker = createSessionPersistenceTracker({
     hasCallModelInputFilter: false,
@@ -88,7 +92,7 @@ describe('ownership of a complete input history', () => {
     }
   });
 
-  it.each([message, assistant])(
+  it.each([message, assistant, userWithTextPart])(
     'separates repeated input from the request and recovery snapshot',
     async (create) => {
       const shared = create('shared');
