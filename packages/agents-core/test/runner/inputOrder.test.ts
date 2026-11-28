@@ -1,10 +1,19 @@
 import { runInNewContext } from 'node:vm';
 import { types } from 'node:util';
+import * as workers from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { applyCallModelInputFilter } from '../../src/runner/conversation';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
-import { Agent, RunContext, Runner, assistant, system, user } from '../../src';
+import {
+  Agent,
+  RunContext,
+  Runner,
+  RunState,
+  assistant,
+  system,
+  user,
+} from '../../src';
 import {
   assistantMessage,
   modelResponder,
@@ -32,6 +41,127 @@ function history(): AgentInputItem[] {
 }
 
 describe('ownership of a complete input history', () => {
+  it('falls back before calling a replaced weak dereference', async () => {
+    const input = history();
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const agent = new Agent({ name: 'Weak history', model });
+    await new Runner({ tracingDisabled: true }).run(agent, input);
+    const context = new RunContext();
+    const original = WeakRef.prototype.deref;
+    let calls = 0;
+    let copied: unknown;
+    try {
+      WeakRef.prototype.deref = () => {
+        calls++;
+        throw new Error('Unexpected weak dereference');
+      };
+      copied = new RunState(context, input, agent, null)._originalInput;
+    } finally {
+      WeakRef.prototype.deref = original;
+    }
+    expect(calls).toBe(0);
+    expect(copied).toStrictEqual(input);
+  });
+
+  it('keeps the native kind of a replacement in a previously copied history', () => {
+    const input = history();
+    const first = begin(input);
+    const replacement = Object.assign(new Date(123), {
+      type: 'output_text' as const,
+      text: '0',
+    });
+    Object.setPrototypeOf(replacement, Object.prototype);
+    Object.assign(input[0], { content: [replacement] });
+    expect(begin(input).getItemsForPersistence()![0]).toStrictEqual({
+      role: 'assistant',
+      content: [new Date(123)],
+      status: 'completed',
+    });
+    expect(first.getItemsForPersistence()![0]).toStrictEqual(message('0'));
+  });
+
+  it.skipIf(!('markAsUncloneable' in workers))(
+    'observes a new clone restriction on an existing text part',
+    () => {
+      const part = { type: 'output_text' as const, text: 'original' };
+      const input = [assistant([part]), ...history()];
+      const first = begin(input);
+      workers.markAsUncloneable(part);
+      expect(() => begin(input)).toThrow(
+        expect.objectContaining({ name: 'DataCloneError' }),
+      );
+      expect(first.getItemsForPersistence()![0]).toStrictEqual(input[0]);
+    },
+  );
+
+  it.skipIf(!('markAsUncloneable' in workers))(
+    'rejects a new clone restriction on public run state before dispatch',
+    async () => {
+      const runner = new Runner({ tracingDisabled: true });
+      const model = new ScriptedModel([[assistantMessage('ok')]]);
+      runner.on('agent_start', (_context, _agent, items) => {
+        workers.markAsUncloneable(Object.freeze(items![0]));
+      });
+      const input = history();
+      await expect(
+        runner.run(new Agent({ name: 'History', model }), input),
+      ).rejects.toMatchObject({ name: 'DataCloneError' });
+      expect(model.calls).toHaveLength(0);
+      expect(structuredClone(input)).toStrictEqual(input);
+    },
+  );
+
+  it.skipIf(!('markAsUncloneable' in workers))(
+    'preserves shared nested state before a late clone restriction',
+    async () => {
+      const annotations: [] = [];
+      const input = history();
+      const left = { type: 'output_text' as const, text: 'first', annotations };
+      const right = {
+        type: 'output_text' as const,
+        text: 'second',
+        annotations,
+      };
+      input[0] = assistant([left]);
+      input[1] = assistant([right]);
+      const model = new ScriptedModel([[assistantMessage('ok')]]);
+      const runner = new Runner({ tracingDisabled: true });
+      const agent = new Agent({ name: 'Shared history', model });
+      const first = await runner.run(agent, input);
+      let observed = false;
+      runner.on('agent_start', (_context, _agent, items) => {
+        const firstItem = items![0];
+        const secondItem = items![1];
+        if (!('content' in firstItem) || !('content' in secondItem))
+          throw new Error('Missing shared messages');
+        const left = firstItem.content;
+        const right = secondItem.content;
+        if (typeof left === 'string' || typeof right === 'string')
+          throw new Error('Missing shared content');
+        const leftPart = left[0];
+        const rightPart = right[0];
+        if (
+          !('annotations' in leftPart) ||
+          !('annotations' in rightPart) ||
+          !Array.isArray(leftPart.annotations) ||
+          !Array.isArray(rightPart.annotations)
+        )
+          throw new Error('Missing shared annotations');
+        expect(leftPart.annotations).toBe(rightPart.annotations);
+        expect(leftPart.annotations).not.toBe(annotations);
+        workers.markAsUncloneable(Object.freeze(leftPart));
+        observed = true;
+      });
+      await expect(runner.run(agent, input)).rejects.toMatchObject({
+        name: 'DataCloneError',
+      });
+      expect(observed).toBe(true);
+      expect(model.calls).toHaveLength(1);
+      expect(first.input).toStrictEqual(input);
+      expect(structuredClone(input)).toStrictEqual(input);
+    },
+  );
+
   it('keeps saved messages and their owners when the model input changes before the first read', async () => {
     const input = history();
     const tracker = begin(input);
@@ -326,6 +456,121 @@ describe('ownership of a complete input history', () => {
     tracker.setPreparedTurnItems(prepared, prepared);
     tracker.recordTurnItems(prepared, prepared);
     expect(tracker.getItemsForPersistence()).toEqual([message('other')]);
+  });
+
+  it('preserves reordered text fields and noncanonical public metadata', async () => {
+    const input = history();
+    input[20] = {
+      content: 'reordered',
+      role: 'user',
+      providerData: { trace: 'kept' },
+    };
+    const expected = structuredClone(input);
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const result = await new Runner({ tracingDisabled: true }).run(
+      new Agent({ name: 'Noncanonical history', model }),
+      input,
+    );
+    expect(result.finalOutput).toBe('ok');
+    expect(model.calls).toHaveLength(1);
+    expect(model.calls[0].request.input).toStrictEqual(expected);
+    expect(input).toStrictEqual(expected);
+  });
+
+  it('preserves recovery rows when state inherits a removed own field', async () => {
+    const input = Array.from({ length: 40 }, (_, i) => ({
+      role: 'user' as const,
+      content: `note ${i}`,
+      sourceLabel: 'saved',
+    }));
+    const model = new ScriptedModel([[assistantMessage('done')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    const prior = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      'sourceLabel',
+    );
+    const restore = () => {
+      if (prior) Object.defineProperty(Object.prototype, 'sourceLabel', prior);
+      else Reflect.deleteProperty(Object.prototype, 'sourceLabel');
+    };
+    const agent = new Agent({
+      name: 'History',
+      model,
+      instructions: () => {
+        restore();
+        return 'Test';
+      },
+    });
+    runner.on('agent_start', (_context, _agent, items) => {
+      Object.defineProperty(Object.prototype, 'sourceLabel', {
+        value: 'saved',
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+      Reflect.deleteProperty(items![1], 'sourceLabel');
+    });
+    try {
+      const result = await runner.run(agent, input, { stream: true });
+      await result.completed;
+      expect(
+        result.state._currentTurnSessionHistoryTransactionInputItems,
+      ).toStrictEqual(input.filter((_, i) => i !== 1));
+      expect(
+        Object.prototype.hasOwnProperty.call(input[1], 'sourceLabel'),
+      ).toBe(true);
+      expect(result.finalOutput).toBe('done');
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not observe an inherited matching getter during capture', async () => {
+    const prior = Object.getOwnPropertyDescriptor(Object.prototype, 'matching');
+    let reads = 0;
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const agent = new Agent({ name: 'Matching observer', model });
+    const runner = new Runner({ tracingDisabled: true });
+    Object.defineProperty(Object.prototype, 'matching', {
+      configurable: true,
+      get() {
+        reads++;
+        throw new Error('Unexpected matching lookup');
+      },
+    });
+    try {
+      const result = await runner.run(agent, history());
+      expect(result.finalOutput).toBe('ok');
+      expect(reads).toBe(0);
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      delete (Object.prototype as { matching?: unknown }).matching;
+      if (prior) Object.defineProperty(Object.prototype, 'matching', prior);
+    }
+  });
+
+  it('preserves hidden content-array serialization getter errors while matching', async () => {
+    const error = new Error('hidden content hook');
+    let reads = 0;
+    const model = new ScriptedModel([[assistantMessage('unused')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    runner.on('agent_start', (_context, _agent, items) => {
+      const first = items![0];
+      if (!('content' in first) || !Array.isArray(first.content))
+        throw new Error('Missing content array');
+      Object.defineProperty(first.content, 'toJSON', {
+        configurable: true,
+        get() {
+          reads++;
+          throw error;
+        },
+      });
+    });
+    await expect(
+      runner.run(new Agent({ name: 'Hidden lookup', model }), history()),
+    ).rejects.toBe(error);
+    expect(reads).toBe(1);
+    expect(model.calls).toHaveLength(0);
   });
 
   it('keeps serialization errors from hidden hooks', () => {

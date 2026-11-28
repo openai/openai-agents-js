@@ -30,6 +30,7 @@ import {
   type ReasoningItemIdPolicy,
 } from './runner/items';
 import { normalizeItemsForSessionPersistence } from './runner/sessionItems';
+import { captureStateInput } from './runner/orderedInput';
 import { getServerConversationOwner } from './runner/conversation';
 import {
   type CurrentFunctionRouting,
@@ -2790,7 +2791,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   ) {
     this._context = context;
     this._agentToolInvocation = undefined;
-    this._originalInput = structuredClone(originalInput);
+    this._originalInput = captureStateInput(originalInput);
     this._pendingInput = [];
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
