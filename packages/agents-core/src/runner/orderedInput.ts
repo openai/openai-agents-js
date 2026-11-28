@@ -131,16 +131,69 @@ const helpers = {
 const textKeys = ['type', 'text'];
 const annotatedKeys = ['type', 'text', 'annotations'];
 
+let alternateOrders:
+  | Map<string[], { names: string[]; writers: Map<WriteText, WriteText> }>
+  | undefined;
+
+function writerForOrder(names: string[], write: WriteText): WriteText {
+  const blank = write('');
+  const ordered: Record<string, unknown> = { __proto__: null };
+  for (const key of names)
+    ordered[key] =
+      key === 'content' ? undefined : blank[key as keyof MessageItem];
+  const template = { ...ordered };
+  return (text) =>
+    ({ ...template, content: write(text).content }) as MessageItem;
+}
+
 function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
   if (!isTextRecord(item, runtime)) return;
   const helper = 'type' in item;
   const reply = 'status' in item;
   const layout = helper ? helpers : plain;
   const keys = reply ? layout.replyKeys : layout.keys;
+  if (hasTextFields(item, runtime, keys))
+    return selectWriter(item, layout, reply, runtime);
+  alternateOrders ??= new Map();
+  let order = alternateOrders.get(keys);
+  // Require true absence: hidden metadata must still count.
+  const count =
+    layout === helpers && !('providerData' in item)
+      ? keys.length - 1
+      : keys.length;
   if (
-    !hasTextFields(item, runtime, keys) ||
-    (helper && (item.type !== 'message' || item.providerData !== undefined))
-  )
+    !order ||
+    order.names.length !== count ||
+    !hasTextFields(item, runtime, order.names)
+  ) {
+    const names = Object.keys(item);
+    if (
+      names.length !== count ||
+      !names.every((key) => keys.includes(key)) ||
+      !hasTextFields(item, runtime, names)
+    )
+      return;
+    order = { names, writers: new Map() };
+    alternateOrders.set(keys, order);
+  }
+  const write = selectWriter(item, layout, reply, runtime);
+  if (!write) return;
+  let restore = order.writers.get(write);
+  if (!restore) {
+    restore = writerForOrder(order.names, write);
+    order.writers.set(write, restore);
+  }
+  return restore;
+}
+
+function selectWriter(
+  item: Record<string, unknown>,
+  layout: typeof plain | typeof helpers,
+  reply: boolean,
+  runtime: Runtime,
+): WriteText | undefined {
+  const helper = layout === helpers;
+  if (helper && (item.type !== 'message' || item.providerData !== undefined))
     return;
   if (typeof item.content === 'string' && !reply) {
     if (item.role === 'system') return layout.system;

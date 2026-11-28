@@ -121,6 +121,142 @@ describe('ownership of a complete input history', () => {
     },
   );
 
+  it('preserves reordered roots and independent copies', async () => {
+    for (const rotate of [false, true, false]) {
+      const annotated = {
+        type: 'output_text' as const,
+        text: 'annotated',
+        annotations: [],
+      };
+      const roots = [
+        userWithTextPart(rotate ? 'updated part' : 'part'),
+        {
+          role: rotate ? ('system' as const) : ('user' as const),
+          content: rotate ? 'updated' : 'plain',
+        },
+        { role: 'system' as const, content: 'plain rule' },
+        user('helper'),
+        system('helper rule'),
+        message('reply'),
+        assistant('helper reply'),
+        assistant([annotated]),
+      ].map((item) => {
+        const entries = Object.entries(item);
+        return Object.fromEntries(
+          rotate ? [...entries.slice(1), entries[0]] : entries.reverse(),
+        ) as AgentInputItem;
+      });
+      const input = [...roots, roots[0], ...history()];
+      const expected = structuredClone(input);
+      const check = (items: AgentInputItem[]) => {
+        expect(items.slice(0, roots.length + 1)).toStrictEqual(
+          expected.slice(0, roots.length + 1),
+        );
+        for (let i = 0; i <= roots.length; i++) {
+          expect(Object.keys(items[i])).toEqual(Object.keys(input[i]));
+          expect(items[i]).not.toBe(input[i]);
+          for (const descriptor of Object.values(
+            Object.getOwnPropertyDescriptors(items[i]),
+          )) {
+            expect(descriptor).toMatchObject({
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+          }
+        }
+        expect(items[0]).not.toBe(items[roots.length]);
+        const first = items[0];
+        if ('content' in first && Array.isArray(first.content))
+          Object.assign(first.content[0], { text: 'edited' });
+        expect(items[roots.length]).toStrictEqual(expected[0]);
+        expect(input).toStrictEqual(expected);
+      };
+      const model = new ScriptedModel([
+        modelResponder(({ request }) => {
+          if (typeof request.input === 'string')
+            throw new Error('Expected a list');
+          check(request.input);
+          return [assistantMessage('ok')];
+        }),
+      ]);
+      const result = await new Runner({ tracingDisabled: true }).run(
+        new Agent({ name: 'History order', model }),
+        input,
+      );
+      check(result.state._currentTurnSessionHistoryTransactionInputItems!);
+      expect(result.input).toStrictEqual(expected);
+      expect(result.input[roots.length]).toBe(result.input[0]);
+    }
+  });
+
+  it('preserves restored helper fields and independent copies', async () => {
+    const held: {
+      items: string | AgentInputItem[];
+      expected: AgentInputItem[];
+    }[] = [];
+    for (const hidden of [false, true]) {
+      const input = JSON.parse(
+        JSON.stringify([
+          user('question'),
+          system('rule'),
+          assistant('reply'),
+          ...history(),
+        ]),
+      ) as AgentInputItem[];
+      input.push(input[0]);
+      let metadataReads = 0;
+      if (hidden)
+        Object.defineProperty(input[0], 'providerData', {
+          configurable: true,
+          get() {
+            metadataReads++;
+            return undefined;
+          },
+        });
+      expect(Object.keys(input[0])).not.toContain('providerData');
+      expect(
+        Object.prototype.hasOwnProperty.call(input[0], 'providerData'),
+      ).toBe(hidden);
+      expect('providerData' in input[0]).toBe(hidden);
+      const expected = structuredClone(input);
+      const check = (items: AgentInputItem[]) => {
+        expect(items).toStrictEqual(expected);
+        for (let i = 0; i < items.length; i++) {
+          expect(Object.keys(items[i])).toEqual(Object.keys(expected[i]));
+          expect(
+            Object.prototype.hasOwnProperty.call(items[i], 'providerData'),
+          ).toBe(false);
+          expect('providerData' in items[i]).toBe(false);
+        }
+        const first = items[0];
+        if ('content' in first && Array.isArray(first.content))
+          Object.assign(first.content[0], { text: 'edited' });
+        Object.assign(first, { providerData: { edited: true } });
+        expect(items[items.length - 1]).toStrictEqual(expected[0]);
+        expect(input).toStrictEqual(expected);
+      };
+      const model = new ScriptedModel([
+        modelResponder(({ request }) => {
+          if (typeof request.input === 'string')
+            throw new Error('Expected a list');
+          check(request.input);
+          return [assistantMessage('ok')];
+        }),
+      ]);
+      const result = await new Runner({ tracingDisabled: true }).run(
+        new Agent({ name: 'Restored history', model }),
+        input,
+      );
+      check(result.state._currentTurnSessionHistoryTransactionInputItems!);
+      expect(result.input).toStrictEqual(expected);
+      expect(metadataReads).toBe(0);
+      for (const prior of held)
+        expect(prior.items).toStrictEqual(prior.expected);
+      held.push({ items: result.input, expected });
+    }
+  });
+
   it('preserves a metadata setter installed before saving helper messages', async () => {
     const input = [system('instructions'), user('question'), ...history()];
     const model = new ScriptedModel([[assistantMessage('ok')]]);
