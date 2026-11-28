@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-Batched native copies and deferred recovery of plain messages in long Node.js runs without a session or model input filter. Independent, editable messages for each model request and recovery snapshot. Non-array native copies have been falling back to ordinary message handling.
+In long Node.js runs without a session or model input filter, the runner has been batching copies of plain text messages, including user messages with one `input_text` part. It has been rebuilding independent, editable recovery copies on demand and falling back to individual copies for unexpected native results.

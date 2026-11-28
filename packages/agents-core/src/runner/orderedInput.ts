@@ -94,11 +94,19 @@ function annotatedPart(text: string) {
   return { type: 'output_text' as const, text, annotations: [] };
 }
 
+function userWithTextPart(text: string): MessageItem {
+  return {
+    role: 'user',
+    content: [{ type: 'input_text', text }],
+  };
+}
+
 // These layouts differ in both field order and own undefined metadata.
 const plain = {
   keys: ['role', 'content'],
   replyKeys: ['role', 'content', 'status'],
   user: (content: string): MessageItem => ({ role: 'user', content }),
+  userWithTextPart,
   system: (content: string): MessageItem => ({ role: 'system', content }),
   assistant: (text: string): MessageItem => ({
     role: 'assistant',
@@ -148,13 +156,8 @@ function textFormat(item: unknown, runtime: Runtime): WriteText | undefined {
   )
     return;
   if (!reply) {
-    if (
-      helper &&
-      item.role === 'user' &&
-      part.type === 'input_text' &&
-      !annotated
-    )
-      return helpers.user;
+    if (item.role === 'user' && part.type === 'input_text' && !annotated)
+      return helper ? helpers.user : plain.userWithTextPart;
     return;
   }
   if (
