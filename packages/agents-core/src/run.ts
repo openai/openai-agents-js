@@ -3787,16 +3787,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ordered,
     );
     const { modelInput, sourceItems } = applied;
-    const persistedItems =
-      ordered?.unobserved?.(applied) ?? applied.persistedItems;
+    const captured = ordered?.unobserved?.(applied);
+    let persistedItems = captured ? [] : applied.persistedItems;
     const { sourceMatchKinds, filterApplied, preserveInputIdentity } = applied;
+    // Reading the other properties can expose or replace the saved array.
+    const unobserved =
+      ordered?.unobserved?.(applied) === captured ? captured : undefined;
+    if (captured && !unobserved?.restore) persistedItems = captured.read();
 
     // Persist normalized clones so session history mirrors the exact model payload. An empty array
     // is intentional when a filter removes everything.
     sessionPersistence.recordTurnItems(
       sourceItems,
-      persistedItems,
-      ordered?.unobserved?.(applied),
+      unobserved ? undefined : persistedItems,
+      unobserved,
     );
 
     const previousResponseId =
@@ -3805,7 +3809,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const conversationId =
       serverConversationTracker?.conversationId ?? options.conversationId;
 
-    return {
+    const prepared = {
       ...artifacts,
       model,
       explicitlyModelSet,
@@ -3822,6 +3826,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filterApplied,
       preserveInputIdentity,
       turnInput,
+    };
+    if (!unobserved?.restore) return prepared;
+    let read: () => AgentInputItem[] = unobserved.read;
+    return {
+      ...prepared,
+      get persistedItems() {
+        return read();
+      },
+      set persistedItems(items: AgentInputItem[]) {
+        read = () => items;
+      },
     };
   }
 }

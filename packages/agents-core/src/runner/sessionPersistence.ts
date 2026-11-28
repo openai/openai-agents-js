@@ -11,6 +11,7 @@ import {
   matchesOrderedInput,
   matchesSources,
   type OrderedInput,
+  type OrderedSnapshot,
 } from './orderedInput';
 import {
   isOpenAIResponsesCompactionAwareSession,
@@ -1254,7 +1255,7 @@ export type SessionPersistenceTracker = {
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
     filteredItems?: AgentInputItem[],
-    unobserved?: MessageItem[],
+    unobserved?: OrderedSnapshot,
   ) => void;
   captureInput: (
     session: Session | undefined,
@@ -1279,6 +1280,10 @@ export function createSessionPersistenceTracker(options: {
     orderedInput?: OrderedInput;
     #readOriginal?: () => MessageItem[];
     #expandPositions?: () => PreparedOwnedSourcePosition[];
+    #orderedSources?: {
+      items: AgentInputItem[];
+      expand: () => PreparedOwnedSource[];
+    };
     #firstOwners?: {
       items: MessageItem[] | (() => MessageItem[]);
       clone: typeof structuredClone;
@@ -1319,6 +1324,7 @@ export function createSessionPersistenceTracker(options: {
     ) => {
       this.orderedInput = undefined;
       this.#firstOwners = undefined;
+      this.#orderedSources = undefined;
       const sessionItems =
         items ??
         (this.session === undefined && preparedInput !== undefined
@@ -1393,12 +1399,22 @@ export function createSessionPersistenceTracker(options: {
           this.initialSourcePositions,
         )
       ) {
-        this.preparedSources = processedItems.map((item, ownerIndex) => ({
-          item,
-          ownerIndex,
-        }));
+        // Keep the order across callbacks. Positions already give the owner
+        // indexes until a later turn needs the full reconciliation table.
+        const items = [...processedItems];
+        const from = Array.from;
+        const range = { __proto__: null, length: items.length };
+        this.#orderedSources = {
+          items,
+          expand: () =>
+            from(range, (_, ownerIndex) => ({
+              item: items[ownerIndex],
+              ownerIndex,
+            })),
+        };
+        this.preparedSources = undefined;
         if (!this.filteredSnapshot && !this.#firstOwners) {
-          this.orderedInput = { unobserved: undefined, restore: undefined };
+          this.orderedInput = { unobserved: undefined };
         }
         return;
       }
@@ -1417,32 +1433,37 @@ export function createSessionPersistenceTracker(options: {
         processedItems,
         findPreparedSourcePositions(preparedItems, preparedSources),
       );
+      this.#orderedSources = undefined;
     };
 
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
-      unobserved?: MessageItem[],
+      unobserved?: OrderedSnapshot,
     ) => {
       const ordered = this.orderedInput;
       this.orderedInput = undefined;
       if (
         ordered &&
         unobserved &&
-        unobserved === filteredItems &&
-        this.preparedSources &&
-        unobserved.length === this.preparedSources.length &&
-        matchesSources(this.preparedSources, sourceItems)
+        this.#orderedSources &&
+        unobserved.length === this.#orderedSources.items.length &&
+        matchesSources(this.#orderedSources.items, sourceItems)
       ) {
         // Defer the writable tracker snapshot under the current copy policy.
         this.#readOriginal = undefined;
         this.#firstOwners = {
-          items: ordered.restore ?? unobserved.map(copyText),
+          items: unobserved.restore ?? unobserved.read().map(copyText),
           clone: structuredClone,
         };
         return;
       }
 
+      if (unobserved) filteredItems = unobserved.read();
+      if (this.#orderedSources) {
+        this.preparedSources = this.#orderedSources.expand();
+        this.#orderedSources = undefined;
+      }
       // Position uniquely identifies each owner on the first turn. Build
       // the ordinary tables only when reconciling a subsequent request.
       if (this.#firstOwners) {
