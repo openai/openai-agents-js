@@ -190,6 +190,56 @@ describe('ownership of a complete input history', () => {
     }
   });
 
+  it('copies tagged user strings independently with optional metadata', async () => {
+    for (const metadata of [false, true]) {
+      const tagged = {
+        type: 'message' as const,
+        role: 'user' as const,
+        content: 'question',
+        ...(metadata ? { providerData: undefined } : {}),
+      };
+      const input = [
+        tagged,
+        user('helper'),
+        system('rule'),
+        assistant('reply'),
+        ...history(),
+      ];
+      input.push(tagged);
+      const expected = structuredClone(input);
+      const check = (items: AgentInputItem[]) => {
+        expect(items).toStrictEqual(expected);
+        expect(Object.keys(items[0])).toEqual(Object.keys(tagged));
+        expect(
+          Object.prototype.hasOwnProperty.call(items[0], 'providerData'),
+        ).toBe(metadata);
+        expect(items[0]).not.toBe(items[items.length - 1]);
+        Object.assign(items[0], {
+          content: 'edited',
+          providerData: { edited: true },
+        });
+        expect(items[items.length - 1]).toStrictEqual(expected[0]);
+        expect(input).toStrictEqual(expected);
+      };
+      const model = new ScriptedModel([
+        modelResponder(({ request }) => {
+          if (typeof request.input === 'string')
+            throw new Error('Expected a list');
+          check(request.input);
+          return [assistantMessage('ok')];
+        }),
+      ]);
+      const result = await new Runner({ tracingDisabled: true }).run(
+        new Agent({ name: 'Tagged history', model }),
+        input,
+      );
+      check(result.state._currentTurnSessionHistoryTransactionInputItems!);
+      expect(result.input).toStrictEqual(expected);
+      tagged.content = 'caller edit';
+      expect(result.input).toStrictEqual(expected);
+    }
+  });
+
   it('preserves restored helper fields and independent copies', async () => {
     const held: {
       items: string | AgentInputItem[];

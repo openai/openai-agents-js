@@ -122,7 +122,13 @@ const plain = {
 const helpers = {
   keys: ['type', 'role', 'content', 'providerData'],
   replyKeys: ['type', 'role', 'content', 'status', 'providerData'],
-  user,
+  user: (content: string): MessageItem => ({
+    type: 'message',
+    role: 'user',
+    content,
+    providerData: undefined,
+  }),
+  userWithTextPart: user,
   system,
   assistant,
   annotated: (text: string): MessageItem =>
@@ -197,7 +203,7 @@ function selectWriter(
     return;
   if (typeof item.content === 'string' && !reply) {
     if (item.role === 'system') return layout.system;
-    if (item.role === 'user' && !helper) return plain.user;
+    if (item.role === 'user') return layout.user;
   }
   if (!isTextList(item.content, runtime, 1)) return;
   const part = item.content[0];
@@ -210,7 +216,7 @@ function selectWriter(
     return;
   if (!reply) {
     if (item.role === 'user' && part.type === 'input_text' && !annotated)
-      return helper ? helpers.user : plain.userWithTextPart;
+      return layout.userWithTextPart;
     return;
   }
   if (
