@@ -314,4 +314,36 @@ describe('ownership of a complete input history', () => {
       'history hook',
     );
   });
+
+  it('keeps native copy failures on the stream', async ({ skip }) => {
+    const blob = new Blob(['native data']);
+    for (const symbol of Object.getOwnPropertySymbols(blob)) {
+      Reflect.deleteProperty(blob, symbol);
+    }
+    Object.setPrototypeOf(blob, Object.prototype);
+    Object.assign(blob, { role: 'user', content: 'native message' });
+    let nativeCopy: unknown;
+    try {
+      nativeCopy = structuredClone([blob]);
+    } catch {
+      skip();
+      return;
+    }
+    if (nativeCopy !== undefined) {
+      skip();
+      return;
+    }
+
+    const input = history();
+    input[0] = blob as unknown as AgentInputItem;
+    const model = new ScriptedModel();
+    const runner = new Runner({ tracingDisabled: true });
+    const result = await runner.run(
+      new Agent({ name: 'Native clone fallback', model }),
+      input,
+      { stream: true },
+    );
+    await expect(result.completed).rejects.toThrow(/iterable/);
+    expect(model.calls).toHaveLength(0);
+  });
 });

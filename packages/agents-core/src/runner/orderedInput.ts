@@ -212,6 +212,7 @@ export function captureTextHistory(
   // Validate the live native clone policy at each boundary. Built-ins with
   // ordinary prototypes can still serialize as a different kind of value.
   const copies = structuredClone(sources);
+  if (!Array.isArray(copies)) return;
   for (let i = 0; i < copies.length; i++) {
     const item = copies[i];
     if (Object.getPrototypeOf(item) !== Object.prototype || !('role' in item))
