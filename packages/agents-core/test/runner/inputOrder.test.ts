@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import { types } from 'node:util';
+import * as workers from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { createSessionPersistenceTracker } from '../../src/runner/sessionPersistence';
 import type { AgentInputItem } from '../../src/types';
@@ -30,7 +31,107 @@ function history(): AgentInputItem[] {
   return Array.from({ length: 40 }, (_, i) => message(String(i)));
 }
 
+const blobCloneKey = Object.getOwnPropertySymbols(Blob.prototype).find(
+  (key) => {
+    const value = Object.getOwnPropertyDescriptor(Blob.prototype, key)?.value;
+    return (
+      typeof value === 'function' &&
+      Function.prototype.toString.call(value).includes('deserializeInfo')
+    );
+  },
+);
+
 describe('ownership of a complete input history', () => {
+  it('preserves native rejection after transient clone registration', async () => {
+    const input = history();
+    let live: AgentInputItem[] = [];
+    const saved = Object.getOwnPropertyDescriptor(globalThis, 'WeakMap')!;
+    const NativeWeakMap = WeakMap;
+    const restore = () => Object.defineProperty(globalThis, 'WeakMap', saved);
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    const runner = new Runner({ tracingDisabled: true });
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const agent = new Agent({
+      name: 'Registration',
+      model,
+      instructions() {
+        Object.defineProperty(globalThis, 'WeakMap', {
+          configurable: true,
+          get() {
+            restore();
+            return class extends NativeWeakMap<object, unknown> {
+              set(key: object, value: unknown) {
+                if (value === live[0]) workers.markAsUncloneable(live[1]);
+                return super.set(key, value);
+              }
+            };
+          },
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      await expect(runner.run(agent, input)).rejects.toThrow(/clone/i);
+      expect(model.calls).toHaveLength(0);
+      expect(() => structuredClone(input)).not.toThrow();
+    } finally {
+      restore();
+    }
+  });
+
+  it.skipIf(!blobCloneKey)('preserves inherited clone hook reads', async () => {
+    const key = blobCloneKey!;
+    const clone = Object.getOwnPropertyDescriptor(Blob.prototype, key)!.value;
+    const prior = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    const input = history();
+    const host = new Blob(['host']);
+    for (const key of Object.getOwnPropertySymbols(host))
+      Reflect.deleteProperty(host, key);
+    Object.setPrototypeOf(host, Object.prototype);
+    Object.assign(host, { role: 'user', content: 'host' });
+    const pristine = new Blob(['pristine']);
+    let live: AgentInputItem[] = [];
+    let reads = 0;
+    const runner = new Runner({ tracingDisabled: true });
+    const model = new ScriptedModel([[assistantMessage('ok')]]);
+    runner.on('agent_start', (_context, _agent, items) => {
+      live = items!;
+    });
+    const agent = new Agent({
+      name: 'Native clone',
+      model,
+      instructions() {
+        live[5] = host as unknown as AgentInputItem;
+        Object.defineProperty(Object.prototype, key, {
+          configurable: true,
+          get() {
+            reads++;
+            return () => Reflect.apply(clone, pristine, []);
+          },
+        });
+        const part = (live[35] as ReturnType<typeof assistant>).content[0];
+        Object.defineProperty(part, 'text', {
+          enumerable: true,
+          configurable: true,
+          get: () => '35',
+        });
+        return 'Reply';
+      },
+    });
+    try {
+      const result = await runner.run(agent, input, { stream: true });
+      await result.completed;
+      expect(result.finalOutput).toBe('ok');
+      expect(reads).toBe(1);
+      expect(input[5]).toStrictEqual(message('5'));
+    } finally {
+      if (prior) Object.defineProperty(Object.prototype, key, prior);
+      else Reflect.deleteProperty(Object.prototype, key);
+    }
+  });
+
   it('keeps each initial occurrence independent when recovery is read late', () => {
     const part = {
       type: 'output_text' as const,

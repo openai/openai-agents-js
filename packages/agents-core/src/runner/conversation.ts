@@ -136,13 +136,6 @@ export async function applyCallModelInputFilter<TContext>(
       return cloned;
     });
 
-  // Record the relationship between the array passed to filters and the original inputs.
-  const cloneMap = new WeakMap<object, AgentInputItem>();
-
-  // Identity-preserving filters may opt into stable item identities. Other filters still
-  // receive deep copies so their mutations cannot affect the cached turn state.
-  const preserveInputIdentity =
-    callModelInputFilter?.preserveInputIdentity === true;
   let plain =
     ordered && !callModelInputFilter && canCopyMessages(inputItems)
       ? {
@@ -165,6 +158,14 @@ export async function applyCallModelInputFilter<TContext>(
       if (result) return result;
     }
   }
+
+  // Record the relationship between the array passed to filters and the original inputs.
+  const cloneMap = new WeakMap<object, AgentInputItem>();
+
+  // Identity-preserving filters may opt into stable item identities. Other filters still
+  // receive deep copies so their mutations cannot affect the cached turn state.
+  const preserveInputIdentity =
+    callModelInputFilter?.preserveInputIdentity === true;
   const clonedBaseInput = preserveInputIdentity
     ? [...inputItems]
     : cloneInputItems(inputItems, cloneMap);

@@ -223,6 +223,7 @@ function ordinaryTraversal(runtime: Runtime) {
       'getOwnPropertySymbols',
     ]) ||
     !methods(object, ['hasOwnProperty']) ||
+    descriptor(object.hasOwnProperty, 'call') ||
     !methods(Array, ['isArray', 'from']) ||
     !methods(array, [
       'entries',
@@ -255,6 +256,7 @@ function ordinaryTraversal(runtime: Runtime) {
     return false;
   for (const owner of [array, object]) {
     for (const key of Reflect.ownKeys(owner)) {
+      if (owner === object && typeof key === 'symbol') return false;
       if (typeof key === 'string' && key[0] >= '0' && key[0] <= '9')
         return false;
     }
