@@ -7,7 +7,6 @@ import type { MessageItem } from '../types/protocol';
 import {
   canCopyMessages,
   captureTextHistory,
-  copyText,
   matchesOrderedInput,
   matchesSources,
   type OrderedInput,
@@ -1279,10 +1278,7 @@ export function createSessionPersistenceTracker(options: {
     orderedInput?: OrderedInput;
     #readOriginal?: () => MessageItem[];
     #expandPositions?: () => PreparedOwnedSourcePosition[];
-    #firstOwners?: {
-      items: MessageItem[] | (() => MessageItem[]);
-      clone: typeof structuredClone;
-    };
+    #firstOwners?: () => MessageItem[];
     private readonly session?: Session;
     private readonly runContext?: RunContext<any>;
     private readonly hasCallModelInputFilter: boolean;
@@ -1428,6 +1424,7 @@ export function createSessionPersistenceTracker(options: {
       this.orderedInput = undefined;
       if (
         ordered &&
+        ordered.restore &&
         unobserved &&
         unobserved === filteredItems &&
         this.preparedSources &&
@@ -1436,10 +1433,7 @@ export function createSessionPersistenceTracker(options: {
       ) {
         // Defer the writable tracker snapshot under the current copy policy.
         this.#readOriginal = undefined;
-        this.#firstOwners = {
-          items: ordered.restore ?? unobserved.map(copyText),
-          clone: structuredClone,
-        };
+        this.#firstOwners = ordered.restore;
         return;
       }
 
@@ -1447,8 +1441,7 @@ export function createSessionPersistenceTracker(options: {
       // the ordinary tables only when reconciling a subsequent request.
       if (this.#firstOwners) {
         if (filteredItems === undefined) this.getItemsForPersistence();
-        const first = this.#firstOwners.items;
-        const items = typeof first === 'function' ? first() : first;
+        const items = this.#firstOwners();
         for (let index = 0; index < items.length; index++) {
           this.ownedFilteredItems.set(index, items[index]);
           this.persistedInputOrder.push({ type: 'owned', index });
@@ -1486,9 +1479,7 @@ export function createSessionPersistenceTracker(options: {
 
     getItemsForPersistence = () => {
       if (this.#firstOwners && !this.filteredSnapshot) {
-        const { items, clone } = this.#firstOwners;
-        this.filteredSnapshot =
-          typeof items === 'function' ? items() : clone(items);
+        this.filteredSnapshot = this.#firstOwners();
       }
       if (this.filteredSnapshot !== undefined) {
         return this.filteredSnapshot;
@@ -1504,17 +1495,16 @@ export function createSessionPersistenceTracker(options: {
     };
 
     captureInput(session: Session | undefined, state: RunState<any, any>) {
-      const owners = this.#firstOwners?.items;
+      const owners = this.#firstOwners;
       // These text records already have their persistent form. Give live
       // approval and error recovery a separate, writable input prefix.
       if (
         session === undefined &&
         owners &&
         !this.filteredSnapshot &&
-        canCopyMessages(typeof owners === 'function' ? [] : owners)
+        canCopyMessages([])
       ) {
-        state._currentTurnSessionHistoryTransactionInputItems =
-          typeof owners === 'function' ? owners() : owners.map(copyText);
+        state._currentTurnSessionHistoryTransactionInputItems = owners();
         return;
       }
       captureSessionHistoryTransactionInputItems(
