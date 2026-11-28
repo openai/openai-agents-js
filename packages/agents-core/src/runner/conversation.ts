@@ -7,6 +7,7 @@ import { AgentInputItem } from '../types';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import {
   canCopyMessages,
+  captureTextHistory,
   prepareTextInput,
   type OrderedInput,
 } from './orderedInput';
@@ -135,13 +136,6 @@ export async function applyCallModelInputFilter<TContext>(
       return cloned;
     });
 
-  // Record the relationship between the array passed to filters and the original inputs.
-  const cloneMap = new WeakMap<object, AgentInputItem>();
-
-  // Identity-preserving filters may opt into stable item identities. Other filters still
-  // receive deep copies so their mutations cannot affect the cached turn state.
-  const preserveInputIdentity =
-    callModelInputFilter?.preserveInputIdentity === true;
   let plain =
     ordered && !callModelInputFilter && canCopyMessages(inputItems)
       ? {
@@ -151,6 +145,27 @@ export async function applyCallModelInputFilter<TContext>(
           apply: Reflect.apply,
         }
       : undefined;
+  if (plain) {
+    const history = captureTextHistory(inputItems);
+    if (history) {
+      const result = prepareTextInput(
+        plain.ordered,
+        history.read(),
+        history.sources,
+        systemInstructions,
+        history.read,
+      );
+      if (result) return result;
+    }
+  }
+
+  // Record the relationship between the array passed to filters and the original inputs.
+  const cloneMap = new WeakMap<object, AgentInputItem>();
+
+  // Identity-preserving filters may opt into stable item identities. Other filters still
+  // receive deep copies so their mutations cannot affect the cached turn state.
+  const preserveInputIdentity =
+    callModelInputFilter?.preserveInputIdentity === true;
   const clonedBaseInput = preserveInputIdentity
     ? [...inputItems]
     : cloneInputItems(inputItems, cloneMap);
